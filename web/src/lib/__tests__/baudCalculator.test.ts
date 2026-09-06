@@ -11,6 +11,7 @@ import {
   applyRevalorisation,
   calculateJoursOuvres,
   generateSagePaieExport,
+  calculateIRPPAnnuel,
   type SalaryResult,
 } from '../baudCalculator.js';
 import { verifySalaryCalculations } from '../baudAI.js';
@@ -35,23 +36,29 @@ describe('SMIG — Decret 67/2026', () => {
 });
 
 // ============================================================================
-// 2. CNSS — Loi n73-40 (9.68%, plafond 5000 DT)
+// 2. CNSS — Loi n73-40 (9.68%, sans plafond, excluant lait et prime_aid)
 // ============================================================================
-describe('CNSS — 9.68% plafond 5000 DT', () => {
-  it('CNSS sur brut < plafond (excluant lait)', () => {
+describe('CNSS — 9.68% sans plafond', () => {
+  it('CNSS sur brut excluant lait (sans plafond)', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
-    // lait plein = 29.700, coefficient = 1.0 → lait verse = 29.700
     const expectedLait = 29.700;
-    const expectedCNSS = Math.round(Math.min(Math.max(0, r.salaire_brut - expectedLait), 5000) * 0.0968 * 1000) / 1000;
+    const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - expectedLait) * 0.0968 * 1000) / 1000;
     expect(r.cnss_salariale).toBe(expectedCNSS);
   });
 
   it('CNSS sans plafond (testé sur AAMRI brut 6261)', () => {
     const r = calculateSalary({ salaire_brut: 8000, situation_fam: 'C', nombre_enfants: 0 });
-    // Aucun plafond — 9.68% sur (brut_total - lait) intégral
-    // brut_total inclut les primes légales (panier, douche, savon, lait, logement, présence)
     const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - r.prime_lait) * 0.0968 * 1000) / 1000;
     expect(r.cnss_salariale).toBe(expectedCNSS);
+  });
+
+  it('CNSS exclut prime_aid de l\'assiette', () => {
+    const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0, prime_aid_plein: 40 });
+    const expectedLait = 29.700;
+    const expectedAid = 40;
+    const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - expectedLait - expectedAid) * 0.0968 * 1000) / 1000;
+    expect(r.cnss_salariale).toBe(expectedCNSS);
+    expect(r.prime_aid).toBe(expectedAid);
   });
 });
 
@@ -100,18 +107,30 @@ describe('IRPP — bareme annuel', () => {
 });
 
 // ============================================================================
-// 4. CSS — 0.5% revenu net imposable
+// 4. CSS — Mécanisme différentiel IRPP
 // ============================================================================
-describe('CSS — 0.5% revenu net imposable', () => {
-  it('CSS = 0.5% de revenu_net_imposable', () => {
+describe('CSS — mécanisme différentiel IRPP (Loi 92-73)', () => {
+  it('CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
-    expect(r.css_salariale).toBe(Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000);
+    const annualImposable = r.revenu_net_imposable * 12;
+    const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
+    const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
+    const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
+    expect(r.css_salariale).toBe(expectedCSS);
   });
 
   it('CSS n est PAS sur le brut', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
     const wrong = Math.round(r.salaire_brut * 0.005 * 1000) / 1000;
     expect(r.css_salariale).not.toBe(wrong);
+  });
+
+  it('CSS augmente avec le revenu (taux effectif progressif)', () => {
+    const r1 = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
+    const r2 = calculateSalary({ salaire_brut: 5000, situation_fam: 'C', nombre_enfants: 0 });
+    const rate1 = r1.css_salariale / r1.revenu_net_imposable;
+    const rate2 = r2.css_salariale / r2.revenu_net_imposable;
+    expect(rate2).toBeGreaterThan(rate1);
   });
 });
 
@@ -301,7 +320,7 @@ describe('Validation DALY SONDES juin 2026', () => {
       transport_plein: 95.002,
     });
     const expectedLait = 29.700;
-    expect(r.cnss_salariale).toBe(Math.round(Math.min(Math.max(0, r.salaire_brut - expectedLait), 5000) * 0.0968 * 1000) / 1000);
+    expect(r.cnss_salariale).toBe(Math.round(Math.max(0, r.salaire_brut - expectedLait) * 0.0968 * 1000) / 1000);
   });
 
   it('IRPP detail coherent', () => {
@@ -359,7 +378,10 @@ describe('Integration — tous les mois et tous les salaries', () => {
         const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - expectedLait) * 0.0968 * 1000) / 1000;
         expect(r.cnss_salariale).toBe(expectedCNSS);
 
-        const expectedCSS = Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000;
+        const annualImposable = r.revenu_net_imposable * 12;
+        const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
+        const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
+        const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
         expect(r.css_salariale).toBe(expectedCSS);
 
         expect(r.frais_pro).toBeLessThanOrEqual(Math.round((2000 / 12) * 1000) / 1000);
@@ -518,16 +540,21 @@ describe('Primes légales — Convention BTP', () => {
     expect(r2.prime_logement).toBe(0);
   });
 
-  it('MIT = 60.61% × présence versée', () => {
+  it('MIT = 5000 DT × coefficient (montant fixe, PAS un %)', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026 });
-    // présence = 8.249 (juin 2026), MIT = 8.249 × 0.6061
-    expect(r.mit).toBe(Math.round(8.249 * 0.6061 * 1000) / 1000);
+    // coefficient = 1.0 (mois complet), MIT = 5000 × 1.0
+    expect(r.mit).toBe(5000);
   });
 
-  it('CNSS exclut lait de l\'assiette (Décret 2003-1098 art. 11)', () => {
+  it('MIT = 0 quand mit_applicable = false', () => {
+    const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, mit_applicable: false });
+    expect(r.mit).toBe(0);
+  });
+
+  it('CNSS exclut lait et prime_aid de l\'assiette (Décret 2003-1098 art. 11)', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026 });
     const expectedLait = 29.700;
-    const expectedAssiette = Math.min(Math.max(0, r.salaire_brut - expectedLait), 5000);
+    const expectedAssiette = Math.max(0, r.salaire_brut - expectedLait);
     expect(r.assiette_cnss).toBe(expectedAssiette);
     expect(r.cnss_salariale).toBe(Math.round(expectedAssiette * 0.0968 * 1000) / 1000);
   });
@@ -571,7 +598,7 @@ describe('Primes légales — Convention BTP', () => {
       augmentation: 200,
     });
     const expectedLait = 29.700;
-    const expectedAssiette = Math.min(Math.max(0, r.salaire_brut - expectedLait), 5000);
+    const expectedAssiette = Math.max(0, r.salaire_brut - expectedLait);
     expect(r.assiette_cnss).toBe(expectedAssiette);
     expect(r.cnss_salariale).toBe(Math.round(expectedAssiette * 0.0968 * 1000) / 1000);
   });
@@ -663,10 +690,10 @@ describe('Coefficient de présence', () => {
     expect(r.prime_presence).toBe(Math.round(8.249 * coeff * 1000) / 1000);
   });
 
-  it('MIT calculé sur présence versée (pas le plein)', () => {
+  it('MIT calculé sur coefficient (montant fixe 5000 × coeff)', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, absences_jours: 2 });
-    const presenceVersee = Math.round(8.249 * (20 / 22) * 1000) / 1000;
-    expect(r.mit).toBe(Math.round(presenceVersee * 0.6061 * 1000) / 1000);
+    const coeff = Math.round((20 / 22) * 10000) / 10000;
+    expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
   });
 
   it('augmentation proratisée SANS revalorisation', () => {

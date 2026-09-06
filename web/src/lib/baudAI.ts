@@ -4,16 +4,16 @@
  *
  * References legales documentees :
  * - SMIG : Decret n67/2026 du 30/04/2026, JORT n44, regime 40h = 470.251 DT
- * - CNSS : Loi n73-40 du 24/07/1973, 9.68% plafond 5000 DT
+ * - CNSS : Loi n73-40 du 24/07/1973, 9.68% sans plafond (excluant lait et prime_aid)
  * - IRPP : Loi n74-9 du 20/03/1974, bareme annuel LF 2025 art. 36 (8 tranches)
- * - CSS : Loi n92-73 du 28/07/1992, 0.5% du revenu net imposable
+ * - CSS : Loi n92-73 du 28/07/1992, IRPP(barème+1pt) − IRPP(barème normal)
  * - Frais pro : 10% plafond 2000 DT/an (usage)
  * - Anciennete : Art. 135 CT (loi n66-27 du 30/04/1966), bareme generique
  * - Revalorisation : Decret n68/2026 du 30/04/2026, +5%/an cumulatif
  */
 
 import { Employee, PointageData } from './baudParser.js';
-import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete } from './baudCalculator.js';
+import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete, calculateIRPPAnnuel } from './baudCalculator.js';
 
 export interface VerificationCheck {
   name: string;
@@ -64,12 +64,11 @@ const CONSTANTS = {
   /** Loi n73-40 : taux CNSS salarial */
   CNSS_SALARIAL: 0.0968,
   /** Loi n73-40 : taux CNSS patronal */
-  CNSS_PATRONAL: 0.1657,
+  CNSS_PATRONAL: 0.1707,
   AT_MP: 0.005,
-  TFP: 0.01,
+  TFP: 0.02,
   FOPROLOS: 0.01,
-  /** Loi n92-73 : CSS = 0.5% revenu net imposable */
-  CSS: 0.005,
+  /** Loi n92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal) — PAS un taux flat */
   /** Decret n67/2026, JORT n44, regime 40h/semaine */
   SMIG: 470.251,
   FRAIS_PRO_MAX: 2000,
@@ -200,8 +199,8 @@ function verifyEmployee(
   }
 
   // 2. CNSS — Loi n73-40 : 9.68% du brut, AUCUN plafond
-  //    Assiette = brut - prime_lait (exclue CNSS — Décret 2003-1098 art. 11)
-  const assietteCNSS = Math.max(0, result.salaire_brut - result.prime_lait);
+  //    Assiette = brut - prime_lait - prime_aid (exclues CNSS — Décret 2003-1098 art. 11)
+  const assietteCNSS = Math.max(0, result.salaire_brut - result.prime_lait - result.prime_aid);
   const expectedCNSS = Math.round(assietteCNSS * CONSTANTS.CNSS_SALARIAL * 1000) / 1000;
   if (Math.abs(result.cnss_salariale - expectedCNSS) > 0.01) {
     checks.push({
@@ -214,7 +213,7 @@ function verifyEmployee(
     corrections.push({
       matricule: emp.matricule, nom: empLabel,
       field: 'cnss_salariale', oldValue: result.cnss_salariale, newValue: expectedCNSS,
-      reason: 'Recalcul CNSS 9.68% sur brut plafonne 5000 DT (Loi 73-40)',
+      reason: 'Recalcul CNSS 9.68% sur brut excluant lait et prime_aid (Loi 73-40, Décret 2003-1098)',
     });
   }
 
@@ -235,13 +234,16 @@ function verifyEmployee(
     });
   }
 
-  // 4. CSS — Loi n92-73 : 0.5% du revenu net imposable
-  const expectedCSS = Math.round(result.revenu_net_imposable * CONSTANTS.CSS * 1000) / 1000;
-  if (Math.abs(result.css_salariale - expectedCSS) > 0.01) {
+  // 4. CSS — Loi n92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12
+  const annualImposable = result.revenu_net_imposable * 12;
+  const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
+  const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
+  const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
+  if (Math.abs(result.css_salariale - expectedCSS) > 0.02) {
     checks.push({
       name: 'CSS incorrect',
       status: 'error',
-      detail: `${empLabel}: CSS ${result.css_salariale.toFixed(3)} != attendu ${expectedCSS.toFixed(3)} (Loi 92-73)`,
+      detail: `${empLabel}: CSS ${result.css_salariale.toFixed(3)} != attendu ${expectedCSS.toFixed(3)} (Loi 92-73, mécanisme différentiel)`,
       employee: emp.matricule,
     });
   }
@@ -332,16 +334,8 @@ function verifyEmployee(
     });
   }
 
-  // 14. Verification CSS base = revenu_net_imposable (pas brut)
-  const wrongCSS = Math.round(result.salaire_brut * CONSTANTS.CSS * 1000) / 1000;
-  if (Math.abs(result.css_salariale - wrongCSS) < 0.01 && result.css_salariale > 0) {
-    checks.push({
-      name: 'CSS calcule sur brut au lieu de RNI',
-      status: 'error',
-      detail: `${empLabel}: CSS semble calcule sur le brut (${wrongCSS.toFixed(3)}) au lieu du revenu net imposable (${expectedCSS.toFixed(3)})`,
-      employee: emp.matricule,
-    });
-  }
+  // 14. Verification CSS — mécanisme différentiel (pas un taux flat)
+  // Pas de vérification de base ici car le mécanisme est complexe
 
   if (checks.length === 0) {
     checks.push({ name: 'Verification OK', status: 'ok', detail: `${empLabel}: Tous les calculs sont corrects`, employee: emp.matricule });

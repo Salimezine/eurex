@@ -10,7 +10,7 @@
  *   Exceptions:
  *   - Transport: transport_plein × revalorisation × coefficient
  *   - Présence: présence_plein × revalorisation × coefficient
- *   - MIT: présence_verse × 60.61%
+ *   - MIT: MIT_PLEIN (5000 DT) × coefficient (montant fixe, PAS un %)
  *   - Augmentation: montant fixe × coefficient (PAS de revalorisation)
  *
  * Ordre de calcul (sans dépendance circulaire):
@@ -21,11 +21,11 @@
  *   → primes légales (panier, douche, savon, lait, logement) = plein × coefficient
  *   → transport = plein × revalorisation × coefficient
  *   → présence = plein × revalorisation × coefficient
- *   → MIT = présence × 60.61%
+ *   → MIT = 5000 DT × coefficient (montant fixe)
  *   → augmentation = fixe × coefficient (pas de revalorisation)
  *   → nuit = fixe × coefficient
  *   → salaire_brut_total = base_rév + HS + prime_ancienneté + transport + présence + primes_légales + augmentation
- *   → assiettes CNSS (brut - lait) / IRPP / CSS sur salaire_brut_total
+ *   → assiettes CNSS (brut - lait - prime_aid) / IRPP / CSS sur salaire_brut_total
  */
 
 export interface SalaryInput {
@@ -51,8 +51,10 @@ export interface SalaryInput {
   prime_douche_plein?: number; // Douche plein (défaut: 25.000 DT)
   prime_savon_plein?: number; // Savon plein (défaut: 5.400 DT)
   prime_lait_plein?: number; // Lait plein (défaut: 29.700 DT)
+  prime_aid_plein?: number; // Prime d'aide (4717) — exclue de l'assiette CNSS si présente
   prime_logement_plein?: number; // Logement plein (défaut: 26.293 DT)
   prime_nuit_plein?: number; // Nuit plein (fixe par salarié, pas de formule horaire)
+  mit_applicable?: boolean; // MIT applicable (défaut: true). false pour certains employés (LAZAAR, RHILI, etc.)
   // Heures de nuit — saisie manuelle (calcul: taux_horaire × heures_nuit × 1.25)
   heures_nuit?: number; // Nombre d'heures de nuit travaillées dans le mois
   // Augmentation — montants fixes DT par salarié, SANS revalorisation décret 68
@@ -86,7 +88,8 @@ export interface SalaryResult {
   prime_nuit: number;             // Nuit = plein × coefficient
   prime_logement: number;         // Logement = plein × coefficient
   prime_lait: number;             // Lait = plein × coefficient (exclue CNSS)
-  mit: number;                    // MIT = 60.61% × présence_verse
+  prime_aid: number;              // Prime d'aide (4717) = plein × coefficient (exclue CNSS)
+  mit: number;                    // MIT = 5000 DT × coefficient (montant fixe, PAS un %)
   augmentation: number;           // Augmentation = fixe × coefficient (pas de revalorisation)
 
   // Coefficient de présence (pour affichage/debug)
@@ -96,8 +99,8 @@ export interface SalaryResult {
   assiette_cnss: number;
 
   // Cotisations salariales
-  cnss_salariale: number;     // 9.68% du brut (plafonné 5000 DT, excluant lait)
-  css_salariale: number;      // 0.5% du revenu imposable
+  cnss_salariale: number;     // 9.68% du brut (sans plafond, excluant lait et prime_aid)
+  css_salariale: number;      // CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12
 
   // Revenu imposable
   revenu_imposable: number;   // Brut total - CNSS
@@ -110,7 +113,7 @@ export interface SalaryResult {
   // Charges patronales
   cnss_patronale: number;     // 17.07%
   at_mp: number;              // 0.5% (accidents du travail)
-  tfp: number;                // 1% (Taxe Formation Professionnelle)
+  tfp: number;                // 2% (Taxe Formation Professionnelle — BTP/industriel)
   foprolos: number;           // 1% (Fonds de Promotion des Logements)
 
   // Calcul final
@@ -142,9 +145,8 @@ const PLAFOND_CNSS = 5000; // DT/mois
 const TAUX_CNSS_SALARIAL = 0.0968; // 9.68%
 const TAUX_CNSS_PATRONAL = 0.1707; // 17.07% — depuis janvier 2025
 const TAUX_AT_MP = 0.005;          // 0.5%
-const TAUX_TFP = 0.01;             // 1%
+const TAUX_TFP = 0.02;             // 2% — Taxe Formation Professionnelle (BTP/industriel)
 const TAUX_FOPROLOS = 0.01;        // 1%
-const TAUX_CSS = 0.005;            // 0.5%
 
 // Allocations familiales (mensuel)
 const ALLOC_CHEF_FAMILLE = 25;     // 300 DT/an / 12
@@ -202,7 +204,7 @@ const PRIME_LAIT_PLEIN = 29.700;     // DT/mois — 4385 (exclue CNSS)
 const PRIME_LOGEMENT_PLEIN = 26.293; // DT/mois — 4383
 const PRESENCE_PLEIN_BEFORE_JUNE = 7.856; // DT/mois — 2200 (avant juin 2026)
 const PRESENCE_PLEIN_JUNE_2026 = 8.249;   // DT/mois — 2200 (depuis juin 2026, décret 68)
-const MIT_TAUX = 0.6061; // 60.61% — Contribution Maladie, Invalidité, Tuberculose
+const MIT_PLEIN = 5000; // DT/mois — Contribution Maladie, Invalidité, Tuberculose (montant fixe, PAS un %)
 
 // Jours ouvrés par mois — calculés depuis le calendrier (weekdays)
 // Le coefficient = (jours_ouvrés - absences) / jours_ouvrés
@@ -308,6 +310,40 @@ export function applyRevalorisation(valeur: number, annee: number, anneeBase: nu
   return Math.round(valeur * Math.pow(1 + REVALORISATION_TAUX, nbAnnees) * 1000) / 1000;
 }
 
+/**
+ * Calcule l'IRPP annuel selon le barème progressif 8 tranches (LF 2025 art. 36)
+ * @param revenuAnnuelImposable Revenu annuel imposable
+ * @param pointSupplementaire Nombre de points supplémentaires à ajouter aux taux (pour CSS: 1)
+ * @returns { irpp_annuel, detail } — montant IRPP annuel et détail par tranche
+ */
+export function calculateIRPPAnnuel(
+  revenuAnnuelImposable: number,
+  pointSupplementaire: number = 0
+): { irpp_annuel: number; detail: { tranche: string; taux: number; montant: number; impot: number }[] } {
+  let irpp_annuel = 0;
+  const detail: { tranche: string; taux: number; montant: number; impot: number }[] = [];
+  let remaining = revenuAnnuelImposable;
+
+  for (const bracket of IRPP_BRACKET_ANNUAL) {
+    if (remaining <= 0) break;
+    const tranche_size = bracket.max === Infinity ? remaining : bracket.max - bracket.min;
+    const taxable = Math.min(remaining, tranche_size);
+    // CSS: +1 point par tranche → le taux augmente de 0.01 par tranche
+    const tauxEffectif = Math.min(1, bracket.taux + pointSupplementaire * 0.01);
+    const impot = Math.round(taxable * tauxEffectif * 1000) / 1000;
+    irpp_annuel += impot;
+    detail.push({
+      tranche: bracket.max === Infinity ? `>${bracket.min}` : `${bracket.min}-${bracket.max}`,
+      taux: tauxEffectif,
+      montant: taxable,
+      impot,
+    });
+    remaining -= taxable;
+  }
+
+  return { irpp_annuel, detail };
+}
+
 export function calculateSalary(input: SalaryInput): SalaryResult {
   const {
     salaire_brut: salaire_de_base_input,
@@ -327,8 +363,10 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     prime_douche_plein,
     prime_savon_plein,
     prime_lait_plein,
+    prime_aid_plein,
     prime_logement_plein,
     prime_nuit_plein: prime_nuit_plein_input,
+    mit_applicable = true,
     heures_nuit = 0,
     augmentation_2025 = 0,
     augmentation_2026 = 0,
@@ -411,6 +449,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const prime_douche = Math.round((prime_douche_plein ?? PRIME_DOUCHE_PLEIN) * coefficient_presence * 1000) / 1000;
   const prime_savon = Math.round((prime_savon_plein ?? PRIME_SAVON_PLEIN) * coefficient_presence * 1000) / 1000;
   const prime_lait = Math.round((prime_lait_plein ?? PRIME_LAIT_PLEIN) * coefficient_presence * 1000) / 1000;
+  const prime_aid = Math.round((prime_aid_plein ?? 0) * coefficient_presence * 1000) / 1000;
   const prime_logement = Math.round((prime_logement_plein ?? prime_logement_legacy ?? PRIME_LOGEMENT_PLEIN) * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
@@ -441,9 +480,12 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const augmentation = Math.round(augmentation_legacy_val * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
-  // 11. MIT — 60.61% de la prime de présence versée
+  // 11. MIT — Montant fixe 5000 DT × coefficient_presence (PAS un %)
   // =====================================================================
-  const mit = Math.round(prime_presence * MIT_TAUX * 1000) / 1000;
+  // Certains employés ont MIT=0 (LAZAAR, RHILI, SLIMEN, SIRAT) — contrôlé par mit_applicable
+  const mit = mit_applicable
+    ? Math.round(MIT_PLEIN * coefficient_presence * 1000) / 1000
+    : 0;
 
   // =====================================================================
   // 12. SALAIRE BRUT TOTAL
@@ -458,13 +500,13 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     + augmentation
   ) * 1000) / 1000;
 
-  // 9. Assiette CNSS = Total Brut - prime_lait (exclue par Décret 2003-1098 art. 11)
+  // 9. Assiette CNSS = Total Brut - prime_lait - prime_aid (exclues par Décret 2003-1098 art. 11)
   //    Confirmation bulletin Sage (19/19 employés exact):
   //    - Le Total Brut EXCLUT nuit (3802), HS (4113), rappel (5100)
   //    - L'augmentation (4100) est INCLUSE dans l'assiette CNSS
   //    - AUCUN plafond appliqué pour cette entreprise (testé sur AAMRI brut 6261)
   //    - Le savon/douche ne sont PAS exclus (testé empiriquement)
-  const assiette_cnss = Math.max(0, salaire_brut - prime_lait);
+  const assiette_cnss = Math.max(0, salaire_brut - prime_lait - prime_aid);
 
   // 10. CNSS salarié (9.68% sur assiette, excluant lait — pas de plafond)
   const cnss_salariale = Math.round(assiette_cnss * TAUX_CNSS_SALARIAL * 1000) / 1000;
@@ -482,30 +524,15 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // 12. Calcul IRPP (barème progressif ANNUEL)
   // L'IRPP est calculé sur le revenu annuel imposable, puis divisé par 12
   const revenu_annuel_imposable = revenu_net_imposable * 12;
-  let irpp_annuel = 0;
-  const irpp_detail: SalaryResult['irpp_detail'] = [];
-  let remaining_annuel = revenu_annuel_imposable;
+  const irppResult = calculateIRPPAnnuel(revenu_annuel_imposable);
+  const irpp = Math.round((irppResult.irpp_annuel / 12) * 1000) / 1000;
 
-  for (const bracket of IRPP_BRACKET_ANNUAL) {
-    if (remaining_annuel <= 0) break;
-    const tranche_size = bracket.max === Infinity ? remaining_annuel : bracket.max - bracket.min;
-    const taxable = Math.min(remaining_annuel, tranche_size);
-    const impot = Math.round(taxable * bracket.taux * 1000) / 1000;
-    irpp_annuel += impot;
-    irpp_detail.push({
-      tranche: bracket.max === Infinity ? `>${bracket.min}` : `${bracket.min}-${bracket.max}`,
-      taux: bracket.taux,
-      montant: taxable,
-      impot,
-    });
-    remaining_annuel -= taxable;
-  }
-
-  // IRPP mensuel = IRPP annuel / 12
-  const irpp = Math.round((irpp_annuel / 12) * 1000) / 1000;
-
-  // 13. CSS (0.5% du revenu net imposable)
-  const css_salariale = Math.round(revenu_net_imposable * TAUX_CSS * 1000) / 1000;
+  // 13. CSS — Mécanisme différentiel IRPP
+  // CSS = IRPP(barème avec +1pt par tranche) − IRPP(barème normal)
+  // Ce n'est PAS un taux flat — le taux effectif augmente avec le revenu
+  const irppAvecPoint = calculateIRPPAnnuel(revenu_annuel_imposable, 1);
+  const css_annuelle = Math.max(0, irppAvecPoint.irpp_annuel - irppResult.irpp_annuel);
+  const css_salariale = Math.round((css_annuelle / 12) * 1000) / 1000;
 
   // 14. Charges patronales (sur brut total incluant heures sup)
   const cnss_patronale = Math.round(salaire_brut * TAUX_CNSS_PATRONAL * 1000) / 1000;
@@ -548,6 +575,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     prime_nuit,
     prime_logement,
     prime_lait,
+    prime_aid,
     mit,
     augmentation,
 
@@ -572,7 +600,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     salaire_net,
     net_a_payer,
 
-    irpp_detail,
+    irpp_detail: irppResult.detail,
   };
 }
 
@@ -624,7 +652,7 @@ export const SAGE_RUBRIQUES: Record<string, SageRubrique> = {
   '2200': { code: '2200', libelle: 'IND PRESENCE', zone: '1', type: 'gain' },
 
   // Rubrique 2202 : MIT — Contribution Maladie, Invalidité, Tuberculose
-  // Calculé sur la prime de présence : 60.61% × prime_presence
+  // Montant fixe 5000 DT/mois × coefficient_presence (PAS un pourcentage)
   // Confirmé par bulletin Sage Paie
   '2202': { code: '2202', libelle: 'MIT', zone: '1', type: 'gain' },
 
@@ -682,8 +710,8 @@ export const SAGE_RUBRIQUES: Record<string, SageRubrique> = {
   // --- RETENUES ---
   // Rubrique 3100 : CNSS salarié (part salariale)
   // Base légale : Loi n°73-40 du 24/07/1973 modifiée
-  // Taux : 9.68% du salaire brut, plafonné à 5000 DT/mois
-  // Assiette = brut - prime_lait (exclue CNSS — Décret 2003-1098 art. 11)
+  // Taux : 9.68% du salaire brut, sans plafond
+  // Assiette = brut - prime_lait - prime_aid (exclues CNSS — Décret 2003-1098 art. 11)
   '3100': { code: '3100', libelle: 'CNSS SALARIALE', zone: '3', type: 'retenue' },
 
   // Rubrique 3310 : IRPP
@@ -693,7 +721,8 @@ export const SAGE_RUBRIQUES: Record<string, SageRubrique> = {
 
   // Rubrique 3320 : CSS (Cotisation de Solidarité Sociale)
   // Base légale : Loi n°92-73 du 28/07/1992
-  // Taux : 0.5% du revenu net imposable (après frais professionnels)
+  // Calcul différentiel : CSS = IRPP(barème+1pt) − IRPP(barème normal)
+  // Ce n'est PAS un taux flat — le taux effectif augmente avec le revenu
   '3320': { code: '3320', libelle: 'CSS', zone: '3', type: 'retenue' },
 
   // --- CRÉDITS ---
@@ -890,7 +919,7 @@ export function generateSagePaieExport(
       rubriquesUsed.add('2200');
     }
 
-    // 2202 : MIT — 60.61% × prime_presence
+    // 2202 : MIT — Montant fixe 5000 DT × coefficient
     if (result.mit > 0) {
       rows.push({
         matricule: emp.matricule,
@@ -1019,8 +1048,8 @@ export function generateSagePaieExport(
     }
 
     // 3100 : CNSS salarié
-    // Loi n°73-40 : 9.68% du brut, plafonné 5000 DT/mois
-    // Assiette = brut - prime_lait (exclue CNSS — Décret 2003-1098 art. 11)
+    // Loi n°73-40 : 9.68% du brut, sans plafond
+    // Assiette = brut - prime_lait - prime_aid (exclues CNSS — Décret 2003-1098 art. 11)
     if (result.cnss_salariale > 0) {
       rows.push({
         matricule: emp.matricule,
@@ -1045,8 +1074,8 @@ export function generateSagePaieExport(
       rubriquesUsed.add('3310');
     }
 
-    // 3320 : CSS
-    // Loi n°92-73 : 0.5% du revenu net imposable
+    // 3320 : CSS — Mécanisme différentiel IRPP
+    // Loi n°92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal)
     if (result.css_salariale > 0) {
       rows.push({
         matricule: emp.matricule,
