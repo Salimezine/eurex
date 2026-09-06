@@ -1,0 +1,32 @@
+# Output CSV files (financial data - keep local)
+ecritures_*.csv
+
+# Config with local paths (keep local)
+config.json
+
+# Debug/test files
+debug-*.mjs
+compare-*.mjs
+test-animal-debug*.mjs
+test-animal-feb.mjs
+test-animal-full.mjs
+test-animal-parse.mjs
+test-animal-rapport.mjs
+test-animal-ref.mjs
+test-animal-yrows.mjs
+
+# Node modules
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
