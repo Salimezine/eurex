@@ -54,6 +54,7 @@ export default function BaudDossierPage() {
           const ej = JSON.parse(d.extraction_json);
           if (ej.employees) setEmployees(ej.employees);
           if (ej.pointage) setPointage(ej.pointage);
+          if (ej.heures_nuit) setHeuresNuit(ej.heures_nuit);
         } catch {}
       }
     } catch {}
@@ -93,6 +94,7 @@ export default function BaudDossierPage() {
           salaire_brut: brut,
           situation_fam: emp.situation_fam,
           nombre_enfants: emp.nombre_enfants,
+          sexe: emp.sexe,
           absences_jours: absences,
           heures_supplementaires: hs,
           avances,
@@ -105,7 +107,8 @@ export default function BaudDossierPage() {
     }
     setSalaryResults(results);
     setTab('calcul');
-    setMsg(`${results.size} salaries calcules`);
+    setMsg(`${results.size} salaires calculés`);
+    persistExtraction();
   };
 
   const generateSageExport = async () => {
@@ -212,6 +215,25 @@ export default function BaudDossierPage() {
   };
 
   // Edit employee
+  // Persist extraction_json au backend (employees + pointage + heuresNuit)
+  const persistExtraction = () => {
+    if (!dossier?.id) return;
+    const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
+    const extractionJson = {
+      employees,
+      pointage,
+      heures_nuit: heuresNuit,
+      mois: dossier.mois,
+      annee: dossier.annee,
+      source_file: dossier.fichier_navette_nom || '',
+    };
+    fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(extractionJson),
+    }).catch(() => {});
+  };
+
   const startEditEmployee = (emp: Employee) => {
     setEditingEmployee(emp.matricule);
     setEditValues({ ...emp });
@@ -219,9 +241,16 @@ export default function BaudDossierPage() {
 
   const saveEditEmployee = () => {
     if (!editingEmployee) return;
-    setEmployees(prev => prev.map(e => e.matricule === editingEmployee ? { ...e, ...editValues } : e));
+    // Quand l'utilisateur édite salaire_brut, on met à jour AUSSI nouveau_salaire_brut
+    // pour que calculateAll utilise la valeur édité (car il priorise nouveau_salaire_brut > 0)
+    const updated = { ...editValues };
+    if (updated.salaire_brut !== undefined) {
+      updated.nouveau_salaire_brut = updated.salaire_brut;
+    }
+    setEmployees(prev => prev.map(e => e.matricule === editingEmployee ? { ...e, ...updated } : e));
     setEditingEmployee(null);
-    setMsg('Employee updated');
+    setMsg('Salaire mis à jour');
+    persistExtraction();
   };
 
   // Edit pointage
@@ -240,7 +269,8 @@ export default function BaudDossierPage() {
       setPointage(prev => [...prev, editValues]);
     }
     setEditingPointage(null);
-    setMsg('Pointage updated');
+    setMsg('Pointage mis à jour');
+    persistExtraction();
   };
 
   // Add new pointage entry
@@ -253,13 +283,15 @@ export default function BaudDossierPage() {
   // Delete pointage entry
   const deletePointageEntry = (matricule: string) => {
     setPointage(prev => prev.filter(p => p.matricule !== matricule));
-    setMsg('Pointage entry deleted');
+    setMsg('Pointage supprimé');
+    persistExtraction();
   };
 
   // Fix duplicate matricule
   const fixDuplicateMatricule = (oldMatricule: string, newMatricule: string) => {
     setEmployees(prev => prev.map(e => e.matricule === oldMatricule ? { ...e, matricule: newMatricule } : e));
-    setMsg(`Matricule changed from ${oldMatricule} to ${newMatricule}`);
+    setMsg(`Matricule changé de ${oldMatricule} à ${newMatricule}`);
+    persistExtraction();
   };
 
   if (!dossier) return <div className="mt-8 text-gray-400 text-sm">Chargement...</div>;
