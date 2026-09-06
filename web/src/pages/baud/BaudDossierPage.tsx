@@ -87,7 +87,7 @@ export default function BaudDossierPage() {
       const parsed = parseFichePersonnel(wb, file.name);
       setEmployees(parsed.employees);
       setPointage(parsed.pointage);
-      const extractionJson = { employees: parsed.employees, pointage: parsed.pointage, mois: parsed.mois, annee: parsed.annee, source_file: parsed.source_file };
+      const extractionJson = { employees: parsed.employees, pointage: parsed.pointage, heures_nuit: {}, mois: parsed.mois, annee: parsed.annee, source_file: parsed.source_file };
       const lignesData = parsed.employees.map((emp, i) => ({ source_feuille: 'DP', source_ligne: i + 5, champs: [emp.matricule, emp.nom, emp.prenom, emp.cin, emp.date_naissance, emp.situation_fam, String(emp.nombre_enfants), emp.fonction, emp.type_contrat, emp.numero_cnss, emp.rib_ou_ccp, String(emp.salaire_brut), String(emp.nouveau_salaire_brut)] }));
       await api.baud.upload(dossier.id, file.name, lignesData);
       const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
@@ -219,22 +219,27 @@ export default function BaudDossierPage() {
   const handleApplyCorrections = async () => {
     if (!verifyResult) return;
     try {
+      let currentEmps = employees;
+      let currentPtg = pointage;
       // Apply salary corrections
       if (verifyResult.corrections.length > 0) {
-        const correctedResults = applyCorrections(employees, pointage, salaryResults, verifyResult.corrections);
+        const correctedResults = applyCorrections(currentEmps, currentPtg, salaryResults, verifyResult.corrections);
         setSalaryResults(correctedResults);
       }
       // Apply auto-fixes (pointage, matricules, SMIG)
       if (verifyResult.autoFixes && verifyResult.autoFixes.length > 0) {
-        const { employees: newEmps, pointage: newPtg } = applyAutoFixes(employees, pointage, verifyResult.autoFixes);
-        setEmployees(newEmps);
-        setPointage(newPtg);
+        const fixed = applyAutoFixes(currentEmps, currentPtg, verifyResult.autoFixes);
+        currentEmps = fixed.employees;
+        currentPtg = fixed.pointage;
+        setEmployees(currentEmps);
+        setPointage(currentPtg);
       }
       const totalFixed = (verifyResult.corrections?.length || 0) + (verifyResult.autoFixes?.filter((f: AutoFixAction) => f.type !== 'fix_duplicate')?.length || 0);
       setMsg(`${totalFixed} corrections appliquées`);
-      // Re-verify after corrections
-      const newResult = verifySalaryCalculations(employees, pointage, salaryResults);
+      // Re-verify after corrections (avec les données fraîches, pas le closure stale)
+      const newResult = verifySalaryCalculations(currentEmps, currentPtg, salaryResults);
       setVerifyResult(newResult);
+      persistExtraction(currentEmps, currentPtg, heuresNuit);
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
   };
 
@@ -246,6 +251,7 @@ export default function BaudDossierPage() {
     // Re-verify
     const newResult = verifySalaryCalculations(newEmps, newPtg, salaryResults);
     setVerifyResult(newResult);
+    persistExtraction(newEmps, newPtg, heuresNuit);
   };
 
   // TÂCHE 2 : Debounced persist extraction_json au backend
