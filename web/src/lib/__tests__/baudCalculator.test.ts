@@ -843,3 +843,386 @@ describe('TÂCHE 4 — Priorité salaire_brut / nouveau_salaire_brut', () => {
     expect(rFeb.prime_nuit).toBe(0);
   });
 });
+
+// ============================================================================
+// Tests détaillés par mois (1-8) — coeff 22j fixes, revalorisation juil 2026
+// ============================================================================
+describe('Tests par mois — détail complet', () => {
+  const JOURS = 22; // fixe
+
+  // Helper: calcule un salaire de base pour un mois donné
+  function calc(mois: number, opts?: { absences?: number; jours_payes?: number }) {
+    return calculateSalary({
+      salaire_brut: 1000,
+      situation_fam: 'M',
+      nombre_enfants: 2,
+      mois,
+      annee: 2026,
+      transport_plein: 100,
+      absences_jours: opts?.absences,
+      jours_payes: opts?.jours_payes,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 1 — Janvier 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Janvier (mois 1) — pas de revalorisation', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(1);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('coefficient = 20/22 avec 2 absences', () => {
+      const r = calc(1, { absences: 2 });
+      const expected = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it('transport = 100 × coeff (pas de revalorisation)', () => {
+      const r = calc(1);
+      expect(r.ind_transport).toBe(100);
+    });
+
+    it('transport avec absences = 100 × coeff', () => {
+      const r = calc(1, { absences: 2 });
+      const coeff = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.ind_transport).toBe(Math.round(100 * coeff * 1000) / 1000);
+    });
+
+    it('présence = 7.856 (avant juin)', () => {
+      const r = calc(1);
+      expect(r.prime_presence).toBe(7.856);
+    });
+
+    it('présence avec absences = 7.856 × coeff', () => {
+      const r = calc(1, { absences: 5 });
+      const coeff = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.prime_presence).toBe(Math.round(7.856 * coeff * 1000) / 1000);
+    });
+
+    it('CNSS = 9.68% × (brut − lait)', () => {
+      const r = calc(1);
+      const expected = Math.round(Math.max(0, r.salaire_brut - r.prime_lait) * 0.0968 * 1000) / 1000;
+      expect(r.cnss_salariale).toBe(expected);
+    });
+
+    it('CSS = 0.5% × RNI', () => {
+      const r = calc(1);
+      const rni = Math.max(0, r.revenu_imposable - r.frais_pro);
+      const expected = Math.round(rni * 0.005 * 1000) / 1000;
+      expect(r.css_salariale).toBe(expected);
+    });
+
+    it('brut total contient base + transport + présence + primes_légales (sans MIT)', () => {
+      const r = calc(1);
+      const expectedBrut = Math.round((
+        r.salaire_de_base
+        + r.majoration_hs
+        + r.prime_anciennete
+        + r.ind_transport
+        + r.prime_presence
+        + r.prime_panier
+        + r.prime_douche
+        + r.prime_savon
+        + r.prime_lait
+        + r.prime_logement
+        + r.augmentation
+      ) * 1000) / 1000;
+      expect(r.salaire_brut).toBe(expectedBrut);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 2 — Février 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Février (mois 2) — pas de revalorisation', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(2);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('coefficient = 21/22 avec 1 absence', () => {
+      const r = calc(2, { absences: 1 });
+      const expected = Math.round((21 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it('transport = 100 (pas de revalorisation)', () => {
+      const r = calc(2);
+      expect(r.ind_transport).toBe(100);
+    });
+
+    it('présence = 7.856', () => {
+      const r = calc(2);
+      expect(r.prime_presence).toBe(7.856);
+    });
+
+    it('IRPP > 0 pour salaire 1000', () => {
+      const r = calc(2);
+      expect(r.irpp).toBeGreaterThan(0);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 3 — Mars 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Mars (mois 3) — pas de revalorisation', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(3);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('coefficient = 17/22 avec 5 absences', () => {
+      const r = calc(3, { absences: 5 });
+      const expected = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it('toutes les primes proratisées avec 5 absences', () => {
+      const r = calc(3, { absences: 5 });
+      const coeff = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.prime_panier).toBe(Math.round(12.320 * coeff * 1000) / 1000);
+      expect(r.prime_douche).toBe(Math.round(25.000 * coeff * 1000) / 1000);
+      expect(r.prime_savon).toBe(Math.round(5.400 * coeff * 1000) / 1000);
+      expect(r.prime_lait).toBe(Math.round(29.700 * coeff * 1000) / 1000);
+      expect(r.prime_logement).toBe(Math.round(26.293 * coeff * 1000) / 1000);
+      expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
+    });
+
+    it('net a payer = net + alloc (marié 25 + 2×8.333)', () => {
+      const r = calc(3);
+      const alloc = Math.round((25 + 2 * 8.333) * 1000) / 1000;
+      expect(r.net_a_payer).toBe(Math.round((r.salaire_net + alloc) * 1000) / 1000);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 4 — Avril 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Avril (mois 4) — pas de revalorisation', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(4);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('transport = 100 (pas revalorisé)', () => {
+      const r = calc(4);
+      expect(r.ind_transport).toBe(100);
+    });
+
+    it('présence = 7.856', () => {
+      const r = calc(4);
+      expect(r.prime_presence).toBe(7.856);
+    });
+
+    it('frais pro = 10% imposable, plafonné 166.67/mois', () => {
+      const r = calc(4);
+      const expected = Math.round(Math.min(r.revenu_imposable * 12 * 0.10, 2000) / 12 * 1000) / 1000;
+      expect(r.frais_pro).toBe(expected);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 5 — Mai 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Mai (mois 5) — pas de revalorisation', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(5);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('résultat identique à janvier (même salaire, même regime)', () => {
+      const rJan = calc(1);
+      const rMai = calc(5);
+      expect(rMai.salaire_de_base).toBe(rJan.salaire_de_base);
+      expect(rMai.ind_transport).toBe(rJan.ind_transport);
+      expect(rMai.prime_presence).toBe(rJan.prime_presence);
+      expect(rMai.cnss_salariale).toBe(rJan.cnss_salariale);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 6 — Juin 2026 (début revalorisation)
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Juin (mois 6) — revalorisation +5% appliquée', () => {
+    it('coefficient 1.0 sans absence', () => {
+      const r = calc(6);
+      expect(r.coefficient_presence).toBe(1);
+    });
+
+    it('transport revalorisé = 100 × 1.05', () => {
+      const r = calc(6);
+      expect(r.ind_transport).toBe(Math.round(100 * 1.05 * 1000) / 1000);
+    });
+
+    it('présence = 8.249 (depuis juin)', () => {
+      const r = calc(6);
+      expect(r.prime_presence).toBe(8.249);
+    });
+
+    it('transport avec absences = 100 × 1.05 × coeff', () => {
+      const r = calc(6, { absences: 2 });
+      const coeff = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.ind_transport).toBe(Math.round(100 * 1.05 * coeff * 1000) / 1000);
+    });
+
+    it('présence avec absences = 8.249 × coeff', () => {
+      const r = calc(6, { absences: 2 });
+      const coeff = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.prime_presence).toBe(Math.round(8.249 * coeff * 1000) / 1000);
+    });
+
+    it('CNSS = 9.68% × (brut − lait)', () => {
+      const r = calc(6);
+      const expected = Math.round(Math.max(0, r.salaire_brut - r.prime_lait) * 0.0968 * 1000) / 1000;
+      expect(r.cnss_salariale).toBe(expected);
+    });
+
+    it('brut juin > brut janvier (revalorisation)', () => {
+      const rJan = calc(1);
+      const rJun = calc(6);
+      expect(rJun.salaire_brut).toBeGreaterThan(rJan.salaire_brut);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 7 — Juillet 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Juillet (mois 7) — revalorisation +5%', () => {
+    it('transport revalorisé = 100 × 1.05', () => {
+      const r = calc(7);
+      expect(r.ind_transport).toBe(Math.round(100 * 1.05 * 1000) / 1000);
+    });
+
+    it('présence = 8.249', () => {
+      const r = calc(7);
+      expect(r.prime_presence).toBe(8.249);
+    });
+
+    it('coefficient = 20/22 avec 2 absences', () => {
+      const r = calc(7, { absences: 2 });
+      const expected = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it('résultat identique à juin (même régime)', () => {
+      const rJun = calc(6);
+      const rJul = calc(7);
+      expect(rJul.salaire_de_base).toBe(rJun.salaire_de_base);
+      expect(rJul.ind_transport).toBe(rJun.ind_transport);
+      expect(rJul.prime_presence).toBe(rJun.prime_presence);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MOIS 8 — Août 2026
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Août (mois 8) — revalorisation +5%', () => {
+    it('transport revalorisé = 100 × 1.05', () => {
+      const r = calc(8);
+      expect(r.ind_transport).toBe(Math.round(100 * 1.05 * 1000) / 1000);
+    });
+
+    it('présence = 8.249', () => {
+      const r = calc(8);
+      expect(r.prime_presence).toBe(8.249);
+    });
+
+    it('coefficient = 17/22 avec 5 absences', () => {
+      const r = calc(8, { absences: 5 });
+      const expected = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it('toutes les primes proratisées avec 5 absences', () => {
+      const r = calc(8, { absences: 5 });
+      const coeff = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.prime_panier).toBe(Math.round(12.320 * coeff * 1000) / 1000);
+      expect(r.prime_douche).toBe(Math.round(25.000 * coeff * 1000) / 1000);
+      expect(r.prime_savon).toBe(Math.round(5.400 * coeff * 1000) / 1000);
+      expect(r.prime_lait).toBe(Math.round(29.700 * coeff * 1000) / 1000);
+      expect(r.prime_logement).toBe(Math.round(26.293 * coeff * 1000) / 1000);
+      expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
+      expect(r.ind_transport).toBe(Math.round(100 * 1.05 * coeff * 1000) / 1000);
+      expect(r.prime_presence).toBe(Math.round(8.249 * coeff * 1000) / 1000);
+    });
+
+    it('net a payer avec alloc (marié +2 enfants)', () => {
+      const r = calc(8);
+      const alloc = Math.round((25 + 2 * 8.333) * 1000) / 1000;
+      expect(r.net_a_payer).toBe(Math.round((r.salaire_net + alloc) * 1000) / 1000);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Comparaison avant/après revalorisation
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Comparaison avant/après revalorisation', () => {
+    it('mois 5 (avant) vs mois 6 (après) — présence change de 7.856 à 8.249', () => {
+      const r5 = calc(5);
+      const r6 = calc(6);
+      expect(r5.prime_presence).toBe(7.856);
+      expect(r6.prime_presence).toBe(8.249);
+    });
+
+    it('mois 5 vs 6 — transport revalorisé +5%', () => {
+      const r5 = calc(5);
+      const r6 = calc(6);
+      expect(r5.ind_transport).toBe(100);
+      expect(r6.ind_transport).toBe(Math.round(100 * 1.05 * 1000) / 1000);
+    });
+
+    it('mois 1-5 tous identiques (pas de revalorisation)', () => {
+      const results = [1, 2, 3, 4, 5].map(m => calc(m));
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i].salaire_de_base).toBe(results[0].salaire_de_base);
+        expect(results[i].ind_transport).toBe(results[0].ind_transport);
+        expect(results[i].prime_presence).toBe(results[0].prime_presence);
+      }
+    });
+
+    it('mois 6-8 tous identiques (même revalorisation)', () => {
+      const results = [6, 7, 8].map(m => calc(m));
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i].salaire_de_base).toBe(results[0].salaire_de_base);
+        expect(results[i].ind_transport).toBe(results[0].ind_transport);
+        expect(results[i].prime_presence).toBe(results[0].prime_presence);
+      }
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Cohérence totale — tous les mois
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Cohérence — tous les mois', () => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — salaire_net = brut − retenues', (m) => {
+      const r = calc(m);
+      const expected = Math.round((r.salaire_brut - r.total_retenues) * 1000) / 1000;
+      expect(r.salaire_net).toBe(expected);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — total_retenues = cnss + irpp + css', (m) => {
+      const r = calc(m);
+      const expected = Math.round((r.cnss_salariale + r.irpp + r.css_salariale) * 1000) / 1000;
+      expect(r.total_retenues).toBe(expected);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — 22 jours ouvrables fixes', (m) => {
+      const r = calc(m);
+      expect(r.coefficient_presence).toBe(1); // 22/22 = 1.0
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff 20/22 avec 2 absences', (m) => {
+      const r = calc(m, { absences: 2 });
+      const expected = Math.round((20 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff 17/22 avec 5 absences', (m) => {
+      const r = calc(m, { absences: 5 });
+      const expected = Math.round((17 / 22) * 10000) / 10000;
+      expect(r.coefficient_presence).toBeCloseTo(expected, 4);
+    });
+  });
+});
