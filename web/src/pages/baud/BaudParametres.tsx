@@ -169,6 +169,8 @@ export default function BaudParametres() {
       <Section title="Heures de nuit (3802)">
         <Field label="Base heures/mois" value={config.heures_base_nuit} onChange={v => update('heures_base_nuit', v)} suffix="h" step={1} defaultVal={defaults.heures_base_nuit} />
         <Field label="Majoration légale" value={config.nuit_majoration * 100} onChange={v => update('nuit_majoration', v / 100)} suffix="%" step={1} defaultVal={defaults.nuit_majoration * 100} />
+        <Field label="Montant fixe par défaut" value={config.nuit_plein} onChange={v => update('nuit_plein', v)} suffix="DT" step={0.001} defaultVal={defaults.nuit_plein} />
+        <p className="text-xs text-gray-400 ml-48">0 = calcul horaire si heures_nuit &gt; 0, sinon fixe par salarié</p>
       </Section>
 
       {/* Allocations familiales */}

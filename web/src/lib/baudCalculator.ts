@@ -387,8 +387,8 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     const taux_horaire = salaire_de_base / cfg().heures_base_nuit;
     prime_nuit = Math.round(taux_horaire * heures_nuit * (1 + cfg().nuit_majoration) * 1000) / 1000;
   } else {
-    // Fallback : montant fixe par salarié × coefficient présence
-    const prime_nuit_plein = prime_nuit_plein_input ?? prime_nuit_legacy ?? 0;
+    // Fallback : montant fixe par salarié × coefficient présence (défaut depuis config)
+    const prime_nuit_plein = prime_nuit_plein_input ?? prime_nuit_legacy ?? cfg().nuit_plein;
     prime_nuit = Math.round(prime_nuit_plein * coefficient_presence * 1000) / 1000;
   }
 

@@ -68,6 +68,7 @@ export interface BaudConfig {
   // Nuit (3802)
   heures_base_nuit: number;       // 190 (47.5h × 4 sem) — base horaire nuit
   nuit_majoration: number;        // 25% majoration légale
+  nuit_plein: number;             // 0 DT — montant fixe par défaut (0 = pas de prime fixe, calcul horaire si heures_nuit > 0)
 
   // Revalorisation (Décret 68/2026)
   revalorisation_debut_mois: number;  // 6 (juin)
@@ -134,6 +135,7 @@ const DEFAULTS: BaudConfig = {
 
   heures_base_nuit: 190,
   nuit_majoration: 0.25,
+  nuit_plein: 0,
 
   irpp_barème: [
     { min: 0, max: 5000, taux: 0.00 },
