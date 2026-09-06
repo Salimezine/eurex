@@ -9,8 +9,9 @@ export interface Employee {
   prenom: string;
   cin: string;
   date_naissance: string;
-  situation_fam: string; // M=Célibataire, C=Célibataire, M=Marié, D=Divorcé, V=Veuf
+  situation_fam: string; // M=Marié, C=Célibataire, D=Divorcé, V=Veuf
   nombre_enfants: number;
+  sexe: string; // 'H' ou 'F' — inféré du prénom (préfixe 'F' si féminin connu)
   echelon: string;
   categorie: string;
   badges: string;
@@ -113,6 +114,33 @@ function detectDateMonthYear(filename: string): { mois: number; annee: number } 
 }
 
 /**
+ * Inférence du sexe à partir du prénom (hypothèse, à valider avec le client)
+ * Liste des prénoms féminins courants en Tunisie.
+ * Si le prénom n'est pas reconnu, retourne 'H' par défaut (hypothèse conservative :
+ * le chef de famille étant généralement masculin, on préfère déduire par défaut
+ * pour ne pas fausser la CSS).
+ */
+function inferSexe(prenom: string): string {
+  const p = prenom.trim().toUpperCase();
+  const feminins = new Set([
+    'FATMA', 'FATIMA', 'SALWA', 'NADA', 'AMINA', 'OLFA', 'MORTHADHA', 'MOURTADHA',
+    'BAHIJA', 'NAJET', 'NABIHA', 'SAMIRA', 'LEILA', 'LAYLA', 'INJES', 'NADIA',
+    'HABIBA', 'KAOUther', 'KAOUTHER', 'SANA', 'RIM', 'RIMEL', 'MONIA', 'MONIRA',
+    'MAI', 'MAIE', 'FIRAS', 'HALIMA', 'NOUF', 'NOUF', 'MERIEM', 'MERIEME',
+    'MARIEM', 'MARIEME', 'SARAH', 'SARA', 'INÈS', 'INES', 'ANIS', 'ANISSE',
+    'WAFA', 'WAFAA', 'HEDA', 'HÈDA', 'EL HEDI', 'EL HEDY', 'AMANI', 'AMANIE',
+    'SABAH', 'NABIHA', 'NABILA', 'ZOHRA', 'FADHEILA', 'FADHILA', 'MOUNIRA',
+    'MOUNIRA', 'ZINEB', 'ZAYNEB', 'ZINEB', 'MAHBOUBA', 'THOURAYA', 'TOURAYA',
+    'LAMIA', 'LAMIAA', 'HAYET', 'HAYETE', 'BOUCHRA', 'BOUCHRAA', 'MAISSA',
+    'MAÏSSA', 'NDEYE', 'NDIAYE', 'AÏSSA', 'AÏSSATOU', 'HASSIBA', 'MALIKA',
+    'MALIKAH', 'ASSIA', 'SIHEM', 'SAIDA', 'MOUSTADHA', 'MOUSTADJBA',
+    'FAIZIA', 'FAOUZIA', 'GHAZALA', 'GHIZLANE', 'SOAD', 'SOUEAD', 'SOUIAD',
+  ]);
+  if (feminins.has(p)) return 'F';
+  return 'H';
+}
+
+/**
  * Transport plein par défaut selon fonction (barème STE BAUD, juin 2026)
  * Vérifié empiriquement sur 21 employés × bulletin Sage
  * - Ouvrier: 92.800 DT
@@ -179,6 +207,7 @@ export function parseFichePersonnel(workbook: any, filename: string): ParsedFich
         date_naissance: cleanStr(row[DP_COLUMNS.date_naissance]),
         situation_fam: situationFam,
         nombre_enfants: Math.max(0, Math.floor(parseNum(row[DP_COLUMNS.ne]))),
+        sexe: inferSexe(prenom),
         echelon: cleanStr(row[DP_COLUMNS.echelon]),
         categorie: cleanStr(row[DP_COLUMNS.categorie]),
         badges: cleanStr(row[DP_COLUMNS.badges]),

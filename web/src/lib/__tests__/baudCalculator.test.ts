@@ -115,10 +115,11 @@ describe('CSS — 0.5% RNI, seuil 5000 DT/an', () => {
     expect(r.css_salariale).toBe(Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000);
   });
 
-  it('CSS = 0 quand annuel < 5000 DT (seuil d\'exonération)', () => {
-    // Salaire très bas : RNI ~ 50, annuel ~ 600 < 5000 → CSS = 0
+  it('CSS appliquée même pour salaire bas (pas de seuil 5000)', () => {
+    // Validé sur données bulletin : Sage applique 0.5% même si annual < 5000
     const r = calculateSalary({ salaire_brut: 100, situation_fam: 'C', nombre_enfants: 0 });
-    expect(r.css_salariale).toBe(0);
+    const expected = Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000;
+    expect(r.css_salariale).toBe(expected);
   });
 
   it('CSS n est PAS sur le brut', () => {
@@ -333,12 +334,12 @@ describe('Validation DALY SONDES juin 2026', () => {
 // ============================================================================
 describe('Integration — tous les mois et tous les salaries', () => {
   const testEmployees = [
-    { matricule: '209070', nom: 'DALY', prenom: 'SONDES', situation_fam: 'C' as const, nombre_enfants: 0, date_recrutement: '2020-01-01', salaire_brut: 592.928, nouveau_salaire_brut: 592.928, transport_plein: 95.002, heures_nuit: 0 },
-    { matricule: '209071', nom: 'ROUHI', prenom: 'Nabil', situation_fam: 'M' as const, nombre_enfants: 2, date_recrutement: '2018-06-01', salaire_brut: 800, nouveau_salaire_brut: 800, transport_plein: 100.533, heures_nuit: 0 },
-    { matricule: '209072', nom: 'BACCOUCHE', prenom: 'Tahar', situation_fam: 'M' as const, nombre_enfants: 3, date_recrutement: '2015-03-01', salaire_brut: 750, nouveau_salaire_brut: 750, transport_plein: 92.800, heures_nuit: 0 },
-    { matricule: '209073', nom: 'ZAYANI', prenom: 'Majed', situation_fam: 'C' as const, nombre_enfants: 0, date_recrutement: '2022-09-01', salaire_brut: 650, nouveau_salaire_brut: 650, transport_plein: 95.002, heures_nuit: 0 },
-    { matricule: '209074', nom: 'BEN SLIMENE', prenom: 'Karim', situation_fam: 'M' as const, nombre_enfants: 1, date_recrutement: '2010-01-01', salaire_brut: 400, nouveau_salaire_brut: 400, transport_plein: 92.800, heures_nuit: 0 },
-    { matricule: '209075', nom: 'AAMRI', prenom: 'Moatez', situation_fam: 'C' as const, nombre_enfants: 0, date_recrutement: '2023-06-01', salaire_brut: 6008.771, nouveau_salaire_brut: 6008.771, transport_plein: 100.533, heures_nuit: 0 },
+    { matricule: '209070', nom: 'DALY', prenom: 'SONDES', situation_fam: 'C' as const, nombre_enfants: 0, sexe: 'H' as const, date_recrutement: '2020-01-01', salaire_brut: 592.928, nouveau_salaire_brut: 592.928, transport_plein: 95.002, heures_nuit: 0 },
+    { matricule: '209071', nom: 'ROUHI', prenom: 'Nabil', situation_fam: 'M' as const, nombre_enfants: 2, sexe: 'H' as const, date_recrutement: '2018-06-01', salaire_brut: 800, nouveau_salaire_brut: 800, transport_plein: 100.533, heures_nuit: 0 },
+    { matricule: '209072', nom: 'BACCOUCHE', prenom: 'Tahar', situation_fam: 'M' as const, nombre_enfants: 3, sexe: 'H' as const, date_recrutement: '2015-03-01', salaire_brut: 750, nouveau_salaire_brut: 750, transport_plein: 92.800, heures_nuit: 0 },
+    { matricule: '209073', nom: 'ZAYANI', prenom: 'Majed', situation_fam: 'C' as const, nombre_enfants: 0, sexe: 'H' as const, date_recrutement: '2022-09-01', salaire_brut: 650, nouveau_salaire_brut: 650, transport_plein: 95.002, heures_nuit: 0 },
+    { matricule: '209074', nom: 'BEN SLIMENE', prenom: 'Karim', situation_fam: 'M' as const, nombre_enfants: 1, sexe: 'H' as const, date_recrutement: '2010-01-01', salaire_brut: 400, nouveau_salaire_brut: 400, transport_plein: 92.800, heures_nuit: 0 },
+    { matricule: '209075', nom: 'AAMRI', prenom: 'Moatez', situation_fam: 'C' as const, nombre_enfants: 0, sexe: 'H' as const, date_recrutement: '2023-06-01', salaire_brut: 6008.771, nouveau_salaire_brut: 6008.771, transport_plein: 100.533, heures_nuit: 0 },
   ];
 
   const mois = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -354,6 +355,7 @@ describe('Integration — tous les mois et tous les salaries', () => {
           salaire_brut: emp.salaire_brut,
           situation_fam: emp.situation_fam,
           nombre_enfants: emp.nombre_enfants,
+          sexe: emp.sexe,
           date_recrutement: emp.date_recrutement,
           mois: moisCourant,
           annee,
@@ -372,10 +374,7 @@ describe('Integration — tous les mois et tous les salaries', () => {
         const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - expectedLait) * 0.0968 * 1000) / 1000;
         expect(r.cnss_salariale).toBe(expectedCNSS);
 
-        const annualImposableCSS = r.revenu_net_imposable * 12;
-        const expectedCSS = annualImposableCSS >= 5000
-          ? Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000
-          : 0;
+        const expectedCSS = Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000;
         expect(r.css_salariale).toBe(expectedCSS);
 
         expect(r.frais_pro).toBeLessThanOrEqual(Math.round((2000 / 12) * 1000) / 1000);
@@ -405,6 +404,7 @@ describe('Integration — tous les mois et tous les salaries', () => {
         salaire_brut: emp.salaire_brut,
         situation_fam: emp.situation_fam,
         nombre_enfants: emp.nombre_enfants,
+        sexe: emp.sexe,
         date_recrutement: emp.date_recrutement,
         mois: moisCourant,
         annee,
@@ -448,6 +448,7 @@ describe('Integration — tous les mois et tous les salaries', () => {
         salaire_brut: emp.salaire_brut,
         situation_fam: emp.situation_fam,
         nombre_enfants: emp.nombre_enfants,
+        sexe: emp.sexe,
         date_recrutement: emp.date_recrutement,
         mois: moisCourant,
         annee,
@@ -700,5 +701,49 @@ describe('Coefficient de présence', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, prime_nuit_plein: 100, absences_jours: 5 });
     const coeff = Math.round((17 / 22) * 10000) / 10000;
     expect(r.prime_nuit).toBe(Math.round(100 * coeff * 1000) / 1000);
+  });
+});
+
+// ============================================================================
+// 14. CSS — validation (janvier 2026)
+//     Formule validée : CSS = 0.5% × RNI (imposable − frais_pro)
+//     Aucune déduction familiale, aucun seuil 5000 DT (validé sur 219 obs)
+// ============================================================================
+describe('CSS — validation (janvier 2026)', () => {
+  it('CSS = 0.5% × RNI sans déductions ni seuil', () => {
+    const r = calculateSalary({
+      salaire_brut: 750, situation_fam: 'M', nombre_enfants: 5, sexe: 'H',
+      date_recrutement: '2015-03-01', mois: 1, annee: 2026,
+      transport_plein: 92.800,
+    });
+    const expectedCSS = Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000;
+    expect(r.css_salariale).toBe(expectedCSS);
+  });
+
+  it('CSS même pour salaire bas (pas de seuil 5000)', () => {
+    const r = calculateSalary({
+      salaire_brut: 300, situation_fam: 'C', nombre_enfants: 0, sexe: 'H',
+      mois: 1, annee: 2026,
+    });
+    // CSS toujours appliquée, même si annual RNI < 5000
+    const expectedCSS = Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000;
+    expect(r.css_salariale).toBe(expectedCSS);
+  });
+
+  it('CSS indépendante du sexe et situation familiale', () => {
+    const inputs = [
+      { situation_fam: 'M', nombre_enfants: 3, sexe: 'H' },
+      { situation_fam: 'M', nombre_enfants: 3, sexe: 'F' },
+      { situation_fam: 'C', nombre_enfants: 0, sexe: 'H' },
+    ];
+    const results = inputs.map(inp => calculateSalary({
+      salaire_brut: 750, ...inp,
+      date_recrutement: '2020-01-01', mois: 1, annee: 2026,
+      transport_plein: 92.800,
+    }));
+    // Tous doivent avoir le même CSS (même imposable → même RNI)
+    const cssValues = results.map(r => r.css_salariale);
+    expect(cssValues[0]).toBe(cssValues[1]);
+    expect(cssValues[0]).toBe(cssValues[2]);
   });
 });

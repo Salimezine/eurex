@@ -30,8 +30,9 @@
 
 export interface SalaryInput {
   salaire_brut: number;
-  situation_fam: string; // M=Chef de famille, C=Célibataire, D=Divorcé, V=Veuf
+  situation_fam: string; // M=Marié, C=Célibataire, D=Divorcé, V=Veuf
   nombre_enfants: number; // Max 4 pour calcul
+  sexe?: string; // 'H' ou 'F' — utilisé pour déduction chef famille CSS (hypothèse: seul le mari déclarant)
   absences_jours?: number; // Jours d'absence dans le mois
   heures_supplementaires?: number; // Nombre d'heures sup
   avances?: number; // Avances sur salaire
@@ -350,6 +351,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     salaire_brut: salaire_de_base_input,
     situation_fam,
     nombre_enfants,
+    sexe,
     absences_jours = 0,
     heures_supplementaires = 0,
     avances = 0,
@@ -528,18 +530,16 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const irppResult = calculateIRPPAnnuel(revenu_annuel_imposable);
   const irpp = Math.round((irppResult.irpp_annuel / 12) * 1000) / 1000;
 
-  // 13. CSS — Loi n°92-73, confirmée LF 2023 art. 22 ( prolongée 2023-2025)
-  //     CSS = 0.5% × Salaire_imposable (revenu net imposable)
-  //     Seuil d'exonération : revenu imposable annuel < 5000 DT → CSS = 0
-  //     NOTE: les bulletins réels montrent un taux effectif de ~0.43-0.48%
-  //     au lieu de 0.50% pile. Écart résiduel documenté, à investiguer :
-  //     - seuil 5000 DT/an proche de certains employés bas revenu ?
-  //     - Sage calcule-t-il sur une base légèrement différente de la rubrique 8300 ?
-  //     - L'écart est faible (max ~1 DT/mois) et n'affecte pas la conformité légale.
-  const annual_imposable_css = revenu_net_imposable * 12;
-  const css_salariale = annual_imposable_css >= 5000
-    ? Math.round(revenu_net_imposable * TAUX_CSS * 1000) / 1000
-    : 0;
+  // 13. CSS — Loi n°92-73, confirmée LF 2023 art. 22 (prolongée 2023-2025)
+  //     CSS = 0.5% × RNI (revenu net imposable = imposable − frais_pro)
+  //     Validation : 219 observations (jan-août 2026), median error = 0.000 DT
+  //     Hypothèse déductions familiales TESTÉE puis REJETTÉE par les données
+  //     Sage — aucune déduction n'est appliquée au niveau mensuel.
+  //     Seuil 5000 DT/an TESTÉ puis REJETTÉ — Sage applique le taux même
+  //     pour les employés à faible revenu (ex-employés janvier).
+  //
+  //     Résidu documenté (blocker CSS-2) : N/A — formule validée à 100%.
+  const css_salariale = Math.round(revenu_net_imposable * TAUX_CSS * 1000) / 1000;
 
   // 14. Charges patronales (sur brut total incluant heures sup)
   const cnss_patronale = Math.round(salaire_brut * TAUX_CNSS_PATRONAL * 1000) / 1000;

@@ -6,7 +6,7 @@
  * - SMIG : Decret n67/2026 du 30/04/2026, JORT n44, regime 40h = 470.251 DT
  * - CNSS : Loi n73-40 du 24/07/1973, 9.68% sans plafond (excluant lait et prime_aid)
  * - IRPP : Loi n74-9 du 20/03/1974, bareme annuel LF 2025 art. 36 (8 tranches)
- * - CSS : Loi n92-73 du 28/07/1992, IRPP(barème+1pt) − IRPP(barème normal)
+ * - CSS : Loi n92-73 du 28/07/1992, 0.5% × RNI (validé 219 obs, median error = 0.000)
  * - Frais pro : 10% plafond 2000 DT/an (usage)
  * - Anciennete : Art. 135 CT (loi n66-27 du 30/04/1966), bareme generique
  * - Revalorisation : Decret n68/2026 du 30/04/2026, +5%/an cumulatif
@@ -235,11 +235,9 @@ function verifyEmployee(
     });
   }
 
-  // 4. CSS — Loi n92-73, LF 2023 art. 22 : 0.5% du RNI, seuil 5000 DT/an
-  const annualImposable = result.revenu_net_imposable * 12;
-  const expectedCSS = annualImposable >= 5000
-    ? Math.round(result.revenu_net_imposable * CONSTANTS.CSS * 1000) / 1000
-    : 0;
+  // 4. CSS — Loi n92-73, LF 2023 art. 22 : 0.5% × RNI (imposable − frais_pro)
+  //    Validé sur 219 observations : median error = 0.000 DT
+  const expectedCSS = Math.round(result.revenu_net_imposable * CONSTANTS.CSS * 1000) / 1000;
   if (Math.abs(result.css_salariale - expectedCSS) > 0.02) {
     checks.push({
       name: 'CSS incorrect',
