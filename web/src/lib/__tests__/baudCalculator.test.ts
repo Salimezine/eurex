@@ -11,7 +11,6 @@ import {
   applyRevalorisation,
   calculateJoursOuvres,
   generateSagePaieExport,
-  calculateIRPPAnnuel,
   type SalaryResult,
 } from '../baudCalculator.js';
 import { verifySalaryCalculations } from '../baudAI.js';
@@ -107,30 +106,25 @@ describe('IRPP — bareme annuel', () => {
 });
 
 // ============================================================================
-// 4. CSS — Mécanisme différentiel IRPP
+// 4. CSS — 0.5% revenu net imposable (seuil 5000 DT/an, LF 2023 art. 22)
 // ============================================================================
-describe('CSS — mécanisme différentiel IRPP (Loi 92-73)', () => {
-  it('CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12', () => {
+describe('CSS — 0.5% RNI, seuil 5000 DT/an', () => {
+  it('CSS = 0.5% de revenu_net_imposable quand annuel >= 5000', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
-    const annualImposable = r.revenu_net_imposable * 12;
-    const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
-    const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
-    const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
-    expect(r.css_salariale).toBe(expectedCSS);
+    // RNI ~ 900, annuel ~ 10800 >= 5000 → CSS = 0.5% × RNI
+    expect(r.css_salariale).toBe(Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000);
+  });
+
+  it('CSS = 0 quand annuel < 5000 DT (seuil d\'exonération)', () => {
+    // Salaire très bas : RNI ~ 50, annuel ~ 600 < 5000 → CSS = 0
+    const r = calculateSalary({ salaire_brut: 100, situation_fam: 'C', nombre_enfants: 0 });
+    expect(r.css_salariale).toBe(0);
   });
 
   it('CSS n est PAS sur le brut', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
     const wrong = Math.round(r.salaire_brut * 0.005 * 1000) / 1000;
     expect(r.css_salariale).not.toBe(wrong);
-  });
-
-  it('CSS augmente avec le revenu (taux effectif progressif)', () => {
-    const r1 = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0 });
-    const r2 = calculateSalary({ salaire_brut: 5000, situation_fam: 'C', nombre_enfants: 0 });
-    const rate1 = r1.css_salariale / r1.revenu_net_imposable;
-    const rate2 = r2.css_salariale / r2.revenu_net_imposable;
-    expect(rate2).toBeGreaterThan(rate1);
   });
 });
 
@@ -378,10 +372,10 @@ describe('Integration — tous les mois et tous les salaries', () => {
         const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - expectedLait) * 0.0968 * 1000) / 1000;
         expect(r.cnss_salariale).toBe(expectedCNSS);
 
-        const annualImposable = r.revenu_net_imposable * 12;
-        const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
-        const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
-        const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
+        const annualImposableCSS = r.revenu_net_imposable * 12;
+        const expectedCSS = annualImposableCSS >= 5000
+          ? Math.round(r.revenu_net_imposable * 0.005 * 1000) / 1000
+          : 0;
         expect(r.css_salariale).toBe(expectedCSS);
 
         expect(r.frais_pro).toBeLessThanOrEqual(Math.round((2000 / 12) * 1000) / 1000);

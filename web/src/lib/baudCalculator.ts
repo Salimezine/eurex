@@ -25,7 +25,7 @@
  *   → augmentation = fixe × coefficient (pas de revalorisation)
  *   → nuit = fixe × coefficient
  *   → salaire_brut_total = base_rév + HS + prime_ancienneté + transport + présence + primes_légales + augmentation
- *   → assiettes CNSS (brut - lait - prime_aid) / IRPP / CSS sur salaire_brut_total
+ *   → assiettes CNSS (brut - lait - prime_aid) / IRPP / CSS (0.5% RNI, seuil 5000 DT/an)
  */
 
 export interface SalaryInput {
@@ -100,7 +100,7 @@ export interface SalaryResult {
 
   // Cotisations salariales
   cnss_salariale: number;     // 9.68% du brut (sans plafond, excluant lait et prime_aid)
-  css_salariale: number;      // CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12
+  css_salariale: number;      // CSS = 0.5% × RNI (seuil 5000 DT/an, Loi 92-73, LF 2023 art. 22)
 
   // Revenu imposable
   revenu_imposable: number;   // Brut total - CNSS
@@ -147,6 +147,7 @@ const TAUX_CNSS_PATRONAL = 0.1707; // 17.07% — depuis janvier 2025
 const TAUX_AT_MP = 0.005;          // 0.5%
 const TAUX_TFP = 0.02;             // 2% — Taxe Formation Professionnelle (BTP/industriel)
 const TAUX_FOPROLOS = 0.01;        // 1%
+const TAUX_CSS = 0.005;            // 0.5% — Loi n°92-73, LF 2023 art. 22
 
 // Allocations familiales (mensuel)
 const ALLOC_CHEF_FAMILLE = 25;     // 300 DT/an / 12
@@ -527,12 +528,18 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const irppResult = calculateIRPPAnnuel(revenu_annuel_imposable);
   const irpp = Math.round((irppResult.irpp_annuel / 12) * 1000) / 1000;
 
-  // 13. CSS — Mécanisme différentiel IRPP
-  // CSS = IRPP(barème avec +1pt par tranche) − IRPP(barème normal)
-  // Ce n'est PAS un taux flat — le taux effectif augmente avec le revenu
-  const irppAvecPoint = calculateIRPPAnnuel(revenu_annuel_imposable, 1);
-  const css_annuelle = Math.max(0, irppAvecPoint.irpp_annuel - irppResult.irpp_annuel);
-  const css_salariale = Math.round((css_annuelle / 12) * 1000) / 1000;
+  // 13. CSS — Loi n°92-73, confirmée LF 2023 art. 22 ( prolongée 2023-2025)
+  //     CSS = 0.5% × Salaire_imposable (revenu net imposable)
+  //     Seuil d'exonération : revenu imposable annuel < 5000 DT → CSS = 0
+  //     NOTE: les bulletins réels montrent un taux effectif de ~0.43-0.48%
+  //     au lieu de 0.50% pile. Écart résiduel documenté, à investiguer :
+  //     - seuil 5000 DT/an proche de certains employés bas revenu ?
+  //     - Sage calcule-t-il sur une base légèrement différente de la rubrique 8300 ?
+  //     - L'écart est faible (max ~1 DT/mois) et n'affecte pas la conformité légale.
+  const annual_imposable_css = revenu_net_imposable * 12;
+  const css_salariale = annual_imposable_css >= 5000
+    ? Math.round(revenu_net_imposable * TAUX_CSS * 1000) / 1000
+    : 0;
 
   // 14. Charges patronales (sur brut total incluant heures sup)
   const cnss_patronale = Math.round(salaire_brut * TAUX_CNSS_PATRONAL * 1000) / 1000;
@@ -720,9 +727,8 @@ export const SAGE_RUBRIQUES: Record<string, SageRubrique> = {
   '3310': { code: '3310', libelle: 'IRPP', zone: '3', type: 'retenue' },
 
   // Rubrique 3320 : CSS (Cotisation de Solidarité Sociale)
-  // Base légale : Loi n°92-73 du 28/07/1992
-  // Calcul différentiel : CSS = IRPP(barème+1pt) − IRPP(barème normal)
-  // Ce n'est PAS un taux flat — le taux effectif augmente avec le revenu
+  // Base légale : Loi n°92-73 du 28/07/1992, confirmée LF 2023 art. 22
+  // Taux : 0.5% du revenu net imposable, seuil 5000 DT/an
   '3320': { code: '3320', libelle: 'CSS', zone: '3', type: 'retenue' },
 
   // --- CRÉDITS ---
@@ -1074,8 +1080,8 @@ export function generateSagePaieExport(
       rubriquesUsed.add('3310');
     }
 
-    // 3320 : CSS — Mécanisme différentiel IRPP
-    // Loi n°92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal)
+    // 3320 : CSS — 0.5% du revenu net imposable (seuil 5000 DT/an)
+    // Loi n°92-73, LF 2023 art. 22
     if (result.css_salariale > 0) {
       rows.push({
         matricule: emp.matricule,

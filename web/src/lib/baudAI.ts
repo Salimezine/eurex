@@ -13,7 +13,7 @@
  */
 
 import { Employee, PointageData } from './baudParser.js';
-import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete, calculateIRPPAnnuel } from './baudCalculator.js';
+import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete } from './baudCalculator.js';
 
 export interface VerificationCheck {
   name: string;
@@ -68,7 +68,8 @@ const CONSTANTS = {
   AT_MP: 0.005,
   TFP: 0.02,
   FOPROLOS: 0.01,
-  /** Loi n92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal) — PAS un taux flat */
+  /** Loi n92-73, LF 2023 art. 22 : CSS = 0.5% revenu net imposable, seuil 5000 DT/an */
+  CSS: 0.005,
   /** Decret n67/2026, JORT n44, regime 40h/semaine */
   SMIG: 470.251,
   FRAIS_PRO_MAX: 2000,
@@ -234,16 +235,16 @@ function verifyEmployee(
     });
   }
 
-  // 4. CSS — Loi n92-73 : CSS = IRPP(barème+1pt) − IRPP(barème normal) / 12
+  // 4. CSS — Loi n92-73, LF 2023 art. 22 : 0.5% du RNI, seuil 5000 DT/an
   const annualImposable = result.revenu_net_imposable * 12;
-  const irppNormal = calculateIRPPAnnuel(annualImposable, 0);
-  const irppAvecPoint = calculateIRPPAnnuel(annualImposable, 1);
-  const expectedCSS = Math.round(((irppAvecPoint.irpp_annuel - irppNormal.irpp_annuel) / 12) * 1000) / 1000;
+  const expectedCSS = annualImposable >= 5000
+    ? Math.round(result.revenu_net_imposable * CONSTANTS.CSS * 1000) / 1000
+    : 0;
   if (Math.abs(result.css_salariale - expectedCSS) > 0.02) {
     checks.push({
       name: 'CSS incorrect',
       status: 'error',
-      detail: `${empLabel}: CSS ${result.css_salariale.toFixed(3)} != attendu ${expectedCSS.toFixed(3)} (Loi 92-73, mécanisme différentiel)`,
+      detail: `${empLabel}: CSS ${result.css_salariale.toFixed(3)} != attendu ${expectedCSS.toFixed(3)} (Loi 92-73, 0.5% RNI, seuil 5000 DT/an)`,
       employee: emp.matricule,
     });
   }
