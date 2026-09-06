@@ -14,6 +14,7 @@
 
 import { Employee, PointageData } from './baudParser.js';
 import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete } from './baudCalculator.js';
+import { getConfig } from './baudConfig.js';
 
 export interface VerificationCheck {
   name: string;
@@ -58,36 +59,25 @@ export interface AutoFixAction {
 }
 
 /**
- * Constantes legales tunisiennes 2026
+ * Constantes legales tunisiennes 2026 — lecture depuis config
  */
-const CONSTANTS = {
-  /** Loi n73-40 : taux CNSS salarial */
-  CNSS_SALARIAL: 0.0968,
-  /** Loi n73-40 : taux CNSS patronal */
-  CNSS_PATRONAL: 0.1707,
-  AT_MP: 0.005,
-  TFP: 0.02,
-  FOPROLOS: 0.01,
-  /** Loi n92-73, LF 2023 art. 22 : CSS = 0.5% revenu net imposable, seuil 5000 DT/an */
-  CSS: 0.005,
-  /** Decret n67/2026, JORT n44, regime 40h/semaine */
-  SMIG: 470.251,
-  FRAIS_PRO_MAX: 2000,
-  FRAIS_PRO_RATE: 0.10,
-  /** LF 2025 art. 36 : bareme annuel 8 tranches */
-  IRPP_BRACKETS: [
-    { min: 0, max: 5000, rate: 0 },
-    { min: 5000, max: 10000, rate: 0.15 },
-    { min: 10000, max: 20000, rate: 0.25 },
-    { min: 20000, max: 30000, rate: 0.30 },
-    { min: 30000, max: 40000, rate: 0.33 },
-    { min: 40000, max: 50000, rate: 0.36 },
-    { min: 50000, max: 70000, rate: 0.38 },
-    { min: 70000, max: Infinity, rate: 0.40 },
-  ],
-  /** Decret n68/2026 : revalorisation +5%/an */
-  REVALORISATION_TAUX: 0.05,
-};
+function CONSTANTS() {
+  const c = getConfig();
+  return {
+    CNSS_SALARIAL: c.cnss_salarial,
+    CNSS_PATRONAL: c.cnss_patronal,
+    AT_MP: c.at_mp,
+    TFP: c.tfp,
+    FOPROLOS: c.foprolos,
+    CSS: c.css,
+    SMIG: c.smig_40h,
+    FRAIS_PRO_MAX: c.frais_pro_plafond,
+    FRAIS_PRO_RATE: c.frais_pro_taux,
+    IRPP_BRACKETS: c.irpp_barème.map(b => ({ min: b.min, max: b.max, rate: b.taux })),
+    REVALORISATION_TAUX: c.revalorisation_taux,
+    JOURS_OUVRABLES: c.jours_ouvrables_defaut,
+  };
+}
 
 // ============================================================================
 // Fonction principale de verification
@@ -183,18 +173,18 @@ function verifyEmployee(
   const empLabel = `${emp.nom} ${emp.prenom}`;
 
   // 1. SMIG — Decret n67/2026, JORT n44, regime 40h = 470.251 DT
-  if (result.salaire_brut < CONSTANTS.SMIG) {
+  if (result.salaire_brut < CONSTANTS().SMIG) {
     checks.push({
       name: 'Salaire < SMIG',
       status: 'error',
-      detail: `${empLabel}: Brut ${result.salaire_brut.toFixed(3)} < SMIG ${CONSTANTS.SMIG} DT (Decret 67/2026, regime 40h)`,
+      detail: `${empLabel}: Brut ${result.salaire_brut.toFixed(3)} < SMIG ${CONSTANTS().SMIG} DT (Decret 67/2026, regime 40h)`,
       employee: emp.matricule,
     });
     autoFixes.push({
       type: 'fix_smig',
-      description: `Corriger le salaire de ${empLabel} au SMIG (${CONSTANTS.SMIG} DT)`,
+      description: `Corriger le salaire de ${empLabel} au SMIG (${CONSTANTS().SMIG} DT)`,
       matricule: emp.matricule,
-      data: { field: 'salaire_brut', newValue: CONSTANTS.SMIG },
+      data: { field: 'salaire_brut', newValue: CONSTANTS().SMIG },
       applied: false,
     });
   }
@@ -202,7 +192,7 @@ function verifyEmployee(
   // 2. CNSS — Loi n73-40 : 9.68% du brut, AUCUN plafond
   //    Assiette = brut - prime_lait - prime_aid (exclues CNSS — Décret 2003-1098 art. 11)
   const assietteCNSS = Math.max(0, result.salaire_brut - result.prime_lait - result.prime_aid);
-  const expectedCNSS = Math.round(assietteCNSS * CONSTANTS.CNSS_SALARIAL * 1000) / 1000;
+  const expectedCNSS = Math.round(assietteCNSS * CONSTANTS().CNSS_SALARIAL * 1000) / 1000;
   if (Math.abs(result.cnss_salariale - expectedCNSS) > 0.01) {
     checks.push({
       name: 'CNSS incorrect',
@@ -237,7 +227,7 @@ function verifyEmployee(
 
   // 4. CSS — Loi n92-73, LF 2023 art. 22 : 0.5% × RNI (imposable − frais_pro)
   //    Validé sur 219 observations : median error = 0.000 DT
-  const expectedCSS = Math.round(result.revenu_net_imposable * CONSTANTS.CSS * 1000) / 1000;
+  const expectedCSS = Math.round(result.revenu_net_imposable * CONSTANTS().CSS * 1000) / 1000;
   if (Math.abs(result.css_salariale - expectedCSS) > 0.02) {
     checks.push({
       name: 'CSS incorrect',
@@ -264,8 +254,8 @@ function verifyEmployee(
     });
   } else {
     const absences = parseInt(ptg.absences) || 0;
-    if (absences > 22) {
-      checks.push({ name: 'Absences > 22j', status: 'warning', detail: `${empLabel}: ${absences} absences > 22 jours/mois`, employee: emp.matricule });
+    if (absences > CONSTANTS().JOURS_OUVRABLES) {
+      checks.push({ name: `Absences > ${CONSTANTS().JOURS_OUVRABLES}j`, status: 'warning', detail: `${empLabel}: ${absences} absences > ${CONSTANTS().JOURS_OUVRABLES} jours/mois`, employee: emp.matricule });
     }
     if (ptg.avances > result.salaire_brut * 0.5) {
       checks.push({ name: 'Avances > 50% brut', status: 'warning', detail: `${empLabel}: Avances ${ptg.avances} DT > 50% de ${result.salaire_brut.toFixed(3)} DT`, employee: emp.matricule });
@@ -323,7 +313,7 @@ function verifyEmployee(
   }
 
   // 13. Verification frais professionnels
-  const expectedFraisPro = Math.round(Math.min(result.revenu_imposable * 12 * CONSTANTS.FRAIS_PRO_RATE, CONSTANTS.FRAIS_PRO_MAX) / 12 * 1000) / 1000;
+  const expectedFraisPro = Math.round(Math.min(result.revenu_imposable * 12 * CONSTANTS().FRAIS_PRO_RATE, CONSTANTS().FRAIS_PRO_MAX) / 12 * 1000) / 1000;
   if (Math.abs(result.frais_pro - expectedFraisPro) > 0.01) {
     checks.push({
       name: 'Frais pro incorrect',
@@ -351,7 +341,7 @@ function calculateExpectedIRPP(revenuNetImposable: number): number {
   let irppAnnual = 0;
   let remaining = annual;
 
-  for (const bracket of CONSTANTS.IRPP_BRACKETS) {
+  for (const bracket of CONSTANTS().IRPP_BRACKETS) {
     if (remaining <= 0) break;
     const size = bracket.max === Infinity ? remaining : bracket.max - bracket.min;
     const taxable = Math.min(remaining, size);
@@ -450,11 +440,11 @@ function verifyTotals(
   const cnssRatio = assietteTotale > 0 ? totalCNSS / assietteTotale : 0;
   const irppRatio = totalIRPP / totalBrut;
 
-  if (Math.abs(cnssRatio - CONSTANTS.CNSS_SALARIAL) > 0.02) {
+    if (Math.abs(cnssRatio - CONSTANTS().CNSS_SALARIAL) > 0.02) {
     checks.push({
       name: 'Ratio CNSS aberrant',
       status: 'warning',
-      detail: `Ratio CNSS/Brut: ${(cnssRatio * 100).toFixed(2)}% (attendu ~${CONSTANTS.CNSS_SALARIAL * 100}%)`,
+      detail: `Ratio CNSS/Brut: ${(cnssRatio * 100).toFixed(2)}% (attendu ~${CONSTANTS().CNSS_SALARIAL * 100}%)`,
     });
   }
 
