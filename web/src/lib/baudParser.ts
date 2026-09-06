@@ -23,7 +23,14 @@ export interface Employee {
   bq_ou_poste: string;
   rib_ou_ccp: string;
   salaire_brut: number;
-  nouveau_salaire_brut: number;
+  nouveau_salaire_brut: number; // Depuis Excel col U ("Nouveau Salaire Brut") OU édition manuelle
+  // Source de vérité pour la priorité salaire_brut vs nouveau_salaire_brut :
+  // - false (défaut) → nouveau_salaire_brut vient de l'import Excel (colonne U)
+  // - true → nouveau_salaire_brut a été écrasé par une édition manuelle dans l'outil
+  // Règle calculateAll : nouveau_salaire_brut prime sur salaire_brut
+  //   UNIQUEMENT si salaire_manually_edited = true (édition manuelle > import Excel).
+  //   Sinon on utilise salaire_brut du dernier import Excel tel quel.
+  salaire_manually_edited?: boolean;
   date_sortie: string;
   date_recrutement: string;
   transport_plein: number; // Montant plein selon barème (92.800 ou 100.533)

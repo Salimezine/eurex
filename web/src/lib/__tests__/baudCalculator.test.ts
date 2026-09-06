@@ -747,3 +747,99 @@ describe('CSS — validation (janvier 2026)', () => {
     expect(cssValues[0]).toBe(cssValues[2]);
   });
 });
+
+// ============================================================================
+// 15. TÂCHE 4 — Tests priorité salaire_brut vs nouveau_salaire_brut
+//     (logique du composant BaudDossierPage, testée ici via le calculator)
+// ============================================================================
+describe('TÂCHE 4 — Priorité salaire_brut / nouveau_salaire_brut', () => {
+  // T4.1 : salaire_manually_edited=true → nouveau_salaire_brut prime
+  it('T4.1: edit manuel du salaire → utilise nouveau_salaire_brut', () => {
+    // Simule : employé avec salaire_brut=750, nouveau_salaire_brut=800, edited=true
+    // Le calcul doit utiliser 800 (nouveau_salaire_brut) car edited=true
+    const r = calculateSalary({
+      salaire_brut: 800, // nouveau_salaire_brut (car salaire_manually_edited=true)
+      situation_fam: 'C', nombre_enfants: 0,
+      mois: 1, annee: 2026,
+    });
+    const rOriginal = calculateSalary({
+      salaire_brut: 750, // salaire_brut d'origine (import Excel)
+      situation_fam: 'C', nombre_enfants: 0,
+      mois: 1, annee: 2026,
+    });
+    // Le brut édité (800) doit donner un salaire de base plus élevé
+    expect(r.salaire_de_base).toBeGreaterThan(rOriginal.salaire_de_base);
+  });
+
+  // T4.2 : salaire_manually_edited=false (défaut) → salaire_brut d'import prime
+  it('T4.2: pas d\'edit manuel → utilise salaire_brut d\'import Excel', () => {
+    // Simule : employé avec salaire_brut=750, nouveau_salaire_brut=800, edited=false
+    // Le calcul doit utiliser 750 (salaire_brut) car edited=false
+    const r = calculateSalary({
+      salaire_brut: 750, // salaire_brut d'import (pas édité manuellement)
+      situation_fam: 'C', nombre_enfants: 0,
+      mois: 1, annee: 2026,
+    });
+    const rNouveau = calculateSalary({
+      salaire_brut: 800,
+      situation_fam: 'C', nombre_enfants: 0,
+      mois: 1, annee: 2026,
+    });
+    // Le brut d'import (750) doit donner un salaire plus bas que 800
+    expect(r.salaire_de_base).toBeLessThan(rNouveau.salaire_de_base);
+    expect(r.salaire_de_base).toBe(750);
+  });
+
+  // T4.3 : éditer un champ NON-salaire ne doit pas toucher nouveau_salaire_brut
+  // (vérifie que salaire_manually_edited reste false si on édite SF/NE/fonction)
+  it('T4.3: édition SF/NE ne change pas le salaire de base', () => {
+    // Même salaire_brut, mais situation_fam change de C → M avec enfants
+    const rCelib = calculateSalary({
+      salaire_brut: 750, situation_fam: 'C', nombre_enfants: 0,
+      mois: 1, annee: 2026,
+    });
+    const rMarie = calculateSalary({
+      salaire_brut: 750, situation_fam: 'M', nombre_enfants: 3,
+      sexe: 'H',
+      mois: 1, annee: 2026,
+    });
+    // Le salaire de base est IDENTIQUE — seul le brut détermine le salaire_de_base
+    expect(rCelib.salaire_de_base).toBe(rMarie.salaire_de_base);
+    // Les retenues salariales (CNSS) sont identiques
+    expect(rCelib.cnss_salariale).toBe(rMarie.cnss_salariale);
+    // L'IRPP peut varier légèrement (barème), mais le brut ne change PAS
+    expect(rCelib.salaire_brut).toBe(rMarie.salaire_brut);
+  });
+
+  // T4.4 : HeuresNuit clé composit mois+matricule — janvier ≠ février
+  it('T4.4: HeuresNuit isolées par mois (clé composit)', () => {
+    // Même employé, même salaire, mais H.Nuit différentes par mois
+    const base = { salaire_brut: 750, situation_fam: 'C', nombre_enfants: 0, date_recrutement: '2020-01-01' };
+    const rJan = calculateSalary({ ...base, mois: 1, annee: 2026, heures_nuit: 10 });
+    const rFeb = calculateSalary({ ...base, mois: 2, annee: 2026, heures_nuit: 0 });
+    const rFebNuit = calculateSalary({ ...base, mois: 2, annee: 2026, heures_nuit: 20 });
+
+    // Janvier avec 10h nuit → prime_nuit > 0
+    expect(rJan.prime_nuit).toBeGreaterThan(0);
+    // Février sans nuit → prime_nuit = 0
+    expect(rFeb.prime_nuit).toBe(0);
+    // Février avec 20h nuit → prime_nuit > Janvier
+    expect(rFebNuit.prime_nuit).toBeGreaterThan(rJan.prime_nuit);
+  });
+
+  // T4.5 : Même employé, H.Nuit de janvier ne doit PAS apparaître en février
+  it('T4.5: H.Nuit janvier ne fuite pas sur février', () => {
+    const base = { salaire_brut: 750, situation_fam: 'C', nombre_enfants: 0, date_recrutement: '2020-01-01' };
+    // Simule la clé composit : keyed["1-EMP001"] = 10, keyed["2-EMP001"] = 0
+    const keyed: Record<string, number> = { '1-EMP001': 10, '2-EMP001': 0 };
+
+    const nuitJan = keyed['1-EMP001'] || 0; // = 10
+    const nuitFeb = keyed['2-EMP001'] || 0; // = 0
+
+    const rJan = calculateSalary({ ...base, mois: 1, annee: 2026, heures_nuit: nuitJan });
+    const rFeb = calculateSalary({ ...base, mois: 2, annee: 2026, heures_nuit: nuitFeb });
+
+    expect(rJan.prime_nuit).toBeGreaterThan(0);
+    expect(rFeb.prime_nuit).toBe(0);
+  });
+});

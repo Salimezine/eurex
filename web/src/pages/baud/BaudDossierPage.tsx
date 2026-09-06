@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -31,8 +31,16 @@ export default function BaudDossierPage() {
   const [editingEmployee, setEditingEmployee] = useState<string | null>(null);
   const [editingPointage, setEditingPointage] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
-  // Heures de nuit par employé (saisie manuelle)
+
+  // TÂCHE 3 : Heures de nuit par employé, clé composite "${mois}-${matricule}"
+  // Ne JAMAIS clécher par matricule seul → les H.Nuit de janvier fuiteraient sur février
   const [heuresNuit, setHeuresNuit] = useState<Record<string, number>>({});
+
+  // TÂCHE 2 : Debounced persist — éviter 1 appel réseau par frappe clavier
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPersistRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const [persistError, setPersistError] = useState<string | null>(null);
 
   // Export control
   const [sageExportResult, setSageExportResult] = useState<SageExportResult | null>(null);
@@ -62,6 +70,14 @@ export default function BaudDossierPage() {
 
   useEffect(() => { load(); }, [id]);
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+    };
+  }, []);
+
   const uploadFile = async () => {
     if (!dossier || !file) return;
     setUploading(true); setMsg('');
@@ -82,33 +98,51 @@ export default function BaudDossierPage() {
     setUploading(false);
   };
 
+  // TÂCHE 1 + 3 : calculateAll
+  //
+  // RÈGLE DE PRIORITÉ salaire_brut vs nouveau_salaire_brut :
+  //   - Si salaire_manually_edited = true → utiliser nouveau_salaire_brut
+  //     (l'utilisateur a explicitement édité le brut dans l'outil)
+  //   - Sinon → utiliser salaire_brut du dernier import Excel
+  //     (nouveau_salaire_brut peut venir de la colonne U de l'Excel et ne doit
+  //     pas écraser salaire_brut par défaut — ex: un changement de poste prévu
+  //     mais pas encore actif au mois en cours)
+  //
+  // TÂCHE 3 : heuresNuit cléché par "${mois}-${matricule}" pour isoler par mois.
   const calculateAll = () => {
+    const mois = dossier?.mois || 1;
     const results = new Map<string, SalaryResult>();
     for (const emp of employees) {
       const ptg = pointage.find(p => p.matricule === emp.matricule || p.nom === emp.nom);
       const absences = parseInt(ptg?.absences || '') || 0;
       const avances = ptg?.avances || 0;
-      let brut = emp.nouveau_salaire_brut > 0 ? emp.nouveau_salaire_brut : emp.salaire_brut;
+
+      // Priorité : nouveau_salaire_brut uniquement si édition manuelle explicite
+      const brut = emp.salaire_manually_edited && emp.nouveau_salaire_brut > 0
+        ? emp.nouveau_salaire_brut
+        : emp.salaire_brut;
+
       const hs = parseFloat(ptg?.heures_supplementaires || '') || 0;
-        const result = calculateSalary({
-          salaire_brut: brut,
-          situation_fam: emp.situation_fam,
-          nombre_enfants: emp.nombre_enfants,
-          sexe: emp.sexe,
-          absences_jours: absences,
-          heures_supplementaires: hs,
-          avances,
-          date_recrutement: emp.date_recrutement,
-          mois: dossier?.mois || 1,
-          annee: dossier?.annee || 2026,
-          heures_nuit: heuresNuit[emp.matricule] || emp.heures_nuit || 0,
-        });
+      const nuitKey = `${mois}-${emp.matricule}`;
+      const result = calculateSalary({
+        salaire_brut: brut,
+        situation_fam: emp.situation_fam,
+        nombre_enfants: emp.nombre_enfants,
+        sexe: emp.sexe,
+        absences_jours: absences,
+        heures_supplementaires: hs,
+        avances,
+        date_recrutement: emp.date_recrutement,
+        mois,
+        annee: dossier?.annee || 2026,
+        heures_nuit: heuresNuit[nuitKey] || emp.heures_nuit || 0,
+      });
       results.set(emp.matricule, result);
     }
     setSalaryResults(results);
     setTab('calcul');
     setMsg(`${results.size} salaires calculés`);
-    persistExtraction();
+    persistExtraction(employees, pointage, heuresNuit);
   };
 
   const generateSageExport = async () => {
@@ -214,43 +248,83 @@ export default function BaudDossierPage() {
     setVerifyResult(newResult);
   };
 
-  // Edit employee
-  // Persist extraction_json au backend (employees + pointage + heuresNuit)
-  const persistExtraction = () => {
+  // TÂCHE 2 : Debounced persist extraction_json au backend
+  // - Délai 800ms après dernière modification (évite 1 appel/frappe clavier)
+  // - Annule la requête précédente si une nouvelle arrive (pas de race condition)
+  // - Affiche erreur si échec réseau (pas de succès silencieux)
+  const persistExtraction = useCallback((employeesSnap: Employee[], pointageSnap: PointageData[], heuresNuitSnap: Record<string, number>) => {
     if (!dossier?.id) return;
     const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
-    const extractionJson = {
-      employees,
-      pointage,
-      heures_nuit: heuresNuit,
-      mois: dossier.mois,
-      annee: dossier.annee,
-      source_file: dossier.fichier_navette_nom || '',
-    };
-    fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(extractionJson),
-    }).catch(() => {});
-  };
+
+    // Annuler la requête en cours si elle existe
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // Annuler le timer précédent
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+    }
+
+    pendingPersistRef.current = true;
+    setPersistError(null);
+
+    persistTimerRef.current = setTimeout(async () => {
+      const extractionJson = {
+        employees: employeesSnap,
+        pointage: pointageSnap,
+        heures_nuit: heuresNuitSnap,
+        mois: dossier.mois,
+        annee: dossier.annee,
+        source_file: dossier.fichier_navette_nom || '',
+      };
+      try {
+        const resp = await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extractionJson),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          setPersistError(`Erreur sauvegarde: ${resp.status}`);
+        }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          setPersistError('Erreur réseau — modifications non sauvegardées');
+        }
+      }
+      pendingPersistRef.current = false;
+    }, 800);
+  }, [dossier?.id, dossier?.mois, dossier?.annee, dossier?.fichier_navette_nom]);
 
   const startEditEmployee = (emp: Employee) => {
     setEditingEmployee(emp.matricule);
     setEditValues({ ...emp });
   };
 
+  // TÂCHE 1 : saveEditEmployee
+  // nouveau_salaire_brut (col Excel U) est une vraie valeur d'import, PAS un artifact d'édition.
+  // On NE l'écrase QUE si le champ édité est explicitement salaire_brut.
+  // Les autres champs (SF, NE, fonction...) ne doivent PAS toucher nouveau_salaire_brut.
   const saveEditEmployee = () => {
     if (!editingEmployee) return;
-    // Quand l'utilisateur édite salaire_brut, on met à jour AUSSI nouveau_salaire_brut
-    // pour que calculateAll utilise la valeur édité (car il priorise nouveau_salaire_brut > 0)
+    const original = employees.find(e => e.matricule === editingEmployee);
     const updated = { ...editValues };
-    if (updated.salaire_brut !== undefined) {
+
+    // Si salaire_brut a été modifié (comparé à l'original), on sync nouveau_salaire_brut
+    // et on marque salaire_manually_edited = true pour que calculateAll sache prioriser
+    if (original && updated.salaire_brut !== original.salaire_brut) {
       updated.nouveau_salaire_brut = updated.salaire_brut;
+      updated.salaire_manually_edited = true;
     }
-    setEmployees(prev => prev.map(e => e.matricule === editingEmployee ? { ...e, ...updated } : e));
+
+    const newEmployees = employees.map(e => e.matricule === editingEmployee ? { ...e, ...updated } : e);
+    setEmployees(newEmployees);
     setEditingEmployee(null);
-    setMsg('Salaire mis à jour');
-    persistExtraction();
+    setMsg('Employé mis à jour');
+    persistExtraction(newEmployees, pointage, heuresNuit);
   };
 
   // Edit pointage
@@ -263,14 +337,16 @@ export default function BaudDossierPage() {
   const saveEditPointage = () => {
     if (!editingPointage) return;
     const exists = pointage.find(p => p.matricule === editingPointage);
+    let newPtg: PointageData[];
     if (exists) {
-      setPointage(prev => prev.map(p => p.matricule === editingPointage ? { ...p, ...editValues } : p));
+      newPtg = pointage.map(p => p.matricule === editingPointage ? { ...p, ...editValues } : p);
     } else {
-      setPointage(prev => [...prev, editValues]);
+      newPtg = [...pointage, editValues];
     }
+    setPointage(newPtg);
     setEditingPointage(null);
     setMsg('Pointage mis à jour');
-    persistExtraction();
+    persistExtraction(employees, newPtg, heuresNuit);
   };
 
   // Add new pointage entry
@@ -282,16 +358,18 @@ export default function BaudDossierPage() {
 
   // Delete pointage entry
   const deletePointageEntry = (matricule: string) => {
-    setPointage(prev => prev.filter(p => p.matricule !== matricule));
+    const newPtg = pointage.filter(p => p.matricule !== matricule);
+    setPointage(newPtg);
     setMsg('Pointage supprimé');
-    persistExtraction();
+    persistExtraction(employees, newPtg, heuresNuit);
   };
 
   // Fix duplicate matricule
   const fixDuplicateMatricule = (oldMatricule: string, newMatricule: string) => {
-    setEmployees(prev => prev.map(e => e.matricule === oldMatricule ? { ...e, matricule: newMatricule } : e));
+    const newEmps = employees.map(e => e.matricule === oldMatricule ? { ...e, matricule: newMatricule } : e);
+    setEmployees(newEmps);
     setMsg(`Matricule changé de ${oldMatricule} à ${newMatricule}`);
-    persistExtraction();
+    persistExtraction(newEmps, pointage, heuresNuit);
   };
 
   if (!dossier) return <div className="mt-8 text-gray-400 text-sm">Chargement...</div>;
@@ -324,6 +402,7 @@ export default function BaudDossierPage() {
       </div>
 
       {msg && <p className={`text-sm ${msg.includes('Erreur') ? 'text-red-600' : 'text-green-700'}`}>{msg}</p>}
+      {persistError && <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-1">⚠ {persistError}</p>}
 
       {/* TAB: IMPORT */}
       {tab === 'navette' && (
@@ -393,10 +472,11 @@ export default function BaudDossierPage() {
                             <td className="p-2 text-right font-mono text-xs">{emp.salaire_brut.toFixed(3)}</td>
                             <td className="p-1">
                               <input type="number" step="1" min="0"
-                                value={heuresNuit[emp.matricule] || emp.heures_nuit || ''}
+                                value={heuresNuit[`${dossier.mois}-${emp.matricule}`] || emp.heures_nuit || ''}
                                 onChange={e => {
                                   const val = parseFloat(e.target.value) || 0;
-                                  setHeuresNuit(prev => ({ ...prev, [emp.matricule]: val }));
+                                  const nuitKey = `${dossier.mois}-${emp.matricule}`;
+                                  setHeuresNuit(prev => ({ ...prev, [nuitKey]: val }));
                                 }}
                                 placeholder="0"
                                 className="w-16 text-xs border rounded px-1 text-right"
