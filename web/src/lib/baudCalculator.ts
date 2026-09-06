@@ -312,15 +312,15 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const ancienneteAnnees = date_recrutement
     ? calculateAnciennete(date_recrutement, mois, annee)
     : 0;
-  const tauxAnciennete = getTauxAnciennete(ancienneteAnnees);
+  const tauxAnciennete = cfg().anciennete_active ? getTauxAnciennete(ancienneteAnnees) : 0;
   const prime_anciennete = Math.round(salaire_base_reval * tauxAnciennete / 100 * 1000) / 1000;
 
   // 4. Heures supplémentaires (Article 90 Code du Travail)
   const heures_par_mois = (40 * 52) / 12; // = 173.33h/mois pour régime 40h
   const taux_horaire = salaire_de_base / heures_par_mois;
-  const hs_25 = Math.min(heures_supplementaires, 8 * 4.33);
+  const hs_25 = Math.min(heures_supplementaires, cfg().hs_seuil_25h_sem * 4.33);
   const hs_50 = Math.max(0, heures_supplementaires - hs_25);
-  const majoration_hs = Math.round((taux_horaire * hs_25 * 0.25 + taux_horaire * hs_50 * 0.50) * 1000) / 1000;
+  const majoration_hs = Math.round((taux_horaire * hs_25 * cfg().hs_majoration_25 + taux_horaire * hs_50 * cfg().hs_majoration_50) * 1000) / 1000;
 
   // =====================================================================
   // 5. COEFFICIENT DE PRÉSENCE — Base de la proratisation unifiée
@@ -329,7 +329,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // jours_ouvrés = weekdays du mois - jours fériés (calculé automatiquement)
   // Source confirmée: bulletin Sage Paie juin 2026 (22 jours ouvrés)
   const jours_ouvrables = jours_ouvrables_input
-    ?? (mois && annee ? calculateJoursOuvres(mois, annee) : cfg().jours_ouvrables_defaut);
+    ?? (cfg().jours_ouvrables_fixe ? cfg().jours_ouvrables_defaut : (mois && annee ? calculateJoursOuvres(mois, annee) : cfg().jours_ouvrables_defaut));
   let coefficient_presence: number;
   if (jours_payes_input !== undefined && jours_payes_input !== null) {
     // Source fiable: pointage/badgeuse ou bulletin
@@ -348,19 +348,21 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // Revalorisation décret 68/2026: +5%/an cumulatif depuis juin 2026
   // Application: transport_verse = transport_plein × revalorisation × coefficient_presence
   const transport_plein = transport_plein_input ?? ind_transport_legacy ?? 0;
-  // Revalorisation transport: +5% à partir de juin 2026 (décret 68/2026, JORT n°44)
-  const transport_reval = (annee > 2026 || (annee === 2026 && mois >= 6))
-    ? Math.round(transport_plein * Math.pow(1 + cfg().revalorisation_taux, annee - 2025) * 1000) / 1000
+  // Revalorisation transport: +5% à partir du mois/année configurés (décret 68/2026)
+  const c = cfg();
+  const revalApplique = (annee > c.revalorisation_debut_annee || (annee === c.revalorisation_debut_annee && mois >= c.revalorisation_debut_mois));
+  const transport_reval = revalApplique
+    ? Math.round(transport_plein * Math.pow(1 + c.revalorisation_taux, annee - (c.revalorisation_debut_annee - 1)) * 1000) / 1000
     : transport_plein;
   const ind_transport = Math.round(transport_reval * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
   // 7. PRÉSENCE — plein × revalorisation × coefficient
   // =====================================================================
-  // Montant plein: 7.856 (avant juin 2026) → 8.249 (depuis juin 2026)
-  const presence_plein_base = (mois >= 6 && annee === 2026) || annee > 2026
-    ? cfg().presence_plein_juin
-    : cfg().presence_plein_avant_juin;
+  // Montant plein: avant revalorisation → depuis revalorisation
+  const presence_plein_base = revalApplique
+    ? c.presence_plein_juin
+    : c.presence_plein_avant_juin;
   const presence_plein = prime_presence_legacy ?? presence_plein_base;
   const presence_reval = applyRevalorisation(presence_plein, annee);
   const prime_presence = Math.round(presence_reval * coefficient_presence * 1000) / 1000;
@@ -383,7 +385,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   if (heures_nuit > 0) {
     // Formule horaire : taux_horaire = base / (47.5h × 4 semaines) = base / 190
     const taux_horaire = salaire_de_base / 190;
-    prime_nuit = Math.round(taux_horaire * heures_nuit * 1.25 * 1000) / 1000;
+    prime_nuit = Math.round(taux_horaire * heures_nuit * (1 + cfg().nuit_majoration) * 1000) / 1000;
   } else {
     // Fallback : montant fixe par salarié × coefficient présence
     const prime_nuit_plein = prime_nuit_plein_input ?? prime_nuit_legacy ?? 0;

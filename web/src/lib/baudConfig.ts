@@ -39,7 +39,8 @@ export interface BaudConfig {
   mit_plein: number;             // 5000
 
   // Jours ouvrables
-  jours_ouvrables_defaut: number; // 26 (fallback)
+  jours_ouvrables_defaut: number; // 22 (fallback si pas fixe)
+  jours_ouvrables_fixe: boolean;  // true = toujours utiliser defaut (22), false = calculé du calendrier
 
   // Transport (paliers par fonction)
   transport_ouvrier: number;     // 92.800
@@ -54,7 +55,20 @@ export interface BaudConfig {
   alloc_enfants_max: number;     // 4
 
   // Ancienneté (barème)
+  anciennete_active: boolean;     // false par défaut (désactivée)
   anciennete_bareme: { min_years: number; taux: number }[];
+
+  // Heures supplémentaires (Article 90 Code du Travail)
+  hs_seuil_25h_sem: number;       // 8h/sem — seuil taux 25%
+  hs_majoration_25: number;       // 25% (≤ seuil)
+  hs_majoration_50: number;       // 50% (> seuil)
+
+  // Nuit (3802)
+  nuit_majoration: number;        // 25% majoration légale
+
+  // Revalorisation (Décret 68/2026)
+  revalorisation_debut_mois: number;  // 6 (juin)
+  revalorisation_debut_annee: number; // 2026
 
   // IRPP barème annuel
   irpp_barème: { min: number; max: number; taux: number }[];
@@ -89,7 +103,8 @@ const DEFAULTS: BaudConfig = {
   transport_ouvrier: 92.800,
   transport_chef: 100.533,
 
-  jours_ouvrables_defaut: 26,
+  jours_ouvrables_defaut: 22,
+  jours_ouvrables_fixe: true,
 
   revalorisation_taux: 0.05,
 
@@ -97,12 +112,22 @@ const DEFAULTS: BaudConfig = {
   alloc_enfant: 8.333,
   alloc_enfants_max: 4,
 
+  revalorisation_debut_mois: 6,
+  revalorisation_debut_annee: 2026,
+
+  anciennete_active: true,
   anciennete_bareme: [
     { min_years: 0, taux: 0 },
     { min_years: 3, taux: 5 },
     { min_years: 6, taux: 10 },
     { min_years: 9, taux: 15 },
   ],
+
+  hs_seuil_25h_sem: 8,
+  hs_majoration_25: 0.25,
+  hs_majoration_50: 0.50,
+
+  nuit_majoration: 0.25,
 
   irpp_barème: [
     { min: 0, max: 5000, taux: 0.00 },

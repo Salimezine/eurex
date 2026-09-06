@@ -144,6 +144,28 @@ export default function BaudParametres() {
       {/* Revalorisation */}
       <Section title="Revalorisation légale (décret 68/2026)">
         <Field label="Taux annuel" value={config.revalorisation_taux} onChange={v => update('revalorisation_taux', v)} suffix="%" step={0.01} defaultVal={defaults.revalorisation_taux} />
+        <div className="flex items-center gap-2 mb-1">
+          <label className="text-xs text-gray-500 w-48">Début d'application</label>
+          <select value={config.revalorisation_debut_mois} onChange={e => update('revalorisation_debut_mois', Number(e.target.value))} className="px-2 py-1 border rounded text-sm">
+            <option value={1}>Janvier</option><option value={2}>Février</option><option value={3}>Mars</option>
+            <option value={4}>Avril</option><option value={5}>Mai</option><option value={6}>Juin</option>
+            <option value={7}>Juillet</option><option value={8}>Août</option><option value={9}>Septembre</option>
+            <option value={10}>Octobre</option><option value={11}>Novembre</option><option value={12}>Décembre</option>
+          </select>
+          <input type="number" value={config.revalorisation_debut_annee} onChange={e => update('revalorisation_debut_annee', Number(e.target.value))} className="w-20 px-2 py-1 border rounded text-sm" step={1} />
+        </div>
+      </Section>
+
+      {/* Heures supplémentaires */}
+      <Section title="Heures supplémentaires (Art. 90 Code du Travail)">
+        <Field label="Seuil taux 25% (h/sem)" value={config.hs_seuil_25h_sem} onChange={v => update('hs_seuil_25h_sem', v)} suffix="h" step={0.5} defaultVal={defaults.hs_seuil_25h_sem} />
+        <Field label="Majoration 25% (≤ seuil)" value={config.hs_majoration_25 * 100} onChange={v => update('hs_majoration_25', v / 100)} suffix="%" step={1} defaultVal={defaults.hs_majoration_25 * 100} />
+        <Field label="Majoration 50% (> seuil)" value={config.hs_majoration_50 * 100} onChange={v => update('hs_majoration_50', v / 100)} suffix="%" step={1} defaultVal={defaults.hs_majoration_50 * 100} />
+      </Section>
+
+      {/* Nuit */}
+      <Section title="Heures de nuit (3802)">
+        <Field label="Majoration légale" value={config.nuit_majoration * 100} onChange={v => update('nuit_majoration', v / 100)} suffix="%" step={1} defaultVal={defaults.nuit_majoration * 100} />
       </Section>
 
       {/* Allocations familiales */}
@@ -155,11 +177,25 @@ export default function BaudParametres() {
 
       {/* Jours ouvrables */}
       <Section title="Jours ouvrables">
-        <Field label="Défaut (fallback)" value={config.jours_ouvrables_defaut} onChange={v => update('jours_ouvrables_defaut', v)} suffix="jours" step={1} defaultVal={defaults.jours_ouvrables_defaut} />
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-xs text-gray-500 w-48">Mode</label>
+          <button onClick={() => update('jours_ouvrables_fixe', !config.jours_ouvrables_fixe)} className={`px-3 py-1 rounded text-sm font-medium ${config.jours_ouvrables_fixe ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+            {config.jours_ouvrables_fixe ? 'FIXE' : 'CALCULÉ'}
+          </button>
+          <span className="text-xs text-gray-400">défaut: {defaults.jours_ouvrables_fixe ? 'FIXE' : 'CALCULÉ'}</span>
+        </div>
+        <Field label="Nombre de jours" value={config.jours_ouvrables_defaut} onChange={v => update('jours_ouvrables_defaut', v)} suffix="jours" step={1} defaultVal={defaults.jours_ouvrables_defaut} />
       </Section>
 
       {/* Barème ancienneté */}
-      <Section title="Barème prime d'ancienneté">
+      <Section title="Prime d'ancienneté">
+        <div className="flex items-center gap-2 mb-3">
+          <label className="text-xs text-gray-500 w-48">Activée</label>
+          <button onClick={() => update('anciennete_active', !config.anciennete_active)} className={`px-3 py-1 rounded text-sm font-medium ${config.anciennete_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+            {config.anciennete_active ? 'OUI' : 'NON'}
+          </button>
+          <span className="text-xs text-gray-400">défaut: {defaults.anciennete_active ? 'OUI' : 'NON'}</span>
+        </div>
         {config.anciennete_bareme.map((b, i) => (
           <div key={i} className="flex items-center gap-2 mb-1">
             <span className="text-xs text-gray-500 w-32">≥ {b.min_years} ans</span>
