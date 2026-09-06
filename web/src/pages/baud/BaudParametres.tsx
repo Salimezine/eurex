@@ -158,6 +158,8 @@ export default function BaudParametres() {
 
       {/* Heures supplémentaires */}
       <Section title="Heures supplémentaires (Art. 90 Code du Travail)">
+        <Field label="Heures/semaine" value={config.heures_semaine} onChange={v => update('heures_semaine', v)} suffix="h" step={1} defaultVal={defaults.heures_semaine} />
+        <Field label="Semaines/an" value={config.semaines_annee} onChange={v => update('semaines_annee', v)} suffix="" step={1} defaultVal={defaults.semaines_annee} />
         <Field label="Seuil taux 25% (h/sem)" value={config.hs_seuil_25h_sem} onChange={v => update('hs_seuil_25h_sem', v)} suffix="h" step={0.5} defaultVal={defaults.hs_seuil_25h_sem} />
         <Field label="Majoration 25% (≤ seuil)" value={config.hs_majoration_25 * 100} onChange={v => update('hs_majoration_25', v / 100)} suffix="%" step={1} defaultVal={defaults.hs_majoration_25 * 100} />
         <Field label="Majoration 50% (> seuil)" value={config.hs_majoration_50 * 100} onChange={v => update('hs_majoration_50', v / 100)} suffix="%" step={1} defaultVal={defaults.hs_majoration_50 * 100} />
@@ -165,6 +167,7 @@ export default function BaudParametres() {
 
       {/* Nuit */}
       <Section title="Heures de nuit (3802)">
+        <Field label="Base heures/mois" value={config.heures_base_nuit} onChange={v => update('heures_base_nuit', v)} suffix="h" step={1} defaultVal={defaults.heures_base_nuit} />
         <Field label="Majoration légale" value={config.nuit_majoration * 100} onChange={v => update('nuit_majoration', v / 100)} suffix="%" step={1} defaultVal={defaults.nuit_majoration * 100} />
       </Section>
 

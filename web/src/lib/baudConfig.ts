@@ -59,11 +59,14 @@ export interface BaudConfig {
   anciennete_bareme: { min_years: number; taux: number }[];
 
   // Heures supplémentaires (Article 90 Code du Travail)
+  heures_semaine: number;         // 40h — régime hebdomadaire
+  semaines_annee: number;         // 52
   hs_seuil_25h_sem: number;       // 8h/sem — seuil taux 25%
   hs_majoration_25: number;       // 25% (≤ seuil)
   hs_majoration_50: number;       // 50% (> seuil)
 
   // Nuit (3802)
+  heures_base_nuit: number;       // 190 (47.5h × 4 sem) — base horaire nuit
   nuit_majoration: number;        // 25% majoration légale
 
   // Revalorisation (Décret 68/2026)
@@ -123,10 +126,13 @@ const DEFAULTS: BaudConfig = {
     { min_years: 9, taux: 15 },
   ],
 
+  heures_semaine: 40,
+  semaines_annee: 52,
   hs_seuil_25h_sem: 8,
   hs_majoration_25: 0.25,
   hs_majoration_50: 0.50,
 
+  heures_base_nuit: 190,
   nuit_majoration: 0.25,
 
   irpp_barème: [
