@@ -3,6 +3,7 @@ import Home from './pages/Home';
 import DossierPage from './pages/DossierPage';
 import BaudSocietes from './pages/baud/BaudSocietes';
 import BaudDossierPage from './pages/baud/BaudDossierPage';
+import BaudParametres from './pages/baud/BaudParametres';
 import ScanSocietes from './pages/scanflash/ScanSocietes';
 import ScanDossierPage from './pages/scanflash/ScanDossierPage';
 import EtatsFinanciers from './pages/ef/EtatsFinanciers';
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/dossier/:id" element={<DossierPage />} />
           <Route path="/baud/societes" element={<BaudSocietes />} />
+          <Route path="/baud/parametres" element={<BaudParametres />} />
           <Route path="/baud/dossier/:id" element={<BaudDossierPage />} />
           <Route path="/scanflash" element={<ScanSocietes />} />
           <Route path="/scanflash/dossier/:id" element={<ScanDossierPage />} />

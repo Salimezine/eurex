@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { FolderOpen, Plus, Trash2 } from 'lucide-react';
 
@@ -50,7 +51,10 @@ export default function BaudSocietes() {
     <div className="space-y-4 mt-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Societes</h2>
-        <button onClick={() => setShowNew(!showNew)} className="px-3 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-700">+ Nouvelle</button>
+        <div className="flex items-center gap-2">
+          <Link to="/baud/parametres" className="text-gray-400 hover:text-gray-600" title="Paramètres"><Settings size={18} /></Link>
+          <button onClick={() => setShowNew(!showNew)} className="px-3 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-700">+ Nouvelle</button>
+        </div>
       </div>
 
       {showNew && (

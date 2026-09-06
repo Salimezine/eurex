@@ -3,6 +3,8 @@
  * Reads DP sheet (employee list) and Pointage sheet (absences, avances, CP, HS)
  */
 
+import { getConfig } from './baudConfig.js';
+
 export interface Employee {
   matricule: string;
   nom: string;
@@ -154,11 +156,12 @@ function inferSexe(prenom: string): string {
  * - Chef d'équipe / Conducteur d'engins: 100.533 DT
  */
 function getTransportPlein(fonction: string): number {
+  const c = getConfig();
   const f = fonction.toLowerCase();
   if (f.includes('chef') || f.includes('conducteur') || f.includes('engin')) {
-    return 100.533;
+    return c.transport_chef;
   }
-  return 92.800; // Default: ouvrier
+  return c.transport_ouvrier;
 }
 
 export function parseFichePersonnel(workbook: any, filename: string): ParsedFiche {

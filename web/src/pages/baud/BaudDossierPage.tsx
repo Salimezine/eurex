@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
 import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult } from '../../lib/baudCalculator';
@@ -399,6 +399,7 @@ export default function BaudDossierPage() {
         <Link to="/baud/societes" className="text-gray-400 hover:text-gray-600"><ArrowLeft className="w-5 h-5" /></Link>
         <h2 className="text-xl font-semibold">Dossier {String(dossier.mois).padStart(2, '0')}/{dossier.annee}</h2>
         <span className={`px-2 py-0.5 rounded text-xs font-medium ${dossier.statut === 'valide' ? 'bg-green-100 text-green-700' : dossier.statut === 'controle' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{dossier.statut}</span>
+        <Link to="/baud/parametres" className="ml-auto text-gray-400 hover:text-gray-600" title="Paramètres"><Settings size={18} /></Link>
       </div>
 
       <div className="flex gap-1 border-b">

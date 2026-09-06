@@ -28,6 +28,8 @@
  *   → assiettes CNSS (brut - lait - prime_aid) / IRPP / CSS (0.5% RNI, seuil 5000 DT/an)
  */
 
+import { getConfig } from './baudConfig.js';
+
 export interface SalaryInput {
   salaire_brut: number;
   situation_fam: string; // M=Marié, C=Célibataire, D=Divorcé, V=Veuf
@@ -126,93 +128,11 @@ export interface SalaryResult {
   irpp_detail: { tranche: string; taux: number; montant: number; impot: number }[];
 }
 
-// Barème IRPP annuel 2026 (LF 2025 art. 36) — 8 tranches
-// L'IRPP est calculé sur le revenu ANNUEL imposable
-const IRPP_BRACKET_ANNUAL = [
-  { min: 0,     max: 5000,   taux: 0.00 },
-  { min: 5000,  max: 10000,  taux: 0.15 },
-  { min: 10000, max: 20000,  taux: 0.25 },
-  { min: 20000, max: 30000,  taux: 0.30 },
-  { min: 30000, max: 40000,  taux: 0.33 },
-  { min: 40000, max: 50000,  taux: 0.36 },
-  { min: 50000, max: 70000,  taux: 0.38 },
-  { min: 70000, max: Infinity, taux: 0.40 },
-];
+// Barème IRPP annuel — lecture depuis config
+// (les constantes hardcoded sont remplacées par getConfig())
 
-// Plafond CNSS salarié
-const PLAFOND_CNSS = 5000; // DT/mois
-
-// Taux CNSS
-const TAUX_CNSS_SALARIAL = 0.0968; // 9.68%
-const TAUX_CNSS_PATRONAL = 0.1707; // 17.07% — depuis janvier 2025
-const TAUX_AT_MP = 0.005;          // 0.5%
-const TAUX_TFP = 0.02;             // 2% — Taxe Formation Professionnelle (BTP/industriel)
-const TAUX_FOPROLOS = 0.01;        // 1%
-const TAUX_CSS = 0.005;            // 0.5% — Loi n°92-73, LF 2023 art. 22
-
-// Allocations familiales (mensuel)
-const ALLOC_CHEF_FAMILLE = 25;     // 300 DT/an / 12
-const ALLOC_ENFANT = 8.333;        // 100 DT/an / 12
-
-// SMIG 2026 — Décret n°2026-67 du 30 avril 2026, JORT n°44
-// Régime 40h/semaine: 470,251 DT/mois | Régime 48h: 554,736 DT/mois
-// On utilise le régime 40h comme base (régime BTP standard)
-const SMIG_2026 = 470.251; // DT/mois — régime 40h/semaine
-
-// Barème prime d'ancienneté — Barème générique tunisien (pas de convention BTP spécifique)
-// Source: usage courant en Tunisie, non défini par la convention collective BTP
-// Configurable via config.json → prime_anciennete.bareme
-const BAREME_ANCIENNETE_DEFAULT = [
-  { min_years: 0, taux: 0 },     // < 3 ans: pas de prime
-  { min_years: 3, taux: 5 },     // 3-6 ans: 5%
-  { min_years: 6, taux: 10 },    // 6-9 ans: 10%
-  { min_years: 9, taux: 15 },    // ≥ 9 ans: 15% (plafond)
-];
-
-// Revalorisation légale — Décret n°68 du 30 avril 2026 (JORT n°44)
-// +5% par an (cumulatif) sur salaires de base, indemnités de transport et de présence
-// pour les secteurs non agricoles soumis à des conventions collectives sectorielles
-// Application: 2026, 2027, 2028 (calculé sur les montants revalorisés de l'année précédente)
-// Exception: entreprises ayant déjà accordé des augmentations équivalentes ou supérieures
-const REVALORISATION_TAUX = 0.05; // +5% par an
-
-// Indemnité de transport — Convention BTP Tunisie
-// Le montant plein varie par salarié (au moins 2 paliers confirmés: 92.800 et 100.533 DT)
-// Le champ transport_plein par salarié est requis — PAS de valeur unique d'entreprise
-// Revalorisation: +5%/an cumulatif depuis juin 2026 (décret 68/2026)
-// Application: transport_verse = transport_plein × revalorisation × coefficient_presence
-
-// Indemnité de présence — Convention BTP Tunisie
-// Montant plein par mois: 7.856 DT (avant juin 2026) → 8.249 DT (depuis juin 2026)
-// Revalorisation: +5%/an cumulatif depuis juin 2026 (décret 68/2026)
-// Application: présence_verse = présence_plein × revalorisation × coefficient_presence
-
-// ============================================================================
-// PRIMES LÉGALES — Convention BTP Tunisie + Décret n°2003-1098
-// ============================================================================
-// MONTANTS PLEINS MENSUELS (universels, deduits empiriquement des bulletins réels)
-// Toutes les primes sont proratisées par coefficient_presence
-//   montant_verse = montant_plein × coefficient_presence
-//
-// Exclusion CNSS: le lait (4385) et le savon (3801) sont exclus de l'assiette CNSS
-// selon Décret n°2003-1098 du 19 mai 2003, Article 11
-// ============================================================================
-
-// Montants pleins mensuels (à vérifier avec texte convention BTP réel)
-const PRIME_PANIER_PLEIN = 12.320;   // DT/mois — 2330
-const PRIME_DOUCHE_PLEIN = 25.000;   // DT/mois — 3210
-const PRIME_SAVON_PLEIN = 5.400;     // DT/mois — 3801 (exclue CNSS)
-const PRIME_LAIT_PLEIN = 29.700;     // DT/mois — 4385 (exclue CNSS)
-const PRIME_LOGEMENT_PLEIN = 26.293; // DT/mois — 4383
-const PRESENCE_PLEIN_BEFORE_JUNE = 7.856; // DT/mois — 2200 (avant juin 2026)
-const PRESENCE_PLEIN_JUNE_2026 = 8.249;   // DT/mois — 2200 (depuis juin 2026, décret 68)
-const MIT_PLEIN = 5000; // DT/mois — Contribution Maladie, Invalidité, Tuberculose (montant fixe, PAS un %)
-
-// Jours ouvrés par mois — calculés depuis le calendrier (weekdays)
-// Le coefficient = (jours_ouvrés - absences) / jours_ouvrés
-// Source: bulletin Sage Paie — l'entreprise ne soustrait PAS les jours fériés
-// Ex: mars 2026 = 22 jours (22 weekdays, même si vendredi 20 est férié)
-const JOURS_OUVRABLES_DEFAUT = 26; // Fallback si mois/année non renseignés
+// Lecture centralisée de la config — appelé à chaque calculateSalary
+function cfg() { return getConfig(); }
 
 /**
  * Calcule le nombre de jours ouvrés (lundi-vendredi) dans un mois donné.
@@ -286,7 +206,7 @@ export function calculateAnciennete(dateRecrutement: string, mois: number, annee
  * @returns Taux en pourcentage (ex: 5 pour 5%)
  */
 export function getTauxAnciennete(ancienneteAnnees: number, bareme?: { min_years: number; taux: number }[]): number {
-  const b = bareme || BAREME_ANCIENNETE_DEFAULT;
+  const b = bareme || cfg().anciennete_bareme;
   let taux = 0;
   for (const palier of b) {
     if (ancienneteAnnees >= palier.min_years) {
@@ -309,7 +229,7 @@ export function applyRevalorisation(valeur: number, annee: number, anneeBase: nu
   if (annee <= anneeBase) return valeur;
   const nbAnnees = annee - anneeBase;
   // Application cumulative: valeur × (1.05)^n
-  return Math.round(valeur * Math.pow(1 + REVALORISATION_TAUX, nbAnnees) * 1000) / 1000;
+  return Math.round(valeur * Math.pow(1 + cfg().revalorisation_taux, nbAnnees) * 1000) / 1000;
 }
 
 /**
@@ -326,7 +246,7 @@ export function calculateIRPPAnnuel(
   const detail: { tranche: string; taux: number; montant: number; impot: number }[] = [];
   let remaining = revenuAnnuelImposable;
 
-  for (const bracket of IRPP_BRACKET_ANNUAL) {
+  for (const bracket of cfg().irpp_barème) {
     if (remaining <= 0) break;
     const tranche_size = bracket.max === Infinity ? remaining : bracket.max - bracket.min;
     const taxable = Math.min(remaining, tranche_size);
@@ -409,7 +329,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // jours_ouvrés = weekdays du mois - jours fériés (calculé automatiquement)
   // Source confirmée: bulletin Sage Paie juin 2026 (22 jours ouvrés)
   const jours_ouvrables = jours_ouvrables_input
-    ?? (mois && annee ? calculateJoursOuvres(mois, annee) : JOURS_OUVRABLES_DEFAUT);
+    ?? (mois && annee ? calculateJoursOuvres(mois, annee) : cfg().jours_ouvrables_defaut);
   let coefficient_presence: number;
   if (jours_payes_input !== undefined && jours_payes_input !== null) {
     // Source fiable: pointage/badgeuse ou bulletin
@@ -430,7 +350,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const transport_plein = transport_plein_input ?? ind_transport_legacy ?? 0;
   // Revalorisation transport: +5% à partir de juin 2026 (décret 68/2026, JORT n°44)
   const transport_reval = (annee > 2026 || (annee === 2026 && mois >= 6))
-    ? Math.round(transport_plein * Math.pow(1 + REVALORISATION_TAUX, annee - 2025) * 1000) / 1000
+    ? Math.round(transport_plein * Math.pow(1 + cfg().revalorisation_taux, annee - 2025) * 1000) / 1000
     : transport_plein;
   const ind_transport = Math.round(transport_reval * coefficient_presence * 1000) / 1000;
 
@@ -439,8 +359,8 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // =====================================================================
   // Montant plein: 7.856 (avant juin 2026) → 8.249 (depuis juin 2026)
   const presence_plein_base = (mois >= 6 && annee === 2026) || annee > 2026
-    ? PRESENCE_PLEIN_JUNE_2026
-    : PRESENCE_PLEIN_BEFORE_JUNE;
+    ? cfg().presence_plein_juin
+    : cfg().presence_plein_avant_juin;
   const presence_plein = prime_presence_legacy ?? presence_plein_base;
   const presence_reval = applyRevalorisation(presence_plein, annee);
   const prime_presence = Math.round(presence_reval * coefficient_presence * 1000) / 1000;
@@ -448,12 +368,12 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // =====================================================================
   // 8. PRIMES LÉGALES — plein × coefficient (PAS de revalorisation)
   // =====================================================================
-  const prime_panier = Math.round((prime_panier_plein ?? PRIME_PANIER_PLEIN) * coefficient_presence * 1000) / 1000;
-  const prime_douche = Math.round((prime_douche_plein ?? PRIME_DOUCHE_PLEIN) * coefficient_presence * 1000) / 1000;
-  const prime_savon = Math.round((prime_savon_plein ?? PRIME_SAVON_PLEIN) * coefficient_presence * 1000) / 1000;
-  const prime_lait = Math.round((prime_lait_plein ?? PRIME_LAIT_PLEIN) * coefficient_presence * 1000) / 1000;
+  const prime_panier = Math.round((prime_panier_plein ?? cfg().prime_panier) * coefficient_presence * 1000) / 1000;
+  const prime_douche = Math.round((prime_douche_plein ?? cfg().prime_douche) * coefficient_presence * 1000) / 1000;
+  const prime_savon = Math.round((prime_savon_plein ?? cfg().prime_savon) * coefficient_presence * 1000) / 1000;
+  const prime_lait = Math.round((prime_lait_plein ?? cfg().prime_lait) * coefficient_presence * 1000) / 1000;
   const prime_aid = Math.round((prime_aid_plein ?? 0) * coefficient_presence * 1000) / 1000;
-  const prime_logement = Math.round((prime_logement_plein ?? prime_logement_legacy ?? PRIME_LOGEMENT_PLEIN) * coefficient_presence * 1000) / 1000;
+  const prime_logement = Math.round((prime_logement_plein ?? prime_logement_legacy ?? cfg().prime_logement) * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
   // 9. NUIT — heures_nuit × taux_horaire × 1.25 (majoration légale 25%)
@@ -487,7 +407,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // =====================================================================
   // Certains employés ont MIT=0 (LAZAAR, RHILI, SLIMEN, SIRAT) — contrôlé par mit_applicable
   const mit = mit_applicable
-    ? Math.round(MIT_PLEIN * coefficient_presence * 1000) / 1000
+    ? Math.round(cfg().mit_plein * coefficient_presence * 1000) / 1000
     : 0;
 
   // =====================================================================
@@ -512,13 +432,13 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const assiette_cnss = Math.max(0, salaire_brut - prime_lait - prime_aid);
 
   // 10. CNSS salarié (9.68% sur assiette, excluant lait — pas de plafond)
-  const cnss_salariale = Math.round(assiette_cnss * TAUX_CNSS_SALARIAL * 1000) / 1000;
+  const cnss_salariale = Math.round(assiette_cnss * cfg().cnss_salarial * 1000) / 1000;
 
   // 9. Revenu imposable (Brut total - CNSS)
   const revenu_imposable = Math.max(0, salaire_brut - cnss_salariale);
 
   // 10. Frais professionnels (10% plafonné à 2000 DT/an = 166.67 DT/mois)
-  const frais_pro_annuel = Math.min(revenu_imposable * 12 * 0.10, 2000);
+  const frais_pro_annuel = Math.min(revenu_imposable * 12 * cfg().frais_pro_taux, cfg().frais_pro_plafond);
   const frais_pro = Math.round((frais_pro_annuel / 12) * 1000) / 1000;
 
   // 11. Revenu net imposable
@@ -539,19 +459,19 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   //     pour les employés à faible revenu (ex-employés janvier).
   //
   //     Résidu documenté (blocker CSS-2) : N/A — formule validée à 100%.
-  const css_salariale = Math.round(revenu_net_imposable * TAUX_CSS * 1000) / 1000;
+  const css_salariale = Math.round(revenu_net_imposable * cfg().css * 1000) / 1000;
 
   // 14. Charges patronales (sur brut total incluant heures sup)
-  const cnss_patronale = Math.round(salaire_brut * TAUX_CNSS_PATRONAL * 1000) / 1000;
-  const at_mp = Math.round(salaire_brut * TAUX_AT_MP * 1000) / 1000;
-  const tfp = Math.round(salaire_brut * TAUX_TFP * 1000) / 1000;
-  const foprolos = Math.round(salaire_brut * TAUX_FOPROLOS * 1000) / 1000;
+  const cnss_patronale = Math.round(salaire_brut * cfg().cnss_patronal * 1000) / 1000;
+  const at_mp = Math.round(salaire_brut * cfg().at_mp * 1000) / 1000;
+  const tfp = Math.round(salaire_brut * cfg().tfp * 1000) / 1000;
+  const foprolos = Math.round(salaire_brut * cfg().foprolos * 1000) / 1000;
 
   // 15. Allocations familiales (crédit sur bulletin)
   let alloc_familiales = 0;
   if (situation_fam === 'M') {
-    alloc_familiales += ALLOC_CHEF_FAMILLE;
-    alloc_familiales += Math.min(nombre_enfants, 4) * ALLOC_ENFANT;
+    alloc_familiales += cfg().alloc_chef_famille;
+    alloc_familiales += Math.min(nombre_enfants, cfg().alloc_enfants_max) * cfg().alloc_enfant;
   }
   alloc_familiales = Math.round(alloc_familiales * 1000) / 1000;
 
@@ -770,17 +690,6 @@ export interface SageExportResult {
 }
 
 /**
- * SMIG 2026 — Décret n°2026-67 du 30 avril 2026, JORT n°44
- * Régime 40h/semaine: 470,251 DT/mois | Régime 48h: 554,736 DT/mois
- * Régime BTP standard = 40h/semaine
- */
-const SMIG_REGIME_40H: Record<number, number> = {
-  2026: 470.251,
-  2027: 493.304,
-  2028: 517.571,
-};
-
-/**
  * Génère le fichier d'importation Sage Paie 100 (format "long").
  *
  * Structure : une ligne par salarié par rubrique.
@@ -820,7 +729,7 @@ export function generateSagePaieExport(
   const periode = `${String(mois).padStart(2, '0')}/${annee}`;
 
   // SMIG applicable pour l'année
-  const smigApplicable = SMIG_REGIME_40H[annee] || SMIG_REGIME_40H[2026];
+  const smigApplicable = cfg().smig_40h;
 
   const rubriquesUsed = new Set<string>();
   let warnings = 0;
