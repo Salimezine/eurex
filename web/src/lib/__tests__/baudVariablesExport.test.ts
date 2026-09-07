@@ -90,4 +90,38 @@ describe('Export Variables Sage — generateSageVariablesExport', () => {
     const abs209074 = result.rows.find(r => r.matricule === '209074' && r.variable === 'ABSENCES_JOURS');
     expect(abs209074?.valeur).toBe('0');
   });
+
+  it('détecte les matricules invalides (pas de 209xxx)', () => {
+    const mixedEmployees = [
+      { matricule: '209071', nom: 'ROUHI', prenom: 'Nabil', matricule_valid: true },
+      { matricule: '5', nom: 'BEN ALI', prenom: 'Ahmed', matricule_valid: false },
+      { matricule: '', nom: 'DUPONT', prenom: 'Jean', matricule_valid: false },
+    ];
+    const result = generateSageVariablesExport(mixedEmployees, [], {}, 6, 2026);
+    expect(result.invalidMatricules).toBeDefined();
+    expect(result.invalidMatricules!.length).toBe(2);
+    expect(result.invalidMatricules!.map(e => e.nom)).toContain('BEN ALI');
+    expect(result.invalidMatricules!.map(e => e.nom)).toContain('DUPONT');
+  });
+
+  it('jointure par nom+prénom quand matricule vide dans pointage', () => {
+    const employees = [
+      { matricule: '209071', nom: 'ROUHI', prenom: 'Nabil', matricule_valid: true },
+    ];
+    // Pointage avec matricule vide mais nom/prénom correct
+    const pointage = [{ matricule: '', absences: '5', avances: 100, heures_supplementaires: '15', nom: 'ROUHI', prenom: 'Nabil' }];
+    const result = generateSageVariablesExport(employees, pointage, {}, 6, 2026);
+    const abs = result.rows.find(r => r.variable === 'ABSENCES_JOURS');
+    const av = result.rows.find(r => r.variable === 'AVANCES');
+    const hs = result.rows.find(r => r.variable === 'HEURES_SUP');
+    expect(abs?.valeur).toBe('5');
+    expect(av?.valeur).toBe('100.000');
+    expect(hs?.valeur).toBe('15.0');
+  });
+
+  it('tous les matricules valides → invalidMatricules vide', () => {
+    const result = generateSageVariablesExport(defaultEmployees, [], {}, 6, 2026);
+    expect(result.invalidMatricules).toBeDefined();
+    expect(result.invalidMatricules!.length).toBe(0);
+  });
 });

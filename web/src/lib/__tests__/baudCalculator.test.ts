@@ -438,6 +438,7 @@ describe('Integration — tous les mois et tous les salaries', () => {
       adresse: '', type_contrat: 'CDI', duree: '', numero_cnss: '12345678',
       bq_ou_poste: '', rib_ou_ccp: 'TN5901234567890123456789',
       date_sortie: '',
+      matricule_valid: true,
     }));
 
     const results = new Map<string, SalaryResult>();

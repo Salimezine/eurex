@@ -1142,6 +1142,7 @@ export interface SageVariablesExportResult {
     totalEmployees: number;
     variablesExported: string[];
   };
+  invalidMatricules?: { matricule: string; nom: string; prenom: string }[];
 }
 
 /**
@@ -1166,8 +1167,8 @@ export interface SageVariablesExportResult {
  *   majorations HS, coefficient de proratisation.
  */
 export function generateSageVariablesExport(
-  employees: { matricule: string; nom: string; prenom: string }[],
-  pointage: { matricule: string; absences: string; avances: number; heures_supplementaires: string }[],
+  employees: { matricule: string; nom: string; prenom: string; matricule_valid?: boolean }[],
+  pointage: { matricule: string; absences: string; avances: number; heures_supplementaires: string; nom?: string; prenom?: string }[],
   heuresNuit: Record<string, number>,
   mois: number,
   annee: number
@@ -1177,9 +1178,21 @@ export function generateSageVariablesExport(
   const rows: SageVariableRow[] = [];
   const variablesExported: string[] = [];
 
+  // Blocage si des matricules sont invalides
+  const invalidMatricules = employees
+    .filter(emp => emp.matricule_valid === false || (!emp.matricule || emp.matricule.length < 3))
+    .map(emp => ({ matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom }));
+
   for (const emp of employees) {
-    // Jointure pointage par matricule
-    const ptg = pointage.find(p => p.matricule === emp.matricule);
+    // Jointure pointage: d'abord par matricule, sinon par nom+prénom
+    let ptg = pointage.find(p => p.matricule && emp.matricule && p.matricule === emp.matricule);
+    if (!ptg && emp.nom && emp.prenom) {
+      ptg = pointage.find(p =>
+        p.nom && p.prenom &&
+        p.nom === emp.nom.toUpperCase() &&
+        p.prenom.toLowerCase() === emp.prenom.toLowerCase()
+      );
+    }
     const absences = ptg ? (parseInt(ptg.absences, 10) || 0) : 0;
     const avances = ptg ? (ptg.avances || 0) : 0;
     const hs = ptg ? (parseFloat(ptg.heures_supplementaires) || 0) : 0;
@@ -1209,5 +1222,6 @@ export function generateSageVariablesExport(
       totalEmployees: employees.length,
       variablesExported,
     },
+    invalidMatricules,
   };
 }

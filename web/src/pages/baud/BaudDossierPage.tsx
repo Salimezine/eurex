@@ -211,6 +211,15 @@ export default function BaudDossierPage() {
 
   const generateSageVariablesExportHandler = async () => {
     if (!dossier || employees.length === 0) { setMsg('Importez d\'abord le fichier personnel'); return; }
+
+    // Blocage : vérifier les matricules invalides
+    const invalidEmps = employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false);
+    if (invalidEmps.length > 0) {
+      const list = invalidEmps.map(e => `• ${e.nom} ${e.prenom} (mat: "${e.matricule || 'VIDE'}")`).join('\n');
+      setMsg(`BLOQUÉ: ${invalidEmps.length} salarié(s) sans matricule Sage valide:\n${list}\n\nRemplissez la colonne "Mat" (format 209xxx) dans le fichier Excel RH puis réimportez.`);
+      return;
+    }
+
     setGenerating(true); setMsg('');
     try {
       const variablesResult = generateSageVariablesExport(
@@ -710,10 +719,27 @@ export default function BaudDossierPage() {
                 <div className="flex-1">
                   <p className="text-xs text-gray-500">Prépare les variables d'entrée — Sage applique ses propres paramètres et barèmes</p>
                 </div>
-                <button onClick={generateSageVariablesExportHandler} disabled={generating || employees.length === 0} className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1">
+                <button onClick={generateSageVariablesExportHandler} disabled={generating || employees.length === 0 || employees.some(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false)} className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
                   {generating ? 'Generation...' : 'Generer + Exporter'}
                 </button>
               </div>
+              {/* Blocage matricule: liste des salariés sans matricule Sage */}
+              {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length > 0 && (
+                <div className="bg-red-50 border border-red-300 rounded p-3 text-xs">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertTriangle size={14} className="text-red-600" />
+                    <span className="font-semibold text-red-700">
+                      {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length} salarié(s) sans matricule Sage valide
+                    </span>
+                  </div>
+                  <p className="text-red-600 mb-2">Remplissez la colonne <strong>"Mat"</strong> (format 209xxx) dans le fichier Excel RH, puis réimportez.</p>
+                  <ul className="max-h-32 overflow-y-auto space-y-1 text-red-600">
+                    {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).map((e, i) => (
+                      <li key={i}>• {e.nom} {e.prenom} — mat actuel: "{e.matricule || 'VIDE'}"</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="text-xs text-gray-400 space-y-1">
                 <p><strong>Variables mensuelles :</strong> Absences, Heures sup, Heures nuit, Avances</p>
                 <p><strong>Sage gère (fiche employé) :</strong> Salaire de base, Situation familiale, Enfants, Catégorie, Fonction, Date embauche, CNSS, IRPP, CSS, Transport, Présence, Primes, MIT</p>

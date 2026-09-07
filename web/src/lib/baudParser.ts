@@ -37,6 +37,7 @@ export interface Employee {
   date_recrutement: string;
   transport_plein: number; // Montant plein selon barème (92.800 ou 100.533)
   heures_nuit: number; // Nombre d'heures de nuit par mois (saisie manuelle)
+  matricule_valid: boolean; // false si colonne "Mat" était vide → export bloqué
 }
 
 export interface PointageData {
@@ -196,11 +197,9 @@ export function parseFichePersonnel(workbook: any, filename: string): ParsedFich
       const dateSortie = cleanStr(row[DP_COLUMNS.date_sortie]);
       if (dateSortie && dateSortie.length > 0) continue;
 
-      // Matricule: use the "Mat" column (index 1) if present, otherwise use row number
-      let matricule = cleanStr(row[1]);
-      if (!matricule) {
-        matricule = String(row[0] || i - headerRow);
-      }
+      // Matricule: use the "Mat" column (index 1) — must be a real Sage matricule (209xxx)
+      // Column A contains position numbers (1, 2, 4...) which are NOT valid matricules
+      const matricule = cleanStr(row[1]);
 
       const sf = cleanStr(row[DP_COLUMNS.sf]);
       let situationFam = 'C'; // Default: célibataire
@@ -236,6 +235,8 @@ export function parseFichePersonnel(workbook: any, filename: string): ParsedFich
         transport_plein: getTransportPlein(cleanStr(row[DP_COLUMNS.fonction])),
         // Heures de nuit — saisie manuelle (pas dans le fichier Excel)
         heures_nuit: 0,
+        // Matricule valide = commence par "209" (format Sage)
+        matricule_valid: matricule.length > 0 && matricule.startsWith('209'),
       });
     }
   }
@@ -263,27 +264,24 @@ export function parseFichePersonnel(workbook: any, filename: string): ParsedFich
       const prenom = cleanStr(row[POINTAGE_COLUMNS.prenom]);
       if (!nom && !prenom) continue;
 
-      let matricule = cleanStr(row[1]);
-      if (!matricule) matricule = String(row[0] || '');
+      // Matricule: use "Mat" column only — don't fallback to position number
+      const matricule = cleanStr(row[1]);
 
-      // Skip detail rows (row after each employee, with phone loans etc.)
       const absences = cleanStr(row[POINTAGE_COLUMNS.absences]);
       const avances = parseNum(row[POINTAGE_COLUMNS.avances]);
       const cp = cleanStr(row[POINTAGE_COLUMNS.conges_payes]);
       const hs = cleanStr(row[POINTAGE_COLUMNS.heures_sup]);
 
-      // Only add if has meaningful data
-      if (absences || avances || cp || hs) {
-        pointage.push({
-          matricule,
-          nom: nom.toUpperCase(),
-          prenom,
-          absences,
-          avances,
-          conges_payes: cp,
-          heures_supplementaires: hs,
-        });
-      }
+      // Always add entries — even without data — for name-based matching
+      pointage.push({
+        matricule,
+        nom: nom.toUpperCase(),
+        prenom,
+        absences,
+        avances,
+        conges_payes: cp,
+        heures_supplementaires: hs,
+      });
     }
   }
 
