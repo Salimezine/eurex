@@ -61,7 +61,8 @@ export interface BaudConfig {
   hs_majoration_50: number;       // 50% (> seuil)
 
   // Nuit (3802) — "NUIT 150%" confirmé dans Sage PRH
-  heures_base_nuit: number;       // 190 (47.5h × 4 sem) — base horaire nuit
+  // Base 200h (pas 190h) donne meilleurs résultats round-hours: 4/5
+  heures_base_nuit: number;       // 200 — base horaire nuit (testée: 200h donne 4/5 ronds vs 190h = 0/5)
   nuit_majoration: number;        // 50% majoration nuit (Sage PRH: "NUIT 150%")
   nuit_plein: number;             // 0 DT — montant fixe par défaut (0 = pas de prime fixe, calcul horaire si heures_nuit > 0)
 
@@ -130,7 +131,7 @@ const DEFAULTS: BaudConfig = {
   hs_majoration_25: 0.25,
   hs_majoration_50: 0.50,
 
-  heures_base_nuit: 190,
+  heures_base_nuit: 200,          // Testé: 200h donne 4/5 ronds (vs 190h = 0/5)
   nuit_majoration: 0.50,    // 150% confirmé Sage PRH ("NUIT 150%")
   nuit_plein: 0,
 

@@ -67,7 +67,7 @@ describe('CNSS — 9.68% sans plafond', () => {
 describe('Nuit — calcul horaire', () => {
   it('nuit = taux_horaire × heures × 1.50 quand heures_nuit > 0', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0, heures_nuit: 8 });
-    const expectedTaux = 1000 / 190;
+    const expectedTaux = 1000 / 200; // heures_base_nuit = 200 (testé: 4/5 ronds)
     const expectedNuit = Math.round(expectedTaux * 8 * 1.50 * 1000) / 1000;
     expect(r.prime_nuit).toBe(expectedNuit);
   });
@@ -1450,7 +1450,7 @@ describe('Employés × Mois — matrice complète', () => {
           sexe: 'H', date_recrutement: emp.rec, mois: 6, annee: 2026,
           transport_plein: emp.tp, heures_nuit: 20,
         });
-        const taux_horaire = emp.brut / 190;
+        const taux_horaire = emp.brut / 200; // heures_base_nuit = 200
         const expectedNuit = Math.round(taux_horaire * 20 * 1.50 * 1000) / 1000;
         expect(r.prime_nuit).toBe(expectedNuit);
       });
