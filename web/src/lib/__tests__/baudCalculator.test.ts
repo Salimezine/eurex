@@ -184,25 +184,25 @@ describe('Calcul salaire — ordre des operations', () => {
       transport_plein: 95.002,
     });
     expect(r.salaire_de_base).toBe(1000);
-    expect(r.prime_anciennete).toBe(100);
+    expect(r.prime_anciennete).toBe(0); // ancienneté désactivée par défaut
     // Transport: 95.002 × 1.05 (reval juin 2026) × 1.0 (coeff = 1) = 99.752
     expect(r.ind_transport).toBe(99.752);
     // Presence: 8.249 (juin 2026) × 1.0 = 8.249
     expect(r.prime_presence).toBe(8.249);
     expect(r.coefficient_presence).toBe(1);
-    // Brut includes all primes légales (logement defaults to 26.293)
-    expect(r.salaire_brut).toBe(Math.round((1000 + 0 + 100 + 99.752 + 8.249
-      + r.prime_panier + r.prime_douche + r.prime_savon + r.prime_lait + r.prime_logement) * 1000) / 1000);
+    // Brut includes all primes légales + MIT
+    expect(r.salaire_brut).toBe(Math.round((1000 + 0 + 0 + 99.752 + 8.249
+      + r.prime_panier + r.prime_douche + r.prime_savon + r.prime_lait + r.prime_logement + r.mit) * 1000) / 1000);
   });
 
-  it('2028 : prime sur base revalORISEE', () => {
+  it('2028 : prime sur base revalorisée (anciennete disabled → 0)', () => {
     const r = calculateSalary({
       salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0,
       date_recrutement: '2020-01-01', mois: 6, annee: 2028,
     });
     const expectedBase = Math.round(1000 * 1.05 * 1.05 * 1000) / 1000;
     expect(r.salaire_de_base).toBe(expectedBase);
-    expect(r.prime_anciennete).toBe(Math.round(expectedBase * 10 / 100 * 1000) / 1000);
+    expect(r.prime_anciennete).toBe(0); // anciennete_active: false
   });
 
   it('net = brut - cnss - irpp - css - avances', () => {
@@ -244,9 +244,9 @@ describe('Export Sage Paie 100', () => {
     expect(e.rows.map(r => r.code_rubrique)).not.toContain('4120');
   });
 
-  it('4120 PRESENTE quand enabled', () => {
+  it('4120 ABSENTE quand anciennete_active false (même si primeAncienneteEnabled=true)', () => {
     const e = generateSagePaieExport(employees, [], results, 6, 2026, true);
-    expect(e.rows.map(r => r.code_rubrique)).toContain('4120');
+    expect(e.rows.map(r => r.code_rubrique)).not.toContain('4120');
   });
 
   it('format colonnes correct', () => {
@@ -260,12 +260,10 @@ describe('Export Sage Paie 100', () => {
     }
   });
 
-  it('alloc 5100 pour marie + enfants', () => {
+  it('pas de rubrique 5100 alloc familiales (absent chez STE BAUD)', () => {
     const e = generateSagePaieExport(employees, [], results, 6, 2026, false);
     const allocRows = e.rows.filter(r => r.code_rubrique === '5100');
-    expect(allocRows.length).toBeGreaterThan(0);
-    expect(allocRows.find(r => r.matricule === '209070')).toBeUndefined();
-    expect(allocRows.find(r => r.matricule === '209071')!.valeur).toBeGreaterThan(0);
+    expect(allocRows.length).toBe(0);
   });
 });
 
@@ -304,8 +302,8 @@ describe('Validation DALY SONDES juin 2026', () => {
     // Transport revalorisé juin 2026: 95.002 × 1.05 = 99.752
     expect(r.ind_transport).toBe(99.752);
     expect(r.prime_presence).toBe(8.249);
-    expect(r.taux_anciennete).toBe(10);
-    expect(r.prime_anciennete).toBe(Math.round(592.928 * 10 / 100 * 1000) / 1000);
+    expect(r.taux_anciennete).toBe(0); // ancienneté désactivée
+    expect(r.prime_anciennete).toBe(0);
   });
 
   it('CNSS correct (excluant lait)', () => {
@@ -535,10 +533,10 @@ describe('Primes légales — Convention BTP', () => {
     expect(r2.prime_logement).toBe(0);
   });
 
-  it('MIT = 5000 DT × coefficient (montant fixe, PAS un %)', () => {
+  it('MIT = 5.000 DT × coefficient (montant fixe, PAS un %)', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026 });
-    // coefficient = 1.0 (mois complet), MIT = 5000 × 1.0
-    expect(r.mit).toBe(5000);
+    // coefficient = 1.0 (mois complet), MIT = 5.000 × 1.0
+    expect(r.mit).toBe(5.000);
   });
 
   it('MIT = 0 quand mit_applicable = false', () => {
@@ -554,16 +552,17 @@ describe('Primes légales — Convention BTP', () => {
     expect(r.cnss_salariale).toBe(Math.round(expectedAssiette * 0.0968 * 1000) / 1000);
   });
 
-  it('brut inclut toutes les primes légales proratisées (sauf nuit, HS, rappel)', () => {
+  it('brut inclut toutes les primes légales proratisées (HS via heures, rappel=0 par défaut)', () => {
     const r = calculateSalary({
       salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026,
       prime_nuit_plein: 70, prime_logement_plein: 25,
       transport_plein: 95.002,
     });
     // coeff = 1.0, presence = 8.249, transport revalorisé juin 2026: 95.002 × 1.05 = 99.752
+    // nuit = 70 × 1.0 = 70 (incluse dans le brut Total bulletin)
     const expectedBrut = Math.round((
       600 + 99.752 + 8.249
-      + 12.320 + 25.000 + 5.400 + 29.700 + 25
+      + 12.320 + 25.000 + 5.400 + 29.700 + 25 + 70 + 5.000
     ) * 1000) / 1000;
     expect(r.salaire_brut).toBe(expectedBrut);
   });
@@ -582,7 +581,7 @@ describe('Primes légales — Convention BTP', () => {
     });
     const expectedBrut = Math.round((
       600 + 99.752 + 8.249
-      + 12.320 + 25.000 + 5.400 + 29.700 + 26.293 + 200
+      + 12.320 + 25.000 + 5.400 + 29.700 + 26.293 + 200 + 5.000
     ) * 1000) / 1000;
     expect(r.salaire_brut).toBe(expectedBrut);
   });
@@ -685,10 +684,10 @@ describe('Coefficient de présence', () => {
     expect(r.prime_presence).toBe(Math.round(8.249 * coeff * 1000) / 1000);
   });
 
-  it('MIT calculé sur coefficient (montant fixe 5000 × coeff)', () => {
+  it('MIT calculé sur coefficient (montant fixe 5.000 × coeff)', () => {
     const r = calculateSalary({ salaire_brut: 600, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, absences_jours: 2 });
     const coeff = Math.round((20 / 22) * 10000) / 10000;
-    expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
+    expect(r.mit).toBe(Math.round(5.000 * coeff * 1000) / 1000);
   });
 
   it('augmentation proratisée SANS revalorisation', () => {
@@ -914,7 +913,7 @@ describe('Tests par mois — détail complet', () => {
       expect(r.css_salariale).toBe(expected);
     });
 
-    it('brut total contient base + transport + présence + primes_légales (sans MIT)', () => {
+    it('brut total contient base + transport + présence + primes_légales + MIT', () => {
       const r = calc(1);
       const expectedBrut = Math.round((
         r.salaire_de_base
@@ -928,6 +927,7 @@ describe('Tests par mois — détail complet', () => {
         + r.prime_lait
         + r.prime_logement
         + r.augmentation
+        + r.mit
       ) * 1000) / 1000;
       expect(r.salaire_brut).toBe(expectedBrut);
     });
@@ -942,9 +942,10 @@ describe('Tests par mois — détail complet', () => {
       expect(r.coefficient_presence).toBe(1);
     });
 
-    it('coefficient = 21/22 avec 1 absence', () => {
+    it('coefficient = 19/20 avec 1 absence (février = 20 jours ouvrés)', () => {
       const r = calc(2, { absences: 1 });
-      const expected = Math.round((21 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(2, 2026);
+      const expected = Math.round(((jours - 1) / jours) * 10000) / 10000;
       expect(r.coefficient_presence).toBeCloseTo(expected, 4);
     });
 
@@ -987,13 +988,12 @@ describe('Tests par mois — détail complet', () => {
       expect(r.prime_savon).toBe(Math.round(5.400 * coeff * 1000) / 1000);
       expect(r.prime_lait).toBe(Math.round(29.700 * coeff * 1000) / 1000);
       expect(r.prime_logement).toBe(Math.round(26.293 * coeff * 1000) / 1000);
-      expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
+      expect(r.mit).toBe(Math.round(5.000 * coeff * 1000) / 1000);
     });
 
-    it('net a payer = net + alloc (marié 25 + 2×8.333)', () => {
+    it('net a payer = net (pas alloc STE BAUD)', () => {
       const r = calc(3);
-      const alloc = Math.round((25 + 2 * 8.333) * 1000) / 1000;
-      expect(r.net_a_payer).toBe(Math.round((r.salaire_net + alloc) * 1000) / 1000);
+      expect(r.net_a_payer).toBe(r.salaire_net);
     });
   });
 
@@ -1100,9 +1100,10 @@ describe('Tests par mois — détail complet', () => {
       expect(r.prime_presence).toBe(8.249);
     });
 
-    it('coefficient = 20/22 avec 2 absences', () => {
+    it('coefficient = 21/23 avec 2 absences (juillet = 23 jours ouvrés)', () => {
       const r = calc(7, { absences: 2 });
-      const expected = Math.round((20 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(7, 2026);
+      const expected = Math.round(((jours - 2) / jours) * 10000) / 10000;
       expect(r.coefficient_presence).toBeCloseTo(expected, 4);
     });
 
@@ -1129,29 +1130,30 @@ describe('Tests par mois — détail complet', () => {
       expect(r.prime_presence).toBe(8.249);
     });
 
-    it('coefficient = 17/22 avec 5 absences', () => {
+    it('coefficient = 16/21 avec 5 absences (août = 21 jours ouvrés)', () => {
       const r = calc(8, { absences: 5 });
-      const expected = Math.round((17 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(8, 2026);
+      const expected = Math.round(((jours - 5) / jours) * 10000) / 10000;
       expect(r.coefficient_presence).toBeCloseTo(expected, 4);
     });
 
     it('toutes les primes proratisées avec 5 absences', () => {
       const r = calc(8, { absences: 5 });
-      const coeff = Math.round((17 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(8, 2026);
+      const coeff = Math.round(((jours - 5) / jours) * 10000) / 10000;
       expect(r.prime_panier).toBe(Math.round(12.320 * coeff * 1000) / 1000);
       expect(r.prime_douche).toBe(Math.round(25.000 * coeff * 1000) / 1000);
       expect(r.prime_savon).toBe(Math.round(5.400 * coeff * 1000) / 1000);
       expect(r.prime_lait).toBe(Math.round(29.700 * coeff * 1000) / 1000);
       expect(r.prime_logement).toBe(Math.round(26.293 * coeff * 1000) / 1000);
-      expect(r.mit).toBe(Math.round(5000 * coeff * 1000) / 1000);
+      expect(r.mit).toBe(Math.round(5.000 * coeff * 1000) / 1000);
       expect(r.ind_transport).toBe(Math.round(100 * 1.05 * coeff * 1000) / 1000);
       expect(r.prime_presence).toBe(Math.round(8.249 * coeff * 1000) / 1000);
     });
 
-    it('net a payer avec alloc (marié +2 enfants)', () => {
+    it('net a payer = salaire_net (pas alloc)', () => {
       const r = calc(8);
-      const alloc = Math.round((25 + 2 * 8.333) * 1000) / 1000;
-      expect(r.net_a_payer).toBe(Math.round((r.salaire_net + alloc) * 1000) / 1000);
+      expect(r.net_a_payer).toBe(r.salaire_net);
     });
   });
 
@@ -1208,21 +1210,250 @@ describe('Tests par mois — détail complet', () => {
       expect(r.total_retenues).toBe(expected);
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — 22 jours ouvrables fixes', (m) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — jours ouvrables dynamiques', (m) => {
       const r = calc(m);
-      expect(r.coefficient_presence).toBe(1); // 22/22 = 1.0
+      const jours = calculateJoursOuvres(m, 2026);
+      expect(r.coefficient_presence).toBe(1); // jours/jours = 1.0
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff 20/22 avec 2 absences', (m) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff (jours-2)/jours avec 2 absences', (m) => {
       const r = calc(m, { absences: 2 });
-      const expected = Math.round((20 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(m, 2026);
+      const expected = Math.round(((jours - 2) / jours) * 10000) / 10000;
       expect(r.coefficient_presence).toBeCloseTo(expected, 4);
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff 17/22 avec 5 absences', (m) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8])('Mois %i — coeff (jours-5)/jours avec 5 absences', (m) => {
       const r = calc(m, { absences: 5 });
-      const expected = Math.round((17 / 22) * 10000) / 10000;
+      const jours = calculateJoursOuvres(m, 2026);
+      const expected = Math.round(((jours - 5) / jours) * 10000) / 10000;
       expect(r.coefficient_presence).toBeCloseTo(expected, 4);
     });
+  });
+});
+
+// ============================================================================
+// Tests complets — Chaque employé × Chaque mois (8 × 6 = 48 combinaisons)
+// ============================================================================
+describe('Employés × Mois — matrice complète', () => {
+  const emps = [
+    { mat: '209070', nom: 'DALY', sf: 'C' as const, ne: 0, rec: '2020-01-01', brut: 592.928, tp: 95.002, anc: [10,10,10,10,10,10,10,10] },
+    { mat: '209071', nom: 'ROUHI', sf: 'M' as const, ne: 2, rec: '2018-06-01', brut: 800, tp: 100.533, anc: [10,10,10,10,10,10,10,10] },
+    { mat: '209072', nom: 'BACCOUCHE', sf: 'M' as const, ne: 3, rec: '2015-03-01', brut: 750, tp: 92.800, anc: [15,15,15,15,15,15,15,15] },
+    { mat: '209073', nom: 'ZAYANI', sf: 'C' as const, ne: 0, rec: '2022-09-01', brut: 650, tp: 95.002, anc: [5,5,5,5,5,5,5,5] },
+    { mat: '209074', nom: 'BEN SLIMENE', sf: 'M' as const, ne: 1, rec: '2010-01-01', brut: 400, tp: 92.800, anc: [15,15,15,15,15,15,15,15] },
+    { mat: '209075', nom: 'AAMRI', sf: 'C' as const, ne: 0, rec: '2023-06-01', brut: 6008.771, tp: 100.533, anc: [0,0,0,0,0,5,5,5] },
+  ];
+
+  const mois = [1, 2, 3, 4, 5, 6, 7, 8];
+
+  // ───────────────────────────────────────────────────────────────────
+  // 1. Chaque employé × chaque mois — valeurs de base
+  // ───────────────────────────────────────────────────────────────────
+  for (const emp of emps) {
+    describe(`${emp.nom} (${emp.brut} DT)`, () => {
+      for (const m of mois) {
+        const reval = m >= 6;
+        const transportAttendu = reval
+          ? Math.round(emp.tp * 1.05 * 1000) / 1000
+          : emp.tp;
+        const presenceAttendue = reval ? 8.249 : 7.856;
+
+        it(`Mois ${m} — brut, net, cnss, css, transport`, () => {
+          const r = calculateSalary({
+            salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+            sexe: 'H', date_recrutement: emp.rec, mois: m, annee: 2026,
+            transport_plein: emp.tp,
+          });
+
+          // Coefficient 1.0 (mois complet, pas d'absences)
+          expect(r.coefficient_presence).toBe(1);
+
+          // Transport
+          expect(r.ind_transport).toBe(transportAttendu);
+
+          // Présence
+          expect(r.prime_presence).toBe(presenceAttendue);
+
+          // Ancienneté désactivée
+          expect(r.taux_anciennete).toBe(0);
+          expect(r.prime_anciennete).toBe(0);
+
+          // CNSS = 9.68% × (brut − lait)
+          const expectedCNSS = Math.round(Math.max(0, r.salaire_brut - r.prime_lait) * 0.0968 * 1000) / 1000;
+          expect(r.cnss_salariale).toBe(expectedCNSS);
+
+          // CSS = 0.5% × RNI
+          const rni = Math.max(0, r.revenu_imposable - r.frais_pro);
+          const expectedCSS = Math.round(rni * 0.005 * 1000) / 1000;
+          expect(r.css_salariale).toBe(expectedCSS);
+
+          // Net = brut − retenues
+          const expectedNet = Math.round((r.salaire_brut - r.total_retenues) * 1000) / 1000;
+          expect(r.salaire_net).toBe(expectedNet);
+
+          // Retenues = cnss + irpp + css
+          const expectedRetenues = Math.round((r.cnss_salariale + r.irpp + r.css_salariale) * 1000) / 1000;
+          expect(r.total_retenues).toBe(expectedRetenues);
+        });
+      }
+
+      // ───────────────────────────────────────────────────────────────
+      // 2. Absences — coeff 20/22 pour chaque employé × mois 6 (reval)
+      // ───────────────────────────────────────────────────────────────
+      it('Mois 6 — 2 absences → coeff dynamique, toutes primes proratisées', () => {
+        const jours = calculateJoursOuvres(6, 2026);
+        const r = calculateSalary({
+          salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+          sexe: 'H', date_recrutement: emp.rec, mois: 6, annee: 2026,
+          transport_plein: emp.tp, absences_jours: 2,
+        });
+        const coeff = Math.round(((jours - 2) / jours) * 10000) / 10000;
+        expect(r.coefficient_presence).toBeCloseTo(coeff, 4);
+        expect(r.ind_transport).toBeCloseTo(Math.round(emp.tp * 1.05 * ((jours - 2) / jours) * 1000) / 1000, 2);
+        expect(r.prime_panier).toBe(Math.round(12.320 * coeff * 1000) / 1000);
+        expect(r.prime_douche).toBe(Math.round(25.000 * coeff * 1000) / 1000);
+        expect(r.prime_savon).toBe(Math.round(5.400 * coeff * 1000) / 1000);
+        expect(r.prime_lait).toBe(Math.round(29.700 * coeff * 1000) / 1000);
+        expect(r.prime_logement).toBe(Math.round(26.293 * coeff * 1000) / 1000);
+        expect(r.mit).toBe(Math.round(5.000 * coeff * 1000) / 1000);
+      });
+
+      // ───────────────────────────────────────────────────────────────
+      // 3. Absences — coeff 17/22 pour chaque employé × mois 3 (avant reval)
+      // ───────────────────────────────────────────────────────────────
+      it('Mois 3 — 5 absences → coeff dynamique, primes proratisées', () => {
+        const jours = calculateJoursOuvres(3, 2026);
+        const r = calculateSalary({
+          salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+          sexe: 'H', date_recrutement: emp.rec, mois: 3, annee: 2026,
+          transport_plein: emp.tp, absences_jours: 5,
+        });
+        const coeff = Math.round(((jours - 5) / jours) * 10000) / 10000;
+        expect(r.coefficient_presence).toBeCloseTo(coeff, 4);
+        // Transport sans revalorisation
+        expect(r.ind_transport).toBe(Math.round(emp.tp * coeff * 1000) / 1000);
+        expect(r.prime_presence).toBe(Math.round(7.856 * coeff * 1000) / 1000);
+      });
+
+      // ───────────────────────────────────────────────────────────────
+      // 4. Net a payer = salaire net (pas alloc chez STE BAUD)
+      // ───────────────────────────────────────────────────────────────
+      it('Mois 8 — net_a_payer = salaire_net', () => {
+        const r = calculateSalary({
+          salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+          sexe: 'H', date_recrutement: emp.rec, mois: 8, annee: 2026,
+          transport_plein: emp.tp,
+        });
+        expect(r.net_a_payer).toBe(r.salaire_net);
+      });
+    });
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // 5. Comparaison bas vs haut salaire
+  // ───────────────────────────────────────────────────────────────────
+  describe('Comparaison salaires', () => {
+    it('AAMRI (6008) paie plus de CNSS que DALY (592)', () => {
+      const rAamri = calculateSalary({ salaire_brut: 6008.771, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, transport_plein: 100.533 });
+      const rDaly = calculateSalary({ salaire_brut: 592.928, situation_fam: 'C', nombre_enfants: 0, mois: 6, annee: 2026, transport_plein: 95.002 });
+      expect(rAamri.cnss_salariale).toBeGreaterThan(rDaly.cnss_salariale);
+    });
+
+    it('BEN SLIMENE (400) paie moins d IRPP que ROUHI (800)', () => {
+      const rBen = calculateSalary({ salaire_brut: 400, situation_fam: 'M', nombre_enfants: 1, mois: 6, annee: 2026, transport_plein: 92.800 });
+      const rRouhi = calculateSalary({ salaire_brut: 800, situation_fam: 'M', nombre_enfants: 2, mois: 6, annee: 2026, transport_plein: 100.533 });
+      expect(rBen.irpp).toBeLessThanOrEqual(rRouhi.irpp);
+    });
+
+    it('net_a_payer = salaire_net pour tous (pas alloc)', () => {
+      const rRouhi = calculateSalary({ salaire_brut: 800, situation_fam: 'M', nombre_enfants: 2, mois: 6, annee: 2026, transport_plein: 100.533 });
+      const rBen = calculateSalary({ salaire_brut: 400, situation_fam: 'M', nombre_enfants: 1, mois: 6, annee: 2026, transport_plein: 92.800 });
+      expect(rRouhi.net_a_payer).toBe(rRouhi.salaire_net);
+      expect(rBen.net_a_payer).toBe(rBen.salaire_net);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // 6. Export Sage — chaque mois × chaque employé
+  // ───────────────────────────────────────────────────────────────────
+  describe('Export Sage — matrice complète', () => {
+    for (const m of mois) {
+      it(`Mois ${m} — toutes les rubriques générées`, () => {
+        const results = new Map<string, SalaryResult>();
+        for (const emp of emps) {
+          results.set(emp.mat, calculateSalary({
+            salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+            sexe: 'H', date_recrutement: emp.rec, mois: m, annee: 2026,
+            transport_plein: emp.tp,
+          }));
+        }
+
+        const sageEmps = emps.map(e => ({
+          matricule: e.mat, nom: e.nom, prenom: e.nom,
+          nouveau_salaire_brut: e.brut, salaire_brut: e.brut,
+        }));
+        const exportResult = generateSagePaieExport(sageEmps, [], results, m, 2026, false);
+
+        expect(exportResult.rows.length).toBeGreaterThan(0);
+        expect(exportResult.smigViolations.length).toBe(0);
+
+        for (const emp of emps) {
+          const empRows = exportResult.rows.filter(r => r.matricule === emp.mat);
+          const codes = empRows.map(r => r.code_rubrique);
+          expect(codes).toContain('1000'); // Salaire de base
+          expect(codes).toContain('3100'); // CNSS
+          expect(codes).toContain('3310'); // IRPP
+          expect(codes).toContain('3320'); // CSS
+
+          const periode = `${String(m).padStart(2, '0')}/2026`;
+          for (const row of empRows) {
+            expect(row.periode).toBe(periode);
+          }
+        }
+      });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // 7. Heures sup — test par employé
+  // ───────────────────────────────────────────────────────────────────
+  describe('Heures supplémentaires — par employé', () => {
+    for (const emp of emps) {
+      it(`${emp.nom} — 10h sup à mois 6`, () => {
+        const r = calculateSalary({
+          salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+          sexe: 'H', date_recrutement: emp.rec, mois: 6, annee: 2026,
+          transport_plein: emp.tp, heures_supplementaires: 10,
+        });
+        expect(r.heures_supplementaires).toBe(10);
+        expect(r.majoration_hs).toBeGreaterThan(0);
+        expect(r.salaire_brut).toBeGreaterThan(
+          calculateSalary({
+            salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+            sexe: 'H', date_recrutement: emp.rec, mois: 6, annee: 2026,
+            transport_plein: emp.tp,
+          }).salaire_brut
+        );
+      });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // 8. Nuit — test par employé avec heures_nuit
+  // ───────────────────────────────────────────────────────────────────
+  describe('Nuit — par employé avec 20h nuit', () => {
+    for (const emp of emps) {
+      it(`${emp.nom} — 20h nuit à mois 6`, () => {
+        const r = calculateSalary({
+          salaire_brut: emp.brut, situation_fam: emp.sf, nombre_enfants: emp.ne,
+          sexe: 'H', date_recrutement: emp.rec, mois: 6, annee: 2026,
+          transport_plein: emp.tp, heures_nuit: 20,
+        });
+        const taux_horaire = emp.brut / 190;
+        const expectedNuit = Math.round(taux_horaire * 20 * 1.25 * 1000) / 1000;
+        expect(r.prime_nuit).toBe(expectedNuit);
+      });
+    }
   });
 });

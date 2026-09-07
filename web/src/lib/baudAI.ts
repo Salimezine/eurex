@@ -209,7 +209,12 @@ function verifyEmployee(
   }
 
   // 3. IRPP — Loi n74-9, bareme annuel LF 2025 art. 36
-  const expectedIRPP = calculateExpectedIRPP(result.revenu_net_imposable);
+  //    Inclut abattements familiaux (Note Commune N°3/2025, DGI)
+  const expectedIRPP = calculateExpectedIRPP(
+    result.revenu_net_imposable,
+    emp.situation_fam,
+    emp.nombre_enfants,
+  );
   if (Math.abs(result.irpp - expectedIRPP) > 0.01) {
     checks.push({
       name: 'IRPP incorrect',
@@ -293,8 +298,8 @@ function verifyEmployee(
     checks.push({ name: 'RIB manquant', status: 'warning', detail: `${empLabel}: RIB/CCP manquant`, employee: emp.matricule });
   }
 
-  // 12. Taux anciennete — Art. 135 CT (loi n66-27)
-  if (emp.date_recrutement) {
+  // 12. Taux anciennete — Art. 135 CT (loi n66-27) — seulement si activé
+  if (emp.date_recrutement && getConfig().anciennete_active) {
     const expectedTaux = getTauxAnciennete(result.anciennete_annees);
     if (result.taux_anciennete !== expectedTaux) {
       checks.push({
@@ -336,10 +341,18 @@ function verifyEmployee(
 // ============================================================================
 // Calcul IRPP attendu (methode annuelle)
 // ============================================================================
-function calculateExpectedIRPP(revenuNetImposable: number): number {
+function calculateExpectedIRPP(
+  revenuNetImposable: number,
+  situation_fam: string = 'C',
+  nombre_enfants: number = 0,
+): number {
   const annual = revenuNetImposable * 12;
+  const abattement_familial = Math.round(
+    ((situation_fam === 'M' ? 300 : 0) + Math.min(nombre_enfants, 4) * 100) * 1000
+  ) / 1000;
+  const annualAfterDeduction = Math.max(0, annual - abattement_familial);
   let irppAnnual = 0;
-  let remaining = annual;
+  let remaining = annualAfterDeduction;
 
   for (const bracket of CONSTANTS().IRPP_BRACKETS) {
     if (remaining <= 0) break;

@@ -36,7 +36,7 @@ export interface BaudConfig {
   prime_logement: number;        // 26.293
   presence_plein_avant_juin: number; // 7.856
   presence_plein_juin: number;   // 8.249
-  mit_plein: number;             // 5000
+  mit_plein: number;             // 5.000 — montant fixe plein = 5 DT exactement (bulletin réel)
 
   // Jours ouvrables
   jours_ouvrables_defaut: number; // 22 (fallback si pas fixe)
@@ -48,11 +48,6 @@ export interface BaudConfig {
 
   // Revalorisation
   revalorisation_taux: number;   // 5%
-
-  // Allocations familiales
-  alloc_chef_famille: number;    // 25 DT/mois
-  alloc_enfant: number;          // 8.333 DT/mois
-  alloc_enfants_max: number;     // 4
 
   // Ancienneté (barème)
   anciennete_active: boolean;     // false par défaut (désactivée)
@@ -102,24 +97,20 @@ const DEFAULTS: BaudConfig = {
   prime_logement: 26.293,
   presence_plein_avant_juin: 7.856,
   presence_plein_juin: 8.249,
-  mit_plein: 5000,
+  mit_plein: 5.000,
 
   transport_ouvrier: 92.800,
   transport_chef: 100.533,
 
   jours_ouvrables_defaut: 22,
-  jours_ouvrables_fixe: true,
+  jours_ouvrables_fixe: false,
 
   revalorisation_taux: 0.05,
-
-  alloc_chef_famille: 25,
-  alloc_enfant: 8.333,
-  alloc_enfants_max: 4,
 
   revalorisation_debut_mois: 6,
   revalorisation_debut_annee: 2026,
 
-  anciennete_active: true,
+  anciennete_active: false,
   anciennete_bareme: [
     { min_years: 0, taux: 0 },
     { min_years: 3, taux: 5 },

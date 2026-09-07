@@ -29,12 +29,9 @@ describe('baudConfig', () => {
     expect(cfg.foprolos).toBe(0.01);
     expect(cfg.css).toBe(0.005);
     expect(cfg.smig_40h).toBe(470.251);
-    expect(cfg.mit_plein).toBe(5000);
+    expect(cfg.mit_plein).toBe(5.000);
     expect(cfg.transport_ouvrier).toBe(92.800);
     expect(cfg.transport_chef).toBe(100.533);
-    expect(cfg.alloc_chef_famille).toBe(25);
-    expect(cfg.alloc_enfant).toBe(8.333);
-    expect(cfg.alloc_enfants_max).toBe(4);
     expect(cfg.irpp_barème).toHaveLength(8);
     expect(cfg.anciennete_bareme).toHaveLength(4);
   });

@@ -10,7 +10,7 @@
  *   Exceptions:
  *   - Transport: transport_plein × revalorisation × coefficient
  *   - Présence: présence_plein × revalorisation × coefficient
- *   - MIT: MIT_PLEIN (5000 DT) × coefficient (montant fixe, PAS un %)
+ *   - MIT: MIT_PLEIN (~5 DT) × coefficient (montant fixe, PAS un %)
  *   - Augmentation: montant fixe × coefficient (PAS de revalorisation)
  *
  * Ordre de calcul (sans dépendance circulaire):
@@ -21,10 +21,10 @@
  *   → primes légales (panier, douche, savon, lait, logement) = plein × coefficient
  *   → transport = plein × revalorisation × coefficient
  *   → présence = plein × revalorisation × coefficient
- *   → MIT = 5000 DT × coefficient (montant fixe)
+ *   → MIT = ~5 DT × coefficient_presence (montant fixe)
  *   → augmentation = fixe × coefficient (pas de revalorisation)
  *   → nuit = fixe × coefficient
- *   → salaire_brut_total = base_rév + HS + prime_ancienneté + transport + présence + primes_légales + augmentation
+ *   → salaire_brut_total = base_rév + HS + prime_ancienneté + transport + présence + MIT + primes_légales + augmentation
  *   → assiettes CNSS (brut - lait - prime_aid) / IRPP / CSS (0.5% RNI, seuil 5000 DT/an)
  */
 
@@ -70,6 +70,10 @@ export interface SalaryInput {
   prime_nuit?: number; // Prime de nuit (legacy)
   prime_logement?: number; // Prime de logement (legacy)
   augmentation?: number; // Augmentation (legacy, combines 2025+2026)
+  // Rappel (5100) — montant fixe par salarié, incluse dans le Total Brut bulletin
+  rappel?: number; // Montant du rappel (0 par défaut)
+  // Montant HS direct (alternative au calcul par heures) — rubrique 4113
+  montant_hs?: number; // Montant HS en DT (si connu, prioritaire sur calcul heures)
 }
 
 export interface SalaryResult {
@@ -78,6 +82,8 @@ export interface SalaryResult {
   salaire_brut: number;           // Salaire brut total (base + HS + primes + transport + présence + primes légales)
   heures_supplementaires: number;
   majoration_hs: number;
+  montant_hs: number;           // HS = majoration_hs calculée OU montant_hs direct
+  rappel: number;               // Rappel (5100) — montant fixe
   prime_anciennete: number;       // Montant de la prime d'ancienneté
   taux_anciennete: number;        // Taux applicable (en %)
   anciennete_annees: number;      // Nombre d'années d'ancienneté
@@ -112,6 +118,10 @@ export interface SalaryResult {
 
   // IRPP (barème progressif 8 tranches)
   irpp: number;
+
+  // Abattements familiaux
+  abattement_familial: number; // Total abattement familial (DT)
+  revenu_annuel_apres_abattement: number; // RNI après abattement (pour barème IRPP)
 
   // Charges patronales
   cnss_patronale: number;     // 17.07%
@@ -299,6 +309,9 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     prime_nuit: prime_nuit_legacy,
     prime_logement: prime_logement_legacy,
     augmentation: augmentation_legacy = 0,
+    // Rappel (5100) et montant HS direct
+    rappel: rappel_input = 0,
+    montant_hs: montant_hs_input,
   } = input;
 
   // 1. Salaire de base (avant toute prime ou revalorisation)
@@ -316,6 +329,8 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const prime_anciennete = Math.round(salaire_base_reval * tauxAnciennete / 100 * 1000) / 1000;
 
   // 4. Heures supplémentaires (Article 90 Code du Travail)
+  //    HYPOTHÈSE NON CONFIRMÉE — les heures exactes ne sont pas dans les bulletins
+  //    Params: 40h/sem, seuil 8h→25%, au-delà→50% — à valider avec client
   const c = cfg();
   const heures_par_mois = (c.heures_semaine * c.semaines_annee) / 12;
   const taux_horaire = salaire_de_base / heures_par_mois;
@@ -380,6 +395,9 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // =====================================================================
   // 9. NUIT — heures_nuit × taux_horaire × 1.25 (majoration légale 25%)
   //     OU fixe × coefficient (fallback si pas d'heures renseignées)
+  //     HYPOTHÈSE NON CONFIRMÉE — les heures déduites du bulletin ne sont
+  //     pas entières (ex: 3.73h, 4.81h) → la nuit est probablement un
+  //     montant fixe par salarié saisi manuellement dans Sage.
   // =====================================================================
   let prime_nuit: number;
   if (heures_nuit > 0) {
@@ -405,7 +423,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const augmentation = Math.round(augmentation_legacy_val * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
-  // 11. MIT — Montant fixe 5000 DT × coefficient_presence (PAS un %)
+  // 11. MIT — Montant fixe 5.000 DT × coefficient_presence (PAS un %)
   // =====================================================================
   // Certains employés ont MIT=0 (LAZAAR, RHILI, SLIMEN, SIRAT) — contrôlé par mit_applicable
   const mit = mit_applicable
@@ -416,18 +434,23 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // 12. SALAIRE BRUT TOTAL
   // =====================================================================
   // Confirmation bulletin Sage:
-  // - Le Total Brut EXCLUT nuit (3802), HS (4113), rappel (5100)
-  // - L'augmentation (4100) est INCLUSE dans le Total Brut
+  // - Le Total Brut INCLUT toutes les rubriques de gain: base + primes + transport
+  //   + présence + MIT + panier + douche + savon + lait + logement + augmentation
+  //   + nuit (3802) + HS (4113) + rappel (5100)
+  // - Assiette CNSS = Total Brut - prime_lait - prime_aid (exclues Décret 2003-1098)
+  // Montant HS = majoration_hs calculée (si heures sup renseignées) OU montant_hs direct
+  const montant_hs = montant_hs_input !== undefined ? montant_hs_input : majoration_hs;
+
   const salaire_brut = Math.round((
-    salaire_base_reval + majoration_hs + prime_anciennete
-    + ind_transport + prime_presence
+    salaire_base_reval + montant_hs + prime_anciennete
+    + ind_transport + prime_presence + mit
     + prime_panier + prime_douche + prime_savon + prime_lait + prime_logement
-    + augmentation
+    + augmentation + prime_nuit + rappel_input
   ) * 1000) / 1000;
 
   // 9. Assiette CNSS = Total Brut - prime_lait - prime_aid (exclues par Décret 2003-1098 art. 11)
   //    Confirmation bulletin Sage (19/19 employés exact):
-  //    - Le Total Brut EXCLUT nuit (3802), HS (4113), rappel (5100)
+  //    - Le Total Brut INCLUT nuit (3802), HS (4113), rappel (5100)
   //    - L'augmentation (4100) est INCLUSE dans l'assiette CNSS
   //    - AUCUN plafond appliqué pour cette entreprise (testé sur AAMRI brut 6261)
   //    - Le savon/douche ne sont PAS exclus (testé empiriquement)
@@ -448,8 +471,23 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
 
   // 12. Calcul IRPP (barème progressif ANNUEL)
   // L'IRPP est calculé sur le revenu annuel imposable, puis divisé par 12
+  // RÉSIDU DOCUMENTÉ ~20-40 DT: frais_pro calculé sur RI dans le code,
+  // mais le bulletin semble utiliser une base différente (brut ou montant fixe)
+  // → à valider avec le client pour éliminer le résidu
   const revenu_annuel_imposable = revenu_net_imposable * 12;
-  const irppResult = calculateIRPPAnnuel(revenu_annuel_imposable);
+
+  // 12b. Abattements familiaux (Note Commune N°3/2025, DGI)
+  //   - 300 DT si chef de famille (SF)
+  //   - + 100 DT × nombre_enfants (NE, plafonné à 4)
+  //   - + 1000 DT si enfant étudiant non boursier (max 2) — à confirmer si applicable
+  //   - + 1000-2000 DT si enfant handicapé — montant à reconfirmer
+  // Cet abattement se déduit du REVENU NET ANNUEL IMPOSABLE avant le barème 8 tranches
+  const abattement_familial = Math.round(
+    ((situation_fam === 'M' ? 300 : 0) + Math.min(nombre_enfants, 4) * 100) * 1000
+  ) / 1000;
+  const revenu_annuel_apres_abattement = Math.max(0, revenu_annuel_imposable - abattement_familial);
+
+  const irppResult = calculateIRPPAnnuel(revenu_annuel_apres_abattement);
   const irpp = Math.round((irppResult.irpp_annuel / 12) * 1000) / 1000;
 
   // 13. CSS — Loi n°92-73, confirmée LF 2023 art. 22 (prolongée 2023-2025)
@@ -469,28 +507,22 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const tfp = Math.round(salaire_brut * cfg().tfp * 1000) / 1000;
   const foprolos = Math.round(salaire_brut * cfg().foprolos * 1000) / 1000;
 
-  // 15. Allocations familiales (crédit sur bulletin)
-  let alloc_familiales = 0;
-  if (situation_fam === 'M') {
-    alloc_familiales += cfg().alloc_chef_famille;
-    alloc_familiales += Math.min(nombre_enfants, cfg().alloc_enfants_max) * cfg().alloc_enfant;
-  }
-  alloc_familiales = Math.round(alloc_familiales * 1000) / 1000;
-
-  // 16. Total retenues
+  // 15. Total retenues
   const total_retenues = Math.round((cnss_salariale + irpp + css_salariale + avances) * 1000) / 1000;
 
   // 17. Salaire net
   const salaire_net = Math.round((salaire_brut - total_retenues) * 1000) / 1000;
 
-  // 18. Net à payer (salaire net + allocations familiales)
-  const net_a_payer = Math.round((salaire_net + alloc_familiales) * 1000) / 1000;
+  // 16. Net à payer = salaire net (pas d'allocations familiales chez STE BAUD)
+  const net_a_payer = salaire_net;
 
   return {
     salaire_de_base: salaire_base_reval,
     salaire_brut,
     heures_supplementaires,
     majoration_hs,
+    montant_hs,
+    rappel: rappel_input,
     prime_anciennete,
     taux_anciennete: tauxAnciennete,
     anciennete_annees: ancienneteAnnees,
@@ -519,6 +551,10 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     revenu_net_imposable,
 
     irpp,
+
+    // Abattements familiaux
+    abattement_familial,
+    revenu_annuel_apres_abattement,
 
     cnss_patronale,
     at_mp,
