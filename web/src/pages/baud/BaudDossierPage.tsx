@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -36,12 +36,6 @@ export default function BaudDossierPage() {
   // Ne JAMAIS clécher par matricule seul → les H.Nuit de janvier fuiteraient sur février
   const [heuresNuit, setHeuresNuit] = useState<Record<string, number>>({});
 
-  // TÂCHE 2 : Debounced persist — éviter 1 appel réseau par frappe clavier
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingPersistRef = useRef<boolean>(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const [persistError, setPersistError] = useState<string | null>(null);
-
   // Export control
   const [sageExportResult, setSageExportResult] = useState<SageExportResult | null>(null);
   const [sageVariablesResult, setSageVariablesResult] = useState<SageVariablesExportResult | null>(null);
@@ -72,14 +66,6 @@ export default function BaudDossierPage() {
 
   useEffect(() => { load(); }, [id]);
 
-  // Cleanup debounce timer on unmount
-  useEffect(() => {
-    return () => {
-      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-    };
-  }, []);
-
   const uploadFile = async () => {
     if (!dossier || !file) return;
     setUploading(true); setMsg('');
@@ -89,13 +75,23 @@ export default function BaudDossierPage() {
       const parsed = parseFichePersonnel(wb, file.name);
       setEmployees(parsed.employees);
       setPointage(parsed.pointage);
+
+      // Auto-detect mois/annee from filename
+      if (parsed.mois && parsed.annee) {
+        setDossier((d: any) => d ? { ...d, mois: parsed.mois, annee: parsed.annee } : d);
+        if (parsed.mois !== dossier.mois || parsed.annee !== dossier.annee) {
+          const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
+          await fetch(`${BASE}/baud/dossiers/${dossier.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mois: parsed.mois, annee: parsed.annee }) }).catch(() => {});
+        }
+      }
+
       const extractionJson = { employees: parsed.employees, pointage: parsed.pointage, heures_nuit: {}, mois: parsed.mois, annee: parsed.annee, source_file: parsed.source_file };
       const lignesData = parsed.employees.map((emp, i) => ({ source_feuille: 'DP', source_ligne: i + 5, champs: [emp.matricule, emp.nom, emp.prenom, emp.cin, emp.date_naissance, emp.situation_fam, String(emp.nombre_enfants), emp.fonction, emp.type_contrat, emp.numero_cnss, emp.rib_ou_ccp, String(emp.salaire_brut), String(emp.nouveau_salaire_brut)] }));
       await api.baud.upload(dossier.id, file.name, lignesData);
-      const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
-      await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
+
+      // Save extraction to memory only (no backend persist until export)
       setMsg(`${parsed.employees.length} salaries extraits, ${parsed.pointage.length} pointages`);
-      await load();
+      setTab('employees');
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
     setUploading(false);
   };
@@ -144,13 +140,13 @@ export default function BaudDossierPage() {
     setSalaryResults(results);
     setTab('calcul');
     setMsg(`${results.size} salaires calculés`);
-    persistExtraction(employees, pointage, heuresNuit);
   };
 
   const generateSageExport = async () => {
     if (!dossier || salaryResults.size === 0) { setMsg('Calculez d\'abord les salaires'); return; }
     setGenerating(true); setMsg('');
     try {
+      await saveBeforeExport();
       // Générer le rapport de contrôle et les lignes Sage
       const exportResult = generateSagePaieExport(
         employees,
@@ -222,6 +218,7 @@ export default function BaudDossierPage() {
 
     setGenerating(true); setMsg('');
     try {
+      await saveBeforeExport();
       const variablesResult = generateSageVariablesExport(
         employees,
         pointage,
@@ -313,56 +310,18 @@ export default function BaudDossierPage() {
     persistExtraction(newEmps, newPtg, heuresNuit);
   };
 
-  // TÂCHE 2 : Debounced persist extraction_json au backend
-  // - Délai 800ms après dernière modification (évite 1 appel/frappe clavier)
-  // - Annule la requête précédente si une nouvelle arrive (pas de race condition)
-  // - Affiche erreur si échec réseau (pas de succès silencieux)
-  const persistExtraction = useCallback((employeesSnap: Employee[], pointageSnap: PointageData[], heuresNuitSnap: Record<string, number>) => {
+  // No auto-save: edits stay in memory until export
+  const persistExtraction = useCallback((_employeesSnap: Employee[], _pointageSnap: PointageData[], _heuresNuitSnap: Record<string, number>) => {
+    // intentionally empty — no auto-persist
+  }, []);
+
+  // Save extraction only before export
+  const saveBeforeExport = async () => {
     if (!dossier?.id) return;
     const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
-
-    // Annuler la requête en cours si elle existe
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    // Annuler le timer précédent
-    if (persistTimerRef.current) {
-      clearTimeout(persistTimerRef.current);
-    }
-
-    pendingPersistRef.current = true;
-    setPersistError(null);
-
-    persistTimerRef.current = setTimeout(async () => {
-      const extractionJson = {
-        employees: employeesSnap,
-        pointage: pointageSnap,
-        heures_nuit: heuresNuitSnap,
-        mois: dossier.mois,
-        annee: dossier.annee,
-        source_file: dossier.fichier_navette_nom || '',
-      };
-      try {
-        const resp = await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(extractionJson),
-          signal: controller.signal,
-        });
-        if (!resp.ok) {
-          setPersistError(`Erreur sauvegarde: ${resp.status}`);
-        }
-      } catch (e: any) {
-        if (e.name !== 'AbortError') {
-          setPersistError('Erreur réseau — modifications non sauvegardées');
-        }
-      }
-      pendingPersistRef.current = false;
-    }, 800);
-  }, [dossier?.id, dossier?.mois, dossier?.annee, dossier?.fichier_navette_nom]);
+    const extractionJson = { employees, pointage, heures_nuit: heuresNuit, mois: dossier.mois, annee: dossier.annee, source_file: dossier.fichier_navette_nom || '' };
+    await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
+  };
 
   const startEditEmployee = (emp: Employee) => {
     setEditingEmployee(emp.matricule);
@@ -456,7 +415,7 @@ export default function BaudDossierPage() {
     <div className="space-y-4 mt-4">
       <div className="flex items-center gap-3">
         <Link to="/baud/societes" className="text-gray-400 hover:text-gray-600"><ArrowLeft className="w-5 h-5" /></Link>
-        <h2 className="text-xl font-semibold">Dossier {String(dossier.mois).padStart(2, '0')}/{dossier.annee}</h2>
+        <h2 className="text-xl font-semibold">Dossier {employees.length > 0 ? `— ${employees.length} salaries` : ''}</h2>
         <span className={`px-2 py-0.5 rounded text-xs font-medium ${dossier.statut === 'valide' ? 'bg-green-100 text-green-700' : dossier.statut === 'controle' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{dossier.statut}</span>
         <Link to="/baud/parametres" className="ml-auto text-gray-400 hover:text-gray-600" title="Paramètres"><Settings size={18} /></Link>
       </div>
@@ -467,8 +426,7 @@ export default function BaudDossierPage() {
         ); })}
       </div>
 
-      {msg && <p className={`text-sm ${msg.includes('Erreur') ? 'text-red-600' : 'text-green-700'}`}>{msg}</p>}
-      {persistError && <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-1">⚠ {persistError}</p>}
+      {msg && <p className={`text-sm ${msg.includes('Erreur') || msg.includes('BLOQUÉ') ? 'text-red-600' : 'text-green-700'}`}>{msg}</p>}
 
       {/* TAB: IMPORT */}
       {tab === 'navette' && (

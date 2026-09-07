@@ -11,8 +11,6 @@ export default function BaudSocietes() {
   const [showNew, setShowNew] = useState(false);
   const [nom, setNom] = useState('');
   const [formeJuridique, setFormeJuridique] = useState('SARL');
-  const [newMois, setNewMois] = useState(new Date().getMonth() + 1);
-  const [newAnnee, setNewAnnee] = useState(new Date().getFullYear());
 
   useEffect(() => { api.baud.getSocietes().then(setSocietes).catch(() => {}); }, []);
   useEffect(() => { if (selectedId) api.baud.getDossiers(selectedId).then(setDossiers).catch(() => {}); }, [selectedId]);
@@ -27,7 +25,8 @@ export default function BaudSocietes() {
   const createDossier = async () => {
     if (!selectedId) return;
     try {
-      const d = await api.baud.createDossier(selectedId, { mois: newMois, annee: newAnnee });
+      const now = new Date();
+      const d = await api.baud.createDossier(selectedId, { mois: now.getMonth() + 1, annee: now.getFullYear() });
       setDossiers([d, ...dossiers]);
     } catch {}
   };
@@ -92,17 +91,11 @@ export default function BaudSocietes() {
       {selected && (
         <div className="bg-white border rounded-lg p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-medium text-sm">{selected.nom} — Dossiers</h3>
+            <h3 className="font-medium text-sm">{selected.nom}</h3>
             <div className="flex gap-2 items-end">
-              <select value={newMois} onChange={e => setNewMois(Number(e.target.value))} className="border rounded px-2 py-1 text-xs">
-                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
-              </select>
-              <select value={newAnnee} onChange={e => setNewAnnee(Number(e.target.value))} className="border rounded px-2 py-1 text-xs">
-                {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
               <button onClick={createDossier}
                 className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 flex items-center gap-1">
-                <Plus size={12} />Nouveau
+                <Plus size={12} />Nouveau dossier
               </button>
             </div>
           </div>
@@ -113,12 +106,11 @@ export default function BaudSocietes() {
                 className="flex items-center justify-between py-2 hover:bg-gray-50 px-2 rounded">
                 <div className="flex items-center gap-2">
                   <FolderOpen size={16} className="text-purple-500" />
-                  <span className="text-sm font-medium">{String(d.mois).padStart(2, '0')}/{d.annee}</span>
+                  <span className="text-sm font-medium">{d.fichier_navette_nom || `Dossier ${String(d.mois).padStart(2, '0')}/${d.annee}`}</span>
                   <span className={`px-2 py-0.5 rounded text-xs ${d.statut === 'valide' ? 'bg-green-100 text-green-700' : d.statut === 'controle' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
                     {d.statut}
                   </span>
                 </div>
-                <span className="text-xs text-gray-400">{d.fichier_navette_nom || '—'}</span>
               </Link>
             ))}
           </div>

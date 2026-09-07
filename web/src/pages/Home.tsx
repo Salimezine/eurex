@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { FolderOpen, Trash2, BarChart3 } from 'lucide-react';
+import { FolderOpen, Trash2 } from 'lucide-react';
 
 export default function Home() {
   const [dossiers, setDossiers] = useState<any[]>([]);
@@ -45,22 +45,10 @@ export default function Home() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {/* EF Card */}
-        <Link to="/ef" className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-lg p-4 hover:shadow-md transition-all group">
-          <div className="flex items-center gap-2 mb-2">
-            <BarChart3 size={20} className="text-indigo-600" />
-            <span className="font-medium text-indigo-800">Etats Financiers</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-700">EF</span>
-            <span className="text-xs text-gray-500">Bilan, Resultat, SIG, Flux, Immob</span>
-          </div>
-        </Link>
         {dossiers.map((d: any) => {
           const isBaud = d.type === 'baud';
           const isScan = d.type === 'scanflash';
           const link = isBaud ? `/baud/dossier/${d.id}` : isScan ? `/scanflash/dossier/${d.id}` : `/dossier/${d.id}`;
-          const label = isBaud ? 'BAUD' : isScan ? 'SCANFLASH' : 'ANIMAL';
           const color = isBaud ? 'purple' : isScan ? 'emerald' : 'blue';
           return (
             <Link key={d.id} to={link}
@@ -68,7 +56,7 @@ export default function Home() {
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <FolderOpen size={20} className={`text-${color}-500`} />
-                  <span className="font-medium">{isBaud ? 'BAUD' : isScan ? 'SCANFLASH' : (d.nom || 'Dossier')}</span>
+                  <span className="font-medium">{d.nom || d.fichier_navette_nom || 'Dossier'}</span>
                 </div>
                 {!isScan && (
                 <button onClick={(e) => { e.preventDefault(); deleteDossier(d.id, d.type); }}
@@ -76,10 +64,6 @@ export default function Home() {
                   <Trash2 size={14} />
                 </button>
                 )}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`px-2 py-0.5 rounded text-xs bg-${color}-100 text-${color}-700`}>{label}</span>
-                {!isScan && <span className="text-xs text-gray-400">{d.raison_sociale || ''}</span>}
               </div>
             </Link>
           );
