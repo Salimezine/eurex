@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
-import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult } from '../../lib/baudCalculator';
+import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult } from '../../lib/baudCalculator';
 import { verifySalaryCalculations, applyCorrections, applyAutoFixes, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
 import * as XLSX from 'xlsx';
 
@@ -44,6 +44,8 @@ export default function BaudDossierPage() {
 
   // Export control
   const [sageExportResult, setSageExportResult] = useState<SageExportResult | null>(null);
+  const [sageVariablesResult, setSageVariablesResult] = useState<SageVariablesExportResult | null>(null);
+  const [exportMode, setExportMode] = useState<'variables' | 'legacy'>('variables');
   const [showControlReport, setShowControlReport] = useState(false);
 
   const load = async () => {
@@ -202,6 +204,54 @@ export default function BaudDossierPage() {
         `Rubriques: ${exportResult.summary.rubriquesGenerated.join(', ')}`,
       ];
       if (exportResult.summary.warnings > 0) msgLines.push(`${exportResult.summary.warnings} avertissements`);
+      setMsg(msgLines.join(' | '));
+    } catch (e: any) { setMsg('Erreur: ' + e.message); }
+    setGenerating(false);
+  };
+
+  const generateSageVariablesExportHandler = async () => {
+    if (!dossier || employees.length === 0) { setMsg('Importez d\'abord le fichier personnel'); return; }
+    setGenerating(true); setMsg('');
+    try {
+      const variablesResult = generateSageVariablesExport(
+        employees,
+        pointage,
+        heuresNuit,
+        dossier.mois || 1,
+        dossier.annee || 2026
+      );
+      setSageVariablesResult(variablesResult);
+
+      const moisStr = String(dossier.mois).padStart(2, '0');
+      const annStr = String(dossier.annee).slice(-2);
+
+      const varRows: any[][] = [['Matricule', 'Variable', 'Valeur', 'Période']];
+      for (const row of variablesResult.rows) {
+        varRows.push([row.matricule, row.variable, row.valeur, row.periode]);
+      }
+
+      const varWb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(varWb, XLSX.utils.aoa_to_sheet(varRows), 'Variables');
+      const varB64 = XLSX.write(varWb, { type: 'base64', bookType: 'xlsx' });
+
+      const downloadB64 = (b64: string, filename: string) => {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      downloadB64(varB64, `SageVariables_${moisStr}-${annStr}.xlsx`);
+
+      const msgLines = [
+        `${variablesResult.summary.totalRows} lignes exportées`,
+        `${variablesResult.summary.totalEmployees} salariés`,
+        `Variables: ${variablesResult.summary.variablesExported.join(', ')}`,
+      ];
       setMsg(msgLines.join(' | '));
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
     setGenerating(false);
@@ -631,26 +681,92 @@ export default function BaudDossierPage() {
       {/* TAB: EXPORT */}
       {tab === 'export' && (
         <div className="space-y-4">
+          {/* Toggle mode export */}
           <div className="bg-white border rounded-lg p-4 space-y-3">
             <div className="flex items-center gap-3">
               <FileSpreadsheet size={20} className="text-purple-600" />
-              <div>
-                <h3 className="font-medium text-sm">Export Sage Paie 100</h3>
-                <p className="text-xs text-gray-400">Format "long" : 1 ligne / salarié / rubrique</p>
-              </div>
-              <button onClick={generateSageExport} disabled={generating || salaryResults.size === 0} className="ml-auto px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1">
-                {generating ? 'Generation...' : 'Generer + Exporter'}
-              </button>
+              <h3 className="font-medium text-sm">Export Sage Paie 100</h3>
             </div>
-            <div className="text-xs text-gray-400 space-y-1">
-              <p><strong>Rubriques :</strong> 1000 (Base), 2100 (Transport), 2200 (Présence), 4113 (HS), 3100 (CNSS), 3310 (IRPP), 3320 (CSS), 5100 (Alloc)</p>
-              <p><strong>Prime ancienneté :</strong> désactivée par défaut (flag à activer dans config.json si besoin)</p>
-              <p className="text-amber-500">⚠ Un import Sage ne peut pas être annulé. Vérifiez le rapport de contrôle ci-dessous.</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setExportMode('variables')}
+                className={`px-4 py-2 rounded text-sm font-medium transition ${exportMode === 'variables' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Variables (Sage calcule)
+              </button>
+              <button
+                onClick={() => setExportMode('legacy')}
+                className={`px-4 py-2 rounded text-sm font-medium transition ${exportMode === 'legacy' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Legacy (calcul interne)
+              </button>
             </div>
           </div>
 
-          {/* Rapport de contrôle */}
-          {sageExportResult && (
+          {/* Mode: Variables — Sage fait le calcul */}
+          {exportMode === 'variables' && (
+            <div className="bg-white border rounded-lg p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <p className="text-xs text-gray-500">Prépare les variables d'entrée — Sage applique ses propres paramètres et barèmes</p>
+                </div>
+                <button onClick={generateSageVariablesExportHandler} disabled={generating || employees.length === 0} className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1">
+                  {generating ? 'Generation...' : 'Generer + Exporter'}
+                </button>
+              </div>
+              <div className="text-xs text-gray-400 space-y-1">
+                <p><strong>Variables mensuelles :</strong> Absences, Heures sup, Heures nuit, Avances</p>
+                <p><strong>Sage gère (fiche employé) :</strong> Salaire de base, Situation familiale, Enfants, Catégorie, Fonction, Date embauche, CNSS, IRPP, CSS, Transport, Présence, Primes, MIT</p>
+                <p className="text-amber-500">⚠ Un import Sage ne peut pas être annulé. Vérifiez le rapport de contrôle ci-dessous.</p>
+              </div>
+              {/* Garde-fou : détection désynchronisation Excel RH ↔ Sage */}
+              {employees.some(e => e.categorie || e.fonction) && (
+                <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-700">
+                  ℹ L'Excel RH contient des données CATEGORIE/FONCTION pour {employees.filter(e => e.categorie || e.fonction).length} salarié(s).
+                  Ces données ne sont pas exportées (elles vivent dans Sage), mais vérifiez qu'elles correspondent à la fiche employé Sage pour éviter des désynchronisations.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Mode: Legacy — calcul interne */}
+          {exportMode === 'legacy' && (
+            <div className="bg-white border rounded-lg p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <p className="text-xs text-gray-500">Exporte les rubriques calculées par notre système — contrôle croisé avec Sage</p>
+                </div>
+                <button onClick={generateSageExport} disabled={generating || salaryResults.size === 0} className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1">
+                  {generating ? 'Generation...' : 'Generer + Exporter'}
+                </button>
+              </div>
+              <div className="text-xs text-gray-400 space-y-1">
+                <p><strong>Rubriques :</strong> 1000 (Base), 2100 (Transport), 2200 (Présence), 4113 (HS), 3100 (CNSS), 3310 (IRPP), 3320 (CSS), 5100 (Alloc)</p>
+                <p><strong>Prime ancienneté :</strong> désactivée par défaut (flag à activer dans config.json si besoin)</p>
+                <p className="text-amber-500">⚠ Un import Sage ne peut pas être annulé. Vérifiez le rapport de contrôle ci-dessous.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Rapport de contrôle — Variables */}
+          {exportMode === 'variables' && sageVariablesResult && (
+            <div className="rounded-lg border p-4 bg-green-50 border-green-200">
+              <div className="flex items-center gap-2 mb-3">
+                <CheckCircle size={18} className="text-green-600" />
+                <span className="font-semibold text-sm text-green-700">
+                  Rapport de contrôle
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                <div className="text-center"><div className="font-bold text-lg">{sageVariablesResult.summary.totalRows}</div><div className="text-gray-500">Lignes</div></div>
+                <div className="text-center"><div className="font-bold text-lg">{sageVariablesResult.summary.totalEmployees}</div><div className="text-gray-500">Salariés</div></div>
+              </div>
+              <p className="text-xs text-gray-500">Variables exportées : {sageVariablesResult.summary.variablesExported.join(', ')}</p>
+            </div>
+          )}
+
+          {/* Rapport de contrôle — Legacy */}
+          {exportMode === 'legacy' && sageExportResult && (
             <div className={`rounded-lg border p-4 ${sageExportResult.smigViolations.length > 0 ? 'bg-red-50 border-red-200' : sageExportResult.summary.warnings > 0 ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'}`}>
               <div className="flex items-center gap-2 mb-3">
                 {sageExportResult.smigViolations.length > 0 ? <AlertTriangle size={18} className="text-red-600" /> : <CheckCircle size={18} className="text-green-600" />}
@@ -661,16 +777,12 @@ export default function BaudDossierPage() {
                   {showControlReport ? 'Masquer' : 'Détails'}
                 </button>
               </div>
-
-              {/* Résumé */}
               <div className="grid grid-cols-4 gap-2 mb-3 text-xs">
                 <div className="text-center"><div className="font-bold text-lg">{sageExportResult.summary.totalRows}</div><div className="text-gray-500">Lignes</div></div>
                 <div className="text-center"><div className="font-bold text-lg">{sageExportResult.summary.totalEmployees}</div><div className="text-gray-500">Salariés</div></div>
                 <div className="text-center"><div className="font-bold text-lg text-green-600">{sageExportResult.summary.rubriquesGenerated.length}</div><div className="text-gray-500">Rubriques</div></div>
                 <div className="text-center"><div className={`font-bold text-lg ${sageExportResult.smigViolations.length > 0 ? 'text-red-600' : 'text-green-600'}`}>{sageExportResult.smigViolations.length}</div><div className="text-gray-500">SMIG viol.</div></div>
               </div>
-
-              {/* Violations SMIG — BLOQUANT */}
               {sageExportResult.smigViolations.length > 0 && (
                 <div className="bg-red-100 border border-red-300 rounded p-3 mb-3">
                   <p className="text-xs font-bold text-red-700 mb-2">⚠ BLOQUANT : Salaires inférieurs au SMIG (Décret n°67/2026)</p>
@@ -679,8 +791,6 @@ export default function BaudDossierPage() {
                   ))}
                 </div>
               )}
-
-              {/* Détail du rapport */}
               {showControlReport && sageExportResult.controlReport.length > 0 && (
                 <div className="space-y-1 max-h-64 overflow-y-auto">
                   {sageExportResult.controlReport.map((item, i) => (

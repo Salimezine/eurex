@@ -467,29 +467,44 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   // 11. Revenu net imposable
   const revenu_net_imposable = Math.max(0, revenu_imposable - frais_pro);
 
-  // 12. Calcul IRPP (barème progressif ANNUEL)
-  // L'IRPP est calculé sur le revenu annuel imposable, puis divisé par 12
-  // RÉSIDU DOCUMENTÉ ~20-40 DT: frais_pro calculé sur RI dans le code,
-  // mais le bulletin semble utiliser une base différente (brut ou montant fixe)
-  // → à valider avec le client pour éliminer le résidu
+  // 12. Calcul IRPP (barème progressif ANNUEL — LF 2025 art. 36)
+  // @verification — Calcul effectué à titre de contrôle croisé uniquement.
+  // La valeur de production vient du calcul Sage Paie 100.
+  // Note Commune N°3/2025 DGI: les déductions familiales se déduisent
+  // de l'IMPÔT (IRPP), pas du revenu imposable.
+  // Formule: IRPP_mensuel = (barème(RNI_annuel) - abattement) / 12
   const revenu_annuel_imposable = revenu_net_imposable * 12;
 
   // 12b. Abattements familiaux (Note Commune N°3/2025, DGI)
   //   Confirmé Sage: CHEFFAMENF, DEDUCTEN, NBENFCHARG
   //   Configurable via baudConfig: abattement_chef_famille, abattement_par_enfant, abattement_max_enfants
-  //   - + 1000 DT si enfant étudiant non boursier (max 2) — à confirmer si applicable
-  //   - + 1000-2000 DT si enfant handicapé — montant à reconfirmer
-  // Cet abattement se déduit du REVENU NET ANNUEL IMPOSABLE avant le barème 8 tranches
   const abattement_familial = Math.round(
     ((situation_fam === 'M' ? cfg().abattement_chef_famille : 0)
       + Math.min(nombre_enfants, cfg().abattement_max_enfants) * cfg().abattement_par_enfant) * 1000
   ) / 1000;
-  const revenu_annuel_apres_abattement = Math.max(0, revenu_annuel_imposable - abattement_familial);
 
-  const irppResult = calculateIRPPAnnuel(revenu_annuel_apres_abattement);
-  const irpp = Math.round((irppResult.irpp_annuel / 12) * 1000) / 1000;
+  // Barème sur le RNI annuel complet, puis abattement soustrait de l'impôt
+  const irppResult = calculateIRPPAnnuel(revenu_annuel_imposable);
+  const irpp_annuel_apres_abattement = Math.max(0, irppResult.irpp_annuel - abattement_familial);
+  const irpp = Math.round((irpp_annuel_apres_abattement / 12) * 1000) / 1000;
+
+  // Ajouter l'abattement au détail (valeur négative pour refléter la déduction)
+  const abattement_detail = abattement_familial > 0
+    ? Math.min(abattement_familial, irppResult.irpp_annuel)
+    : 0;
+  const irpp_detail = [
+    ...irppResult.detail,
+    ...(abattement_detail > 0 ? [{
+      tranche: 'Abattements familiaux',
+      taux: 0,
+      montant: 0,
+      impot: -abattement_detail,
+    }] : []),
+  ];
 
   // 13. CSS — Loi n°92-73, confirmée LF 2023 art. 22 (prolongée 2023-2025)
+  // @verification — Calcul effectué à titre de contrôle croisé uniquement.
+  // La valeur de production vient du calcul Sage Paie 100.
   //     CSS = 0.5% × RNI (revenu net imposable = imposable − frais_pro)
   //     Validation : 219 observations (jan-août 2026), median error = 0.000 DT
   //     Hypothèse déductions familiales TESTÉE puis REJETTÉE par les données
@@ -501,6 +516,9 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const css_salariale = Math.round(revenu_net_imposable * cfg().css * 1000) / 1000;
 
   // 14. Charges patronales (sur brut total incluant heures sup)
+  // @verification — Calcul effectué à titre de contrôle croisé uniquement.
+  // Les taux TFP/FOPROLOS/AT-MP ne sont pas confirmés pour le secteur réel du client.
+  // La valeur de production vient du calcul Sage Paie 100.
   const cnss_patronale = Math.round(salaire_brut * cfg().cnss_patronal * 1000) / 1000;
   const at_mp = Math.round(salaire_brut * cfg().at_mp * 1000) / 1000;
   const tfp = Math.round(salaire_brut * cfg().tfp * 1000) / 1000;
@@ -553,7 +571,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
 
     // Abattements familiaux
     abattement_familial,
-    revenu_annuel_apres_abattement,
+    revenu_annuel_apres_abattement: revenu_annuel_imposable,
 
     cnss_patronale,
     at_mp,
@@ -564,7 +582,7 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
     salaire_net,
     net_a_payer,
 
-    irpp_detail: irppResult.detail,
+    irpp_detail,
   };
 }
 
@@ -1015,16 +1033,15 @@ export function generateSagePaieExport(
 
     // 3310 : IRPP
     // Loi n°74-9, barème annuel LF 2025 art. 36 (8 tranches)
-    if (result.irpp > 0) {
-      rows.push({
-        matricule: emp.matricule,
-        code_rubrique: '3310',
-        libelle: SAGE_RUBRIQUES['3310'].libelle,
-        valeur: result.irpp,
-        periode,
-      });
-      rubriquesUsed.add('3310');
-    }
+    // Toujours émis (même à 0) pour cohérence Sage
+    rows.push({
+      matricule: emp.matricule,
+      code_rubrique: '3310',
+      libelle: SAGE_RUBRIQUES['3310'].libelle,
+      valeur: result.irpp,
+      periode,
+    });
+    rubriquesUsed.add('3310');
 
     // 3320 : CSS — 0.5% du revenu net imposable (seuil 5000 DT/an)
     // Loi n°92-73, LF 2023 art. 22
@@ -1105,4 +1122,92 @@ export function generateSageVariables(
     vars.push({ rubrique: 'ALLOCFAM', zone: '5', valeur: alloc });
   }
   return vars;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EXPORT VARIABLES SAGE — le système prépare les données, Sage fait le calcul
+// ══════════════════════════════════════════════════════════════════════════════
+
+export interface SageVariableRow {
+  matricule: string;
+  variable: string;
+  valeur: string;
+  periode: string; // format "MM/YYYY"
+}
+
+export interface SageVariablesExportResult {
+  rows: SageVariableRow[];
+  summary: {
+    totalRows: number;
+    totalEmployees: number;
+    variablesExported: string[];
+  };
+}
+
+/**
+ * Génère un export de variables d'entrée pour Sage Paie 100.
+ *
+ * Principe : Sage possède déjà tous les paramètres fixes dans la fiche employé
+ * (salaire de base, situation familiale, nombre d'enfants, catégorie, fonction,
+ * date d'embauche, montants primes, taux CNSS/IRPP/CSS/TFP/FOPROLOS/AT-MP)
+ * et son propre moteur de calcul. Ce module exporte uniquement les 4 variables
+ * MENSUELLES qui changent forcément chaque mois.
+ *
+ * Variables exportées (mensuelles) :
+ *   ABSENCES_JOURS — jours d'absence non payée (Pointage colonne E)
+ *   HEURES_SUP — heures supplémentaires (Pointage colonne I)
+ *   HEURES_NUIT — heures de nuit (saisie manuelle)
+ *   AVANCES — avances sur salaire (Pointage colonne G)
+ *
+ * Variables NON exportées (données fixes fiche employé Sage) :
+ *   Salaire de base, situation familiale, nombre d'enfants, catégorie,
+ *   fonction, date d'embauche, CNSS, IRPP, CSS, TFP, FOPROLOS, AT/MP,
+ *   transport, présence, primes légales, MIT, augmentation, ancienneté,
+ *   majorations HS, coefficient de proratisation.
+ */
+export function generateSageVariablesExport(
+  employees: { matricule: string; nom: string; prenom: string }[],
+  pointage: { matricule: string; absences: string; avances: number; heures_supplementaires: string }[],
+  heuresNuit: Record<string, number>,
+  mois: number,
+  annee: number
+): SageVariablesExportResult {
+  const SMIG_2026 = 470.251; // Décret n°67/2026
+  const periode = `${String(mois).padStart(2, '0')}/${annee}`;
+  const rows: SageVariableRow[] = [];
+  const variablesExported: string[] = [];
+
+  for (const emp of employees) {
+    // Jointure pointage par matricule
+    const ptg = pointage.find(p => p.matricule === emp.matricule);
+    const absences = ptg ? (parseInt(ptg.absences, 10) || 0) : 0;
+    const avances = ptg ? (ptg.avances || 0) : 0;
+    const hs = ptg ? (parseFloat(ptg.heures_supplementaires) || 0) : 0;
+
+    // Heures de nuit — clé "${mois}-${matricule}"
+    const nuitKey = `${mois}-${emp.matricule}`;
+    const heuresNuitEmp = heuresNuit[nuitKey] || 0;
+
+    // Variables mensuelles — seules les données qui changent chaque mois
+    const vars: { variable: string; valeur: string }[] = [
+      { variable: 'ABSENCES_JOURS', valeur: String(absences) },
+      { variable: 'HEURES_SUP', valeur: hs.toFixed(1) },
+      { variable: 'HEURES_NUIT', valeur: heuresNuitEmp.toFixed(1) },
+      { variable: 'AVANCES', valeur: avances.toFixed(3) },
+    ];
+
+    for (const v of vars) {
+      rows.push({ matricule: emp.matricule, variable: v.variable, valeur: v.valeur, periode });
+      if (!variablesExported.includes(v.variable)) variablesExported.push(v.variable);
+    }
+  }
+
+  return {
+    rows,
+    summary: {
+      totalRows: rows.length,
+      totalEmployees: employees.length,
+      variablesExported,
+    },
+  };
 }

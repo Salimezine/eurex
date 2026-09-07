@@ -355,9 +355,9 @@ function calculateExpectedIRPP(
     ((situation_fam === 'M' ? c.abattement_chef_famille : 0)
       + Math.min(nombre_enfants, c.abattement_max_enfants) * c.abattement_par_enfant) * 1000
   ) / 1000;
-  const annualAfterDeduction = Math.max(0, annual - abattement_familial);
+
   let irppAnnual = 0;
-  let remaining = annualAfterDeduction;
+  let remaining = annual;
 
   for (const bracket of CONSTANTS().IRPP_BRACKETS) {
     if (remaining <= 0) break;
@@ -367,7 +367,8 @@ function calculateExpectedIRPP(
     remaining -= taxable;
   }
 
-  return Math.round((irppAnnual / 12) * 1000) / 1000;
+  const irppAfterDeduction = Math.max(0, irppAnnual - abattement_familial);
+  return Math.round((irppAfterDeduction / 12) * 1000) / 1000;
 }
 
 // ============================================================================
