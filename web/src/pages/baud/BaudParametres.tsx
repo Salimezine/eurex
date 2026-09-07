@@ -185,6 +185,14 @@ export default function BaudParametres() {
         <Field label="Nombre de jours" value={config.jours_ouvrables_defaut} onChange={v => update('jours_ouvrables_defaut', v)} suffix="jours" step={1} defaultVal={defaults.jours_ouvrables_defaut} />
       </Section>
 
+      {/* Abattements familiaux IRPP */}
+      <Section title="Abattements familiaux IRPP (Note Commune N°3/2025)">
+        <Field label="Chef de famille (marié)" value={config.abattement_chef_famille} onChange={v => update('abattement_chef_famille', v)} suffix="DT/an" step={50} defaultVal={defaults.abattement_chef_famille} />
+        <Field label="Par enfant à charge" value={config.abattement_par_enfant} onChange={v => update('abattement_par_enfant', v)} suffix="DT/an" step={50} defaultVal={defaults.abattement_par_enfant} />
+        <Field label="Max enfants pris en compte" value={config.abattement_max_enfants} onChange={v => update('abattement_max_enfants', v)} suffix="" step={1} defaultVal={defaults.abattement_max_enfants} />
+        <p className="text-xs text-gray-400 ml-48">Confirmé Sage: CHEFFAMENF, DEDUCTEN, NBENFCHARG</p>
+      </Section>
+
       {/* Barème ancienneté */}
       <Section title="Prime d'ancienneté">
         <div className="flex items-center gap-2 mb-3">

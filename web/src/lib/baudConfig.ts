@@ -60,10 +60,16 @@ export interface BaudConfig {
   hs_majoration_25: number;       // 25% (≤ seuil)
   hs_majoration_50: number;       // 50% (> seuil)
 
-  // Nuit (3802)
+  // Nuit (3802) — "NUIT 150%" confirmé dans Sage PRH
   heures_base_nuit: number;       // 190 (47.5h × 4 sem) — base horaire nuit
-  nuit_majoration: number;        // 25% majoration légale
+  nuit_majoration: number;        // 50% majoration nuit (Sage PRH: "NUIT 150%")
   nuit_plein: number;             // 0 DT — montant fixe par défaut (0 = pas de prime fixe, calcul horaire si heures_nuit > 0)
+
+  // Abattements familiaux IRPP (Note Commune N°3/2025, DGI)
+  // Confirmé dans Sage: CHEFFAMENF, DEDUCTEN, NBENFCHARG
+  abattement_chef_famille: number;  // 300 DT/an si marié (SF='M')
+  abattement_par_enfant: number;    // 100 DT/an par enfant à charge
+  abattement_max_enfants: number;   // plafond nombre d'enfants pris en compte
 
   // Revalorisation (Décret 68/2026)
   revalorisation_debut_mois: number;  // 6 (juin)
@@ -125,8 +131,12 @@ const DEFAULTS: BaudConfig = {
   hs_majoration_50: 0.50,
 
   heures_base_nuit: 190,
-  nuit_majoration: 0.25,
+  nuit_majoration: 0.50,    // 150% confirmé Sage PRH ("NUIT 150%")
   nuit_plein: 0,
+
+  abattement_chef_famille: 300,
+  abattement_par_enfant: 100,
+  abattement_max_enfants: 4,
 
   irpp_barème: [
     { min: 0, max: 5000, taux: 0.00 },

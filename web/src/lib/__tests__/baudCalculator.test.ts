@@ -62,13 +62,13 @@ describe('CNSS — 9.68% sans plafond', () => {
 });
 
 // ============================================================================
-// 2b. NUIT — heures_nuit × taux_horaire × 1.25
+// 2b. NUIT — heures_nuit × taux_horaire × 1.50 (Sage PRH: "NUIT 150%")
 // ============================================================================
 describe('Nuit — calcul horaire', () => {
-  it('nuit = taux_horaire × heures × 1.25 quand heures_nuit > 0', () => {
+  it('nuit = taux_horaire × heures × 1.50 quand heures_nuit > 0', () => {
     const r = calculateSalary({ salaire_brut: 1000, situation_fam: 'C', nombre_enfants: 0, heures_nuit: 8 });
     const expectedTaux = 1000 / 190;
-    const expectedNuit = Math.round(expectedTaux * 8 * 1.25 * 1000) / 1000;
+    const expectedNuit = Math.round(expectedTaux * 8 * 1.50 * 1000) / 1000;
     expect(r.prime_nuit).toBe(expectedNuit);
   });
 
@@ -1451,7 +1451,7 @@ describe('Employés × Mois — matrice complète', () => {
           transport_plein: emp.tp, heures_nuit: 20,
         });
         const taux_horaire = emp.brut / 190;
-        const expectedNuit = Math.round(taux_horaire * 20 * 1.25 * 1000) / 1000;
+        const expectedNuit = Math.round(taux_horaire * 20 * 1.50 * 1000) / 1000;
         expect(r.prime_nuit).toBe(expectedNuit);
       });
     }

@@ -58,7 +58,7 @@ export interface SalaryInput {
   prime_logement_plein?: number; // Logement plein (défaut: 26.293 DT)
   prime_nuit_plein?: number; // Nuit plein (fixe par salarié, pas de formule horaire)
   mit_applicable?: boolean; // MIT applicable (défaut: true). false pour certains employés (LAZAAR, RHILI, etc.)
-  // Heures de nuit — saisie manuelle (calcul: taux_horaire × heures_nuit × 1.25)
+  // Heures de nuit — saisie manuelle (calcul: taux_horaire × heures_nuit × 1.50)
   heures_nuit?: number; // Nombre d'heures de nuit travaillées dans le mois
   // Augmentation — montants fixes DT par salarié, SANS revalorisation décret 68
   // Uniquement coefficient_presence appliqué
@@ -393,11 +393,9 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const prime_logement = Math.round((prime_logement_plein ?? prime_logement_legacy ?? cfg().prime_logement) * coefficient_presence * 1000) / 1000;
 
   // =====================================================================
-  // 9. NUIT — heures_nuit × taux_horaire × 1.25 (majoration légale 25%)
+  // 9. NUIT — heures_nuit × taux_horaire × 1.5 (majoration 150%)
+  //     Confirmé Sage PRH: "NUIT 150%" (offset 2905412)
   //     OU fixe × coefficient (fallback si pas d'heures renseignées)
-  //     HYPOTHÈSE NON CONFIRMÉE — les heures déduites du bulletin ne sont
-  //     pas entières (ex: 3.73h, 4.81h) → la nuit est probablement un
-  //     montant fixe par salarié saisi manuellement dans Sage.
   // =====================================================================
   let prime_nuit: number;
   if (heures_nuit > 0) {
@@ -477,13 +475,14 @@ export function calculateSalary(input: SalaryInput): SalaryResult {
   const revenu_annuel_imposable = revenu_net_imposable * 12;
 
   // 12b. Abattements familiaux (Note Commune N°3/2025, DGI)
-  //   - 300 DT si chef de famille (SF)
-  //   - + 100 DT × nombre_enfants (NE, plafonné à 4)
+  //   Confirmé Sage: CHEFFAMENF, DEDUCTEN, NBENFCHARG
+  //   Configurable via baudConfig: abattement_chef_famille, abattement_par_enfant, abattement_max_enfants
   //   - + 1000 DT si enfant étudiant non boursier (max 2) — à confirmer si applicable
   //   - + 1000-2000 DT si enfant handicapé — montant à reconfirmer
   // Cet abattement se déduit du REVENU NET ANNUEL IMPOSABLE avant le barème 8 tranches
   const abattement_familial = Math.round(
-    ((situation_fam === 'M' ? 300 : 0) + Math.min(nombre_enfants, 4) * 100) * 1000
+    ((situation_fam === 'M' ? cfg().abattement_chef_famille : 0)
+      + Math.min(nombre_enfants, cfg().abattement_max_enfants) * cfg().abattement_par_enfant) * 1000
   ) / 1000;
   const revenu_annuel_apres_abattement = Math.max(0, revenu_annuel_imposable - abattement_familial);
 

@@ -76,6 +76,9 @@ function CONSTANTS() {
     IRPP_BRACKETS: c.irpp_barème.map(b => ({ min: b.min, max: b.max, rate: b.taux })),
     REVALORISATION_TAUX: c.revalorisation_taux,
     JOURS_OUVRABLES: c.jours_ouvrables_defaut,
+    abattement_chef_famille: c.abattement_chef_famille,
+    abattement_par_enfant: c.abattement_par_enfant,
+    abattement_max_enfants: c.abattement_max_enfants,
   };
 }
 
@@ -347,8 +350,10 @@ function calculateExpectedIRPP(
   nombre_enfants: number = 0,
 ): number {
   const annual = revenuNetImposable * 12;
+  const c = CONSTANTS();
   const abattement_familial = Math.round(
-    ((situation_fam === 'M' ? 300 : 0) + Math.min(nombre_enfants, 4) * 100) * 1000
+    ((situation_fam === 'M' ? c.abattement_chef_famille : 0)
+      + Math.min(nombre_enfants, c.abattement_max_enfants) * c.abattement_par_enfant) * 1000
   ) / 1000;
   const annualAfterDeduction = Math.max(0, annual - abattement_familial);
   let irppAnnual = 0;
