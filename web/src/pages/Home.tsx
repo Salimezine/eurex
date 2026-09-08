@@ -67,7 +67,7 @@ export default function Home() {
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <FolderOpen size={20} className={`text-${color}-500`} />
-                  <span className="font-medium">{d.nom || d.fichier_navette_nom || 'Dossier'}</span>
+                  <span className="font-medium">{d.nom || label}</span>
                 </div>
                 {!isScan && (
                 <button onClick={(e) => { e.preventDefault(); deleteDossier(d.id, d.type); }}
