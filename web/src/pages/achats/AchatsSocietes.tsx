@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Trash2, Building2, FolderOpen, Upload, FileSpreadsheet } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { parsePlanComptable, PlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
+import { getDefaultPlanComptable, DEFAULT_SOCIETE } from '../../lib/achatsPlanComptableDefault';
 
 interface Societe { id: string; nom: string; mf: string; }
 interface Dossier { id: string; societe_id: string; nom: string; mois: number; annee: number; statut: string; nb_factures: number; nb_ecritures: number; }
@@ -61,9 +62,22 @@ export default function AchatsSocietes() {
   const [uploadingPlan, setUploadingPlan] = useState(false);
 
   useEffect(() => {
-    setSocietes(loadSocietes());
+    let socs = loadSocietes();
+    let loadedPlan = loadPlan();
+
+    if (socs.length === 0) {
+      socs = [DEFAULT_SOCIETE];
+      saveSocietes(socs);
+    }
+
+    if (!loadedPlan) {
+      loadedPlan = getDefaultPlanComptable();
+      savePlan(loadedPlan);
+    }
+
+    setSocietes(socs);
     setDossiers(loadDossiers());
-    setPlan(loadPlan());
+    setPlan(loadedPlan);
   }, []);
 
   const createSociete = () => {

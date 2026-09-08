@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { processAchatFile, AchatInvoice } from '../../lib/achatsParser';
 import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, formatPlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
+import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
 
 type Tab = 'import' | 'factures' | 'plan' | 'generate' | 'ecritures' | 'export';
 
@@ -16,7 +17,7 @@ interface Dossier { id: string; societe_id: string; nom: string; mois: number; a
 function loadPlan(): PlanComptable | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_PLAN);
-    if (!raw) return null;
+    if (!raw) return getDefaultPlanComptable();
     const obj = JSON.parse(raw);
     return {
       comptes: new Map(Object.entries(obj.comptes || {})),
@@ -26,7 +27,7 @@ function loadPlan(): PlanComptable | null {
       taxes: obj.taxes || [],
       allByCode: obj.allByCode || {},
     };
-  } catch { return null; }
+  } catch { return getDefaultPlanComptable(); }
 }
 
 function loadDossier(id: string): Dossier | null {
