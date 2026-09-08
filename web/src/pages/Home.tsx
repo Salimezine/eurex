@@ -59,6 +59,7 @@ export default function Home() {
           const isBaud = d.type === 'baud';
           const isScan = d.type === 'scanflash';
           const link = isBaud ? `/baud/dossier/${d.id}` : isScan ? `/scanflash/dossier/${d.id}` : `/dossier/${d.id}`;
+          const label = isBaud ? 'BAUD' : isScan ? 'SCANFLASH' : 'ANIMAL';
           const color = isBaud ? 'purple' : isScan ? 'emerald' : 'blue';
           return (
             <Link key={d.id} to={link}
@@ -74,6 +75,9 @@ export default function Home() {
                   <Trash2 size={14} />
                 </button>
                 )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-xs bg-${color}-100 text-${color}-700`}>{label}</span>
               </div>
             </Link>
           );
