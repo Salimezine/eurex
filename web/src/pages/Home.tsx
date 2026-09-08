@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { FolderOpen, Trash2 } from 'lucide-react';
+import { FolderOpen, Trash2, BarChart3 } from 'lucide-react';
 
 export default function Home() {
   const [dossiers, setDossiers] = useState<any[]>([]);
@@ -45,6 +45,16 @@ export default function Home() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        <Link to="/ef" className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-lg p-4 hover:shadow-md transition-all group">
+          <div className="flex items-center gap-2 mb-2">
+            <BarChart3 size={20} className="text-indigo-600" />
+            <span className="font-medium text-indigo-800">Etats Financiers</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-700">EF</span>
+            <span className="text-xs text-gray-500">Bilan, Resultat, SIG, Flux, Immob</span>
+          </div>
+        </Link>
         {dossiers.map((d: any) => {
           const isBaud = d.type === 'baud';
           const isScan = d.type === 'scanflash';
