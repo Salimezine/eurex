@@ -677,8 +677,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"name":"detail","status":"
       }
       if (baudDossierGetMatch && method === 'DELETE') {
         const did = baudDossierGetMatch[1];
+        await env.DB.prepare('DELETE FROM imports_ga WHERE dossier_id = ?').bind(did).run();
         await env.DB.prepare('DELETE FROM lignes_extraites WHERE dossier_id = ?').bind(did).run();
-        await env.DB.prepare('DELETE FROM exports_paie WHERE dossier_id = ?').bind(did).run();
         await env.DB.prepare('DELETE FROM dossiers_paie WHERE id = ?').bind(did).run();
         return json({ ok: true });
       }
