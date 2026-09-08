@@ -6,6 +6,7 @@ config.json
 
 # Debug/test files
 debug-*.mjs
+debug*.js
 compare-*.mjs
 test-animal-debug*.mjs
 test-animal-feb.mjs
@@ -14,6 +15,17 @@ test-animal-parse.mjs
 test-animal-rapport.mjs
 test-animal-ref.mjs
 test-animal-yrows.mjs
+test-achats*.js
+analyze*.js
+analyze*.py
+check*.js
+extract*.js
+investigate*.js
+search*.js
+read*.js
+pointage*.js
+deep_debug.js
+*.txt
 
 # Node modules
 node_modules/

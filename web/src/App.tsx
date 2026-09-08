@@ -7,6 +7,8 @@ import BaudParametres from './pages/baud/BaudParametres';
 import ScanSocietes from './pages/scanflash/ScanSocietes';
 import ScanDossierPage from './pages/scanflash/ScanDossierPage';
 import EtatsFinanciers from './pages/ef/EtatsFinanciers';
+import AchatsSocietes from './pages/achats/AchatsSocietes';
+import AchatsDossierPage from './pages/achats/AchatsDossierPage';
 
 export default function App() {
   const loc = useLocation();
@@ -16,6 +18,7 @@ export default function App() {
   const isDossier = loc.pathname.startsWith('/dossier/');
   const isBaudDossier = loc.pathname.startsWith('/baud/dossier/');
   const isScanDossier = loc.pathname.startsWith('/scanflash/dossier/');
+  const isAchats = loc.pathname.startsWith('/achats');
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -56,6 +59,14 @@ export default function App() {
               </Link>
             </div>
           )}
+
+          {isAchats && (
+            <div className="flex gap-1 border-l pl-4">
+              <Link to="/achats" className="px-3 py-1.5 rounded-lg text-sm font-medium bg-orange-50 text-orange-700">
+                ACHATS
+              </Link>
+            </div>
+          )}
         </div>
       </nav>
       <main className="max-w-7xl mx-auto px-4 py-6">
@@ -68,6 +79,8 @@ export default function App() {
           <Route path="/scanflash" element={<ScanSocietes />} />
           <Route path="/scanflash/dossier/:id" element={<ScanDossierPage />} />
           <Route path="/ef" element={<EtatsFinanciers />} />
+          <Route path="/achats" element={<AchatsSocietes />} />
+          <Route path="/achats/dossier/:id" element={<AchatsDossierPage />} />
         </Routes>
       </main>
     </div>
