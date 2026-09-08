@@ -11,6 +11,9 @@ export default function BaudSocietes() {
   const [showNew, setShowNew] = useState(false);
   const [nom, setNom] = useState('');
   const [formeJuridique, setFormeJuridique] = useState('SARL');
+  const [editingSoc, setEditingSoc] = useState<string | null>(null);
+  const [editMF, setEditMF] = useState('');
+  const [editNom, setEditNom] = useState('');
 
   useEffect(() => { api.baud.getSocietes().then(setSocietes).catch(() => {}); }, []);
   useEffect(() => { if (selectedId) api.baud.getDossiers(selectedId).then(setDossiers).catch(() => {}); }, [selectedId]);
@@ -40,11 +43,13 @@ export default function BaudSocietes() {
 
   const selected = societes.find(s => s.id === selectedId);
 
-  // All dossiers across all societes (flat list like ANIMALS)
-  const allDossiers: any[] = [];
-  for (const s of societes) {
-    // We'll show dossiers only for selected societe
-  }
+  const saveSociete = async (id: string) => {
+    try {
+      const updated = await api.baud.updateSociete(id, { nom: editNom, matricule_fiscal: editMF });
+      setSocietes(societes.map(s => s.id === id ? updated : s));
+      setEditingSoc(null);
+    } catch {}
+  };
 
   return (
     <div className="space-y-4 mt-4">
@@ -91,7 +96,21 @@ export default function BaudSocietes() {
       {selected && (
         <div className="bg-white border rounded-lg p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-medium text-sm">{selected.nom}</h3>
+            {editingSoc === selected.id ? (
+              <div className="flex items-center gap-2 flex-1">
+                <input value={editNom} onChange={e => setEditNom(e.target.value)} className="border rounded px-2 py-1 text-sm" placeholder="Nom" />
+                <input value={editMF} onChange={e => setEditMF(e.target.value)} className="border rounded px-2 py-1 text-sm w-40" placeholder="Matricule fiscal" />
+                <button onClick={() => saveSociete(selected.id)} className="px-2 py-1 bg-green-600 text-white rounded text-xs">Sauver</button>
+                <button onClick={() => setEditingSoc(null)} className="px-2 py-1 bg-gray-200 rounded text-xs">Annuler</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium text-sm">{selected.nom}</h3>
+                {selected.matricule_fiscal && <span className="text-xs text-gray-400">MF: {selected.matricule_fiscal}</span>}
+                <button onClick={() => { setEditingSoc(selected.id); setEditNom(selected.nom); setEditMF(selected.matricule_fiscal || ''); }}
+                  className="text-xs text-blue-600 hover:underline">Modifier</button>
+              </div>
+            )}
             <div className="flex gap-2 items-end">
               <button onClick={createDossier}
                 className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 flex items-center gap-1">
