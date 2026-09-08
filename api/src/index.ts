@@ -675,6 +675,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"name":"detail","status":"
         const d = await env.DB.prepare('SELECT * FROM dossiers_paie WHERE id = ?').bind(baudDossierGetMatch[1]).first();
         return d ? json(d) : json({ error: 'Non trouve' }, 404);
       }
+      if (baudDossierGetMatch && method === 'DELETE') {
+        const did = baudDossierGetMatch[1];
+        await env.DB.prepare('DELETE FROM lignes_extraites WHERE dossier_id = ?').bind(did).run();
+        await env.DB.prepare('DELETE FROM exports_paie WHERE dossier_id = ?').bind(did).run();
+        await env.DB.prepare('DELETE FROM dossiers_paie WHERE id = ?').bind(did).run();
+        return json({ ok: true });
+      }
 
       // --- BAUD: UPLOAD FICHE NAVETTE (auto-extract) ---
       const baudUploadMatch = path.match(/^\/api\/baud\/dossiers\/([^/]+)\/upload$/);

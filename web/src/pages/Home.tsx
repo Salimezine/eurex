@@ -23,7 +23,7 @@ export default function Home() {
   const deleteDossier = async (id: string, type: string) => {
     if (!confirm('Supprimer ce dossier ?')) return;
     if (type === 'baud') {
-      // BAUD delete not implemented yet
+      await api.baud.deleteDossier(id);
     } else if (type === 'scanflash') {
       await api.scan.deleteDossier(id);
     } else {

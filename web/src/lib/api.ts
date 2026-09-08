@@ -55,6 +55,7 @@ export const api = {
     getDossiers: (sid: string) => req<any[]>(`/baud/societes/${sid}/dossiers`),
     createDossier: (sid: string, d: any) => req<any>(`/baud/societes/${sid}/dossiers`, { method: 'POST', body: JSON.stringify(d) }),
     getDossier: (did: string) => req<any>(`/baud/dossiers/${did}`),
+    deleteDossier: (did: string) => req<any>(`/baud/dossiers/${did}`, { method: 'DELETE' }),
     upload: (did: string, filename: string, lignes: any[]) => req<any>(`/baud/dossiers/${did}/upload`, { method: 'POST', body: JSON.stringify({ filename, lignes }) }),
     extract: (did: string) => req<any>(`/baud/dossiers/${did}/extract`, { method: 'POST' }),
     getLignes: (did: string) => req<any[]>(`/baud/dossiers/${did}/lignes`),
