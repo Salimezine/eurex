@@ -129,11 +129,13 @@ export default function AchatsDossierPage() {
 
   const handleExportCSV = () => {
     if (ecritures.length === 0) return;
-    const header = 'N° pièce;Date pièce;Journal;Libellé;Compte;Sens;Montant;Trésorerie';
+    const header = 'N° pièce comptable;Date pièce comptable;Journal;Libellé;N° compte;Libellé trésorerie;Débit;Crédit';
     const lines = ecritures.map(e => {
       const [y, m, d] = e.date_operation.split('-');
       const dateFormatted = `${d}/${m}/${y}`;
-      return `${e.numero_doc};${dateFormatted};${e.journal_code};${e.libelle};${e.compte};${e.sens};${e.montant.toFixed(3)};`;
+      const debit = e.sens === 'D' ? e.montant.toFixed(3) : '';
+      const credit = e.sens === 'C' ? e.montant.toFixed(3) : '';
+      return `${e.numero_doc};${dateFormatted};${e.journal_code};${e.libelle};${e.compte};;${debit};${credit}`;
     });
     const blob = new Blob([header + '\n' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -504,7 +506,7 @@ export default function AchatsDossierPage() {
               </button>
               <span className="text-sm text-gray-500">{factures.length} factures / {ecritures.length} écritures</span>
             </div>
-            <p className="text-xs text-gray-400">Format compatible Axeane: N° pièce | Date | Journal | Libellé | Compte | Débit | Crédit</p>
+            <p className="text-xs text-gray-400">Format Axeane: N° pièce | Date | Journal | Libellé | N° compte | Débit | Crédit</p>
           </div>
         </div>
       )}
