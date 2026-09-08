@@ -89,9 +89,10 @@ export default function AchatsSocietes() {
   const createDossier = () => {
     if (!selectedSoc || !newDossierMonth) return;
     const [y, m] = newDossierMonth.split('-').map(Number);
+    const soc = societes.find(s => s.id === selectedSoc);
     const d: Dossier = {
       id: genId(), societe_id: selectedSoc,
-      nom: `ACHATS ${m}/${y}`, mois: m, annee: y,
+      nom: soc ? soc.nom : `ACHATS ${m}/${y}`, mois: m, annee: y,
       statut: 'brouillon', nb_factures: 0, nb_ecritures: 0,
     };
     const updated = [d, ...dossiers];
