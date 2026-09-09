@@ -59,7 +59,7 @@ export default function AchatsSocietes() {
   const [plan, setPlan] = useState<PlanComptable | null>(null);
 
   useEffect(() => {
-    setDossiers(loadDossiers());
+    let loadedDossiers = loadDossiers();
     const p = loadPlan();
     if (!p) {
       const def = getDefaultPlanComptable();
@@ -68,6 +68,19 @@ export default function AchatsSocietes() {
     } else {
       setPlan(p);
     }
+
+    if (loadedDossiers.length === 0) {
+      const now = new Date();
+      const d: Dossier = {
+        id: genId(), societe_id: SOCIETE_ID,
+        nom: 'PROYASH METROPOLI', mois: now.getMonth() + 1, annee: now.getFullYear(),
+        statut: 'brouillon', nb_factures: 0, nb_ecritures: 0,
+      };
+      loadedDossiers = [d];
+      saveDossiers(loadedDossiers);
+    }
+
+    setDossiers(loadedDossiers);
   }, []);
 
   const createDossier = () => {
