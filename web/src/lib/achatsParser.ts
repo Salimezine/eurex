@@ -170,16 +170,7 @@ export async function processAchatFile(file: File): Promise<AchatInvoice> {
   } else {
     const pdfResult = await extractFromPDF(file);
     text = pdfResult.text;
-    isHandwritten = pdfResult.isHandwritten;
-    if (isHandwritten) {
-      try {
-        const blob = new Blob([await file.arrayBuffer()], { type: file.type });
-        const imgFile = new File([blob], 'page.png', { type: file.type });
-        const imgResult = await extractFromImage(imgFile);
-        text = imgResult.text;
-        confidence = imgResult.confidence;
-      } catch {}
-    }
+    isHandwritten = !text || text.replace(/\s/g, '').length < 50;
   }
 
   const parsed = parseInvoiceText(text, isHandwritten);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet } from 'lucide-react';
+import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { processAchatFile, AchatInvoice } from '../../lib/achatsParser';
 import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult } from '../../lib/achatsAI';
@@ -190,6 +190,17 @@ export default function AchatsDossierPage() {
     setEcritures(prev => prev.filter(e => e.id !== id));
   };
 
+  const addFacture = () => {
+    const newF: AchatInvoice = {
+      id: Math.random().toString(36).substring(2, 10),
+      numero: '', date: dossier ? `${dossier.annee}-${String(dossier.mois).padStart(2, '0')}-01` : new Date().toISOString().split('T')[0],
+      fournisseur: '', description: '',
+      ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, ttc: 0,
+      is_handwritten: false, raw_text: '', ocr_confidence: 100,
+    };
+    setFactures(prev => [...prev, newF]);
+  };
+
   const addEcriture = () => {
     const newE: EcritureAchat = {
       id: Math.random().toString(36).substring(2, 10),
@@ -251,18 +262,21 @@ export default function AchatsDossierPage() {
       {tab === 'import' && (
         <div className="space-y-4">
           <div className="bg-white rounded-lg border p-4">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <label className="bg-orange-600 text-white px-4 py-2 rounded text-sm hover:bg-orange-700 cursor-pointer flex items-center gap-1">
                 <Upload size={15} />
                 {uploading ? 'Extraction...' : 'Importer PDF(s) / Image(s)'}
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" multiple className="hidden" onChange={e => e.target.files && handleUploadFiles(e.target.files)} />
               </label>
-              <span className="text-xs text-gray-400">PDF typé (extraction texte) ou scanné/manuscrit (OCR fra+ara)</span>
+              <button onClick={() => { addFacture(); setTab('factures'); }} className="bg-gray-600 text-white px-4 py-2 rounded text-sm hover:bg-gray-700 flex items-center gap-1">
+                <Plus size={15} /> Ajouter manuellement
+              </button>
+              <span className="text-xs text-gray-400">PDF scanné = champs vides, remplissez manuellement</span>
             </div>
           </div>
           {!plan && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
-              ⚠ Aucun plan comptable chargé. Retournez à la page sociétés pour importer le fichier Excel du plan.
+              ⚠ Aucun plan comptable chargé. Le plan PROYASH METROPOLI est pré-chargé.
             </div>
           )}
         </div>
