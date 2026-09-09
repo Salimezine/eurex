@@ -84,9 +84,34 @@ export default function AchatsDossierPage() {
         setMsg(`Erreur ${file.name}: ${e.message}`);
       }
     }
-    setFactures(prev => [...prev, ...newFactures]);
+    const updatedFactures = [...factures, ...newFactures];
+    setFactures(updatedFactures);
     setMsg(`${newFactures.length} facture(s) extraite(s)`);
     setUploading(false);
+
+    if (updatedFactures.length > 0 && plan) {
+      setMsg('Génération des écritures...');
+      setGenerating(true);
+      try {
+        const allEcritures: EcritureAchat[] = [];
+        for (const f of updatedFactures) {
+          try {
+            const e = await generateEcrituresWithAI(f, plan);
+            allEcritures.push(...e);
+          } catch {
+            const fallback = await import('../../lib/achatsAI').then(m => m.generateEcrituresWithAI(f, plan));
+            allEcritures.push(...fallback);
+          }
+        }
+        setEcritures(allEcritures);
+        if (id) updateDossier(id, { nb_ecritures: allEcritures.length, nb_factures: updatedFactures.length });
+        setMsg(`${allEcritures.length} écriture(s) générée(s) automatiquement`);
+        setTab('ecritures');
+      } catch (e: any) {
+        setMsg('Erreur génération: ' + e.message);
+      }
+      setGenerating(false);
+    }
   };
 
   const handleGenerateAll = async () => {
@@ -199,6 +224,17 @@ export default function AchatsDossierPage() {
       is_handwritten: false, raw_text: '', ocr_confidence: 100,
     };
     setFactures(prev => [...prev, newF]);
+  };
+
+  const generateForFacture = async (f: AchatInvoice) => {
+    if (!plan) return;
+    try {
+      const e = await generateEcrituresWithAI(f, plan);
+      setEcritures(prev => [...prev, ...e]);
+      setMsg(`${e.length} écriture(s) générée(s) pour ${f.numero || 'facture'}`);
+    } catch {
+      setMsg('Erreur AI pour ' + f.numero);
+    }
   };
 
   const addEcriture = () => {
