@@ -253,6 +253,19 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     const pdfResult = await (await import('./achatsParser')).extractFromPDF(file);
     text = pdfResult.text;
     isHandwritten = !text || text.replace(/\s/g, '').length < 50;
+
+    if (isHandwritten && text.replace(/\s/g, '').length < 50) {
+      try {
+        const Tesseract = await import('tesseract.js');
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await Tesseract.default.recognize(arrayBuffer, 'fra+ara');
+        text = result.data.text;
+        confidence = result.data.confidence;
+        isHandwritten = true;
+      } catch (e) {
+        console.warn('Tesseract OCR failed:', e);
+      }
+    }
   }
 
   let parsed;
@@ -286,9 +299,6 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
   }
 
   if (!parsed) {
-    if (needsVision && !apiToken) {
-      console.warn('Token VITE_CF_API_TOKEN manquant - extraction texte impossible pour PDF scanné');
-    }
     parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
   }
 
