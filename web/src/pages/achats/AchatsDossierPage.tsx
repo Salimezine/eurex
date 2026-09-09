@@ -79,8 +79,9 @@ export default function AchatsDossierPage() {
     for (const file of Array.from(files)) {
       try {
         setMsg(`Traitement de ${file.name} par AI...`);
-        const inv = await processFileWithAI(file, plan);
-        newFactures.push(inv);
+        const invoices = await processFileWithAI(file, plan);
+        newFactures.push(...invoices);
+        setMsg(`${invoices.length} facture(s) extraite(s) de ${file.name}`);
       } catch (e: any) {
         setMsg(`Erreur ${file.name}: ${e.message}`);
       }

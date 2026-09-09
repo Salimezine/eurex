@@ -102,7 +102,9 @@ async function callAI(prompt: string, systemPrompt: string): Promise<string | nu
       return null;
     }
 
-    return result.result?.response || result.result || '';
+    const choice = result.result?.choices?.[0];
+    const text = choice?.message?.content || result.result?.response || result.result || '';
+    return typeof text === 'string' ? text : JSON.stringify(text);
   } catch (e) {
     console.warn('AI call failed:', e);
     return null;
@@ -146,7 +148,9 @@ async function callVisionAI(images: string[], prompt: string, systemPrompt: stri
       return null;
     }
 
-    return result.result?.response || result.result || '';
+    const choice = result.result?.choices?.[0];
+    const text = choice?.message?.content || result.result?.response || result.result || '';
+    return typeof text === 'string' ? text : JSON.stringify(text);
   } catch (e) {
     console.warn('Vision AI call failed:', e);
     return null;
@@ -238,7 +242,7 @@ Règles:
   };
 }
 
-export async function processFileWithAI(file: File, plan: PlanComptable): Promise<AchatInvoice> {
+export async function processFileWithAI(file: File, plan: PlanComptable): Promise<AchatInvoice[]> {
   const apiToken = import.meta.env.VITE_CF_API_TOKEN;
   const isImage = file.type.startsWith('image/');
   let text = '';
@@ -268,73 +272,84 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     }
   }
 
-  let parsed;
+  const allInvoices: AchatInvoice[] = [];
   const needsVision = (isImage || isHandwritten) && file.type === 'application/pdf';
 
   if (needsVision && apiToken) {
     try {
-      const images = await pdfToImages(file, 3);
-      if (images.length > 0) {
-        const planText = getPlanText(plan);
-        const fournText = getFournisseursText(plan);
-        const prompt = `Extrait les données de cette facture d'achat en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\nPlan: ${planText}\nFournisseurs: ${fournText}`;
-        const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
-        const response = await callVisionAI(images, prompt, systemPrompt);
-        if (response) {
-          const jsonMatch = response.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const data = JSON.parse(jsonMatch[0]);
-            parsed = {
-              numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
-              description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
-              tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
-              timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
-            };
+      const pages = await pdfToImages(file, 37);
+      console.log(`PDF: ${pages.length} pages à traiter`);
+      for (let i = 0; i < pages.length; i++) {
+        try {
+          const planText = getPlanText(plan);
+          const fournText = getFournisseursText(plan);
+          const prompt = `Extrait les données de cette facture d'achat en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\nPlan: ${planText}\nFournisseurs: ${fournText}`;
+          const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture. Si la page ne contient pas de facture, réponds juste "null".';
+          const response = await callVisionAI([pages[i]], prompt, systemPrompt);
+          if (response && response.trim() !== 'null' && response.trim() !== '{}') {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const data = JSON.parse(jsonMatch[0]);
+              if (data.numero || data.fournisseur || data.ttc > 0) {
+                allInvoices.push({
+                  id: genId(),
+                  numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
+                  description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
+                  tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
+                  timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
+                  is_handwritten: true, raw_text: '', ocr_confidence: confidence,
+                });
+                console.log(`Page ${i + 1}: facture trouvée - ${data.fournisseur || 'inconnu'} ${data.ttc} DT`);
+              }
+            }
           }
+        } catch (e) {
+          console.warn(`Page ${i + 1} failed:`, e);
         }
       }
+      console.log(`Total: ${allInvoices.length} factures extraites`);
     } catch (e) {
       console.warn('Vision AI failed:', e);
     }
   }
 
-  if (!parsed) {
-    if (text.replace(/\s/g, '').length > 50 && apiToken) {
-      try {
-        const planText = getPlanText(plan);
-        const fournText = getFournisseursText(plan);
-        const prompt = `## TEXTE DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
-        const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
-        const response = await callAI(prompt, systemPrompt);
-        if (response) {
-          const jsonMatch = response.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const data = JSON.parse(jsonMatch[0]);
-            parsed = {
-              numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
-              description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
-              tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
-              timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
-            };
-          }
+  if (allInvoices.length === 0 && text.replace(/\s/g, '').length > 50 && apiToken) {
+    try {
+      const planText = getPlanText(plan);
+      const fournText = getFournisseursText(plan);
+      const prompt = `## TEXTE DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
+      const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
+      const response = await callAI(prompt, systemPrompt);
+      if (response) {
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const data = JSON.parse(jsonMatch[0]);
+          allInvoices.push({
+            id: genId(), numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
+            description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
+            tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
+            timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
+            is_handwritten: isHandwritten, raw_text: text.substring(0, 500), ocr_confidence: confidence,
+          });
         }
-      } catch (e) {
-        console.warn('Text AI failed:', e);
       }
+    } catch (e) {
+      console.warn('Text AI failed:', e);
     }
   }
 
-  if (!parsed) {
-    parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
+  if (allInvoices.length === 0) {
+    const parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
+    allInvoices.push({
+      ...parsed,
+      id: genId(),
+      is_handwritten: isHandwritten,
+      raw_text: text.substring(0, 500),
+      ocr_confidence: confidence,
+    });
   }
 
-  return {
-    ...parsed,
-    id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
-    is_handwritten: isHandwritten,
-    raw_text: text.substring(0, 500),
-    ocr_confidence: confidence,
-  };
+  return allInvoices;
 }
 
 export async function generateEcrituresWithAI(
