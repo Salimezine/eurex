@@ -460,8 +460,8 @@ export default function BaudDossierPage() {
                     <th className="p-2 text-right">Brut</th><th className="p-2 text-right">H.Nuit</th><th className="p-2">Actions</th>
                   </tr></thead>
                   <tbody className="divide-y">
-                    {employees.map((emp) => (
-                      <tr key={emp.matricule} className="hover:bg-gray-50">
+                    {employees.map((emp, idx) => (
+                      <tr key={emp.matricule || `emp-${idx}`} className="hover:bg-gray-50">
                         {editingEmployee === emp.matricule ? (
                           <>
                             <td className="p-1"><input value={editValues.matricule} onChange={e => setEditValues({...editValues, matricule: e.target.value})} className="w-20 text-xs border rounded px-1" /></td>
