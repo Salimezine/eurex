@@ -313,28 +313,34 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     }
   }
 
-  if (allInvoices.length === 0 && text.replace(/\s/g, '').length > 50 && apiToken) {
+  if (allInvoices.length === 0 && isImage) {
     try {
-      const planText = getPlanText(plan);
-      const fournText = getFournisseursText(plan);
-      const prompt = `## TEXTE DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
-      const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
-      const response = await callAI(prompt, systemPrompt);
-      if (response) {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const data = JSON.parse(jsonMatch[0]);
-          allInvoices.push({
-            id: genId(), numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
-            description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
-            tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
-            timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
-            is_handwritten: isHandwritten, raw_text: text.substring(0, 500), ocr_confidence: confidence,
-          });
+      const Tesseract = await import('tesseract.js');
+      const result = await Tesseract.default.recognize(file, 'fra+ara');
+      text = result.data.text;
+      confidence = result.data.confidence;
+      if (text.replace(/\s/g, '').length > 50 && apiToken) {
+        const planText = getPlanText(plan);
+        const fournText = getFournisseursText(plan);
+        const prompt = `## TEXTE OCR DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
+        const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
+        const aiResponse = await callAI(prompt, systemPrompt);
+        if (aiResponse) {
+          const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const data = JSON.parse(jsonMatch[0]);
+            allInvoices.push({
+              id: genId(), numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
+              description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
+              tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
+              timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
+              is_handwritten: true, raw_text: text.substring(0, 500), ocr_confidence: confidence,
+            });
+          }
         }
       }
     } catch (e) {
-      console.warn('Text AI failed:', e);
+      console.warn('Tesseract OCR failed:', e);
     }
   }
 
