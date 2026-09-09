@@ -291,7 +291,7 @@ export default function BaudDossierPage() {
       // Re-verify after corrections (avec les données fraîches, pas le closure stale)
       const newResult = verifySalaryCalculations(currentEmps, currentPtg, salaryResults);
       setVerifyResult(newResult);
-      persistExtraction(currentEmps, currentPtg, heuresNuit, dossier);
+      persistExtraction(currentEmps, currentPtg, heuresNuit);
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
   };
 
@@ -303,15 +303,19 @@ export default function BaudDossierPage() {
     // Re-verify
     const newResult = verifySalaryCalculations(newEmps, newPtg, salaryResults);
     setVerifyResult(newResult);
-    persistExtraction(newEmps, newPtg, heuresNuit, dossier);
+    persistExtraction(newEmps, newPtg, heuresNuit);
   };
 
   // Save only when user explicitly edits
-  const persistExtraction = (empSnap: Employee[], ptgSnap: PointageData[], nuitSnap: Record<string, number>, dossierSnap: any) => {
-    if (!dossierSnap?.id) return;
+  const persistExtraction = (empSnap: Employee[], ptgSnap: PointageData[], nuitSnap: Record<string, number>) => {
+    if (!id) return;
     const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
-    const extractionJson = { employees: empSnap, pointage: ptgSnap, heures_nuit: nuitSnap, mois: dossierSnap.mois, annee: dossierSnap.annee, source_file: dossierSnap.fichier_navette_nom || '' };
-    fetch(`${BASE}/baud/dossiers/${dossierSnap.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
+    const extractionJson = { employees: empSnap, pointage: ptgSnap, heures_nuit: nuitSnap, mois: dossier?.mois || 1, annee: dossier?.annee || 2026, source_file: dossier?.fichier_navette_nom || '' };
+    console.log('[persist] saving', empSnap.length, 'employees to dossier', id);
+    fetch(`${BASE}/baud/dossiers/${id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) })
+      .then(r => { console.log('[persist] response', r.status); return r.json(); })
+      .then(d => console.log('[persist] ok', d))
+      .catch(e => console.error('[persist] error', e));
   };
 
   // Save extraction only before export
@@ -347,7 +351,7 @@ export default function BaudDossierPage() {
     setEmployees(newEmployees);
     setEditingEmployee(null);
     setMsg('Employé mis à jour');
-    persistExtraction(newEmployees, pointage, heuresNuit, dossier);
+    persistExtraction(newEmployees, pointage, heuresNuit);
   };
 
   // Edit pointage
@@ -369,7 +373,7 @@ export default function BaudDossierPage() {
     setPointage(newPtg);
     setEditingPointage(null);
     setMsg('Pointage mis à jour');
-    persistExtraction(employees, newPtg, heuresNuit, dossier);
+    persistExtraction(employees, newPtg, heuresNuit);
   };
 
   // Add new pointage entry
@@ -384,7 +388,7 @@ export default function BaudDossierPage() {
     const newPtg = pointage.filter(p => p.matricule !== matricule);
     setPointage(newPtg);
     setMsg('Pointage supprimé');
-    persistExtraction(employees, newPtg, heuresNuit, dossier);
+    persistExtraction(employees, newPtg, heuresNuit);
   };
 
   // Fix duplicate matricule
@@ -392,7 +396,7 @@ export default function BaudDossierPage() {
     const newEmps = employees.map(e => e.matricule === oldMatricule ? { ...e, matricule: newMatricule } : e);
     setEmployees(newEmps);
     setMsg(`Matricule changé de ${oldMatricule} à ${newMatricule}`);
-    persistExtraction(newEmps, pointage, heuresNuit, dossier);
+    persistExtraction(newEmps, pointage, heuresNuit);
   };
 
   if (!dossier) return <div className="mt-8 text-gray-400 text-sm">Chargement...</div>;
