@@ -6,7 +6,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.9.155/b
 
 async function pdfToImages(file: File, maxPages: number = 3): Promise<string[]> {
   const arrayBuffer = await file.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const uint8Array = new Uint8Array(arrayBuffer);
+  const doc = await pdfjsLib.getDocument({ data: uint8Array }).promise;
   const images: string[] = [];
 
   for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
@@ -257,8 +258,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     if (isHandwritten && text.replace(/\s/g, '').length < 50) {
       try {
         const Tesseract = await import('tesseract.js');
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await Tesseract.default.recognize(arrayBuffer, 'fra+ara');
+        const result = await Tesseract.default.recognize(file, 'fra+ara');
         text = result.data.text;
         confidence = result.data.confidence;
         isHandwritten = true;
@@ -295,6 +295,32 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
       }
     } catch (e) {
       console.warn('Vision AI failed:', e);
+    }
+  }
+
+  if (!parsed) {
+    if (text.replace(/\s/g, '').length > 50 && apiToken) {
+      try {
+        const planText = getPlanText(plan);
+        const fournText = getFournisseursText(plan);
+        const prompt = `## TEXTE DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
+        const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
+        const response = await callAI(prompt, systemPrompt);
+        if (response) {
+          const jsonMatch = response.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const data = JSON.parse(jsonMatch[0]);
+            parsed = {
+              numero: data.numero || '', date: data.date || '', fournisseur: data.fournisseur || '',
+              description: data.description || '', ht0: parseFloat(data.ht0) || 0, ht19: parseFloat(data.ht19) || 0,
+              tva19: parseFloat(data.tva19) || 0, tva7: parseFloat(data.tva7) || 0, fodec: parseFloat(data.fodec) || 0,
+              timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('Text AI failed:', e);
+      }
     }
   }
 

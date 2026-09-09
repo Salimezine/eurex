@@ -173,12 +173,19 @@ export async function processAchatFile(file: File): Promise<AchatInvoice> {
     isHandwritten = !text || text.replace(/\s/g, '').length < 50;
   }
 
-  const parsed = parseInvoiceText(text, isHandwritten);
+  let parsed;
+  if (isHandwritten && file.type === 'application/pdf') {
+    parsed = { numero: '', date: '', fournisseur: '', description: '', ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, ttc: 0 };
+  } else {
+    parsed = parseInvoiceText(text, isHandwritten);
+  }
+
   return {
     ...parsed,
     id: genId(),
     is_handwritten: isHandwritten,
     raw_text: text.substring(0, 500),
     ocr_confidence: confidence,
-  };
+    _file: file,
+  } as AchatInvoice & { _file: File };
 }
