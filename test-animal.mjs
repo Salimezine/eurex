@@ -20,7 +20,7 @@ async function extractText(filePath) {
 
 function parseInvoice(text) {
   let numero = '';
-  let m = text.match(/FACTURE\s*N[°o]?\s*:\s*(\d{4})\s*\/\s*(\d+)/);
+  let m = text.match(/FACTURE\s*N[°o∞.]\s*:\s*(\d{4})\s*\/\s*(\d+)/);
   if (m) numero = m[1] + '/' + m[2];
 
   let date = '';

@@ -22,7 +22,7 @@ function parseInvoice(rawText: string) {
 
   for (const line of lines) {
     if (!numero) {
-      const m = line.match(/FACTURE\s*N[°o]?\s*:\s*(\d{4})\s*\/\s*(\d+)/);
+      const m = line.match(/FACTURE\s*N[°o∞.]\s*:\s*(\d{4})\s*\/\s*(\d+)/);
       if (m) numero = m[1] + '/' + m[2];
     }
     if (!date) {
@@ -30,7 +30,7 @@ function parseInvoice(rawText: string) {
       if (m) date = m[3] + '-' + m[2] + '-' + m[1];
     }
     if (!client) {
-      const m = line.match(/(?<!Code\s)Client\s*:\s*(.+?)(?:\s+Adresse|\s+FACTURE|\s+Mat\.)/);
+      const m = line.match(/^Client\s*:\s*(.+)/);
       if (m) {
         const c = m[1].trim();
         client = c.toUpperCase().includes('PASSAGERS') ? 'CLIENTS PASSAGERS' : c;

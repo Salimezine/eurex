@@ -34,7 +34,7 @@ function parseInvoice(rawText) {
   const p = s => { try { return parseFloat(s.replace(/ /g, '').replace(',', '.')); } catch { return 0; } };
 
   for (const line of lines) {
-    if (!numero) { const m = line.match(/FACTURE\s*N[°o]?\s*:\s*(\d{4})\s*\/\s*(\d+)/); if (m) numero = m[1] + '/' + m[2]; }
+    if (!numero) { const m = line.match(/FACTURE\s*N[°o∞.]\s*:\s*(\d{4})\s*\/\s*(\d+)/); if (m) numero = m[1] + '/' + m[2]; }
     if (!date) { const m = line.match(/LE\s*:?\s*(\d{2})\/(\d{2})\/(\d{4})/); if (m) date = m[3] + '-' + m[2] + '-' + m[1]; }
     if (!client) {
       const m = line.match(/(?<!Code\s)Client\s*:\s*(.+?)(?:\s+Adresse|\s+FACTURE|\s+Mat\.)/);

@@ -30,7 +30,7 @@ function parseNumber(s) {
 function parseInvoice(text) {
   let numero = '';
   const numPatterns = [
-    /(?:FACTURE\s*N[°o]?\s*:?)(\S+)/i,
+    /(?:FACTURE\s*N[°o∞.]\s*:?)(\S+)/i,
     /(?:N[°o]\s*facture\s*:?)(\S+)/i,
     /(\d{4}\/\d{2,4})/,
     /(?:Edition facture vente)(\d+)/i,
@@ -58,8 +58,11 @@ function parseInvoice(text) {
   }
 
   let client = '';
-  const clientMatch = text.match(/(?:CLIENTS?\s+PASSAGERS?|Client\s*:?\s*)(\S.*?)(?:\n|$)/i);
-  if (clientMatch) client = clientMatch[1].trim();
+  const clientMatch = text.match(/^Client\s*:\s*(.+?)$/m);
+  if (clientMatch) {
+    const c = clientMatch[1].trim();
+    client = c.toUpperCase().includes('PASSAGERS') ? 'CLIENTS PASSAGERS' : c;
+  }
 
   let ht0 = 0, ht19 = 0, tva19 = 0, ttc = 0, timbre = 1;
 
