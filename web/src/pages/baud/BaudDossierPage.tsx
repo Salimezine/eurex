@@ -28,7 +28,7 @@ export default function BaudDossierPage() {
   const [salaryResults, setSalaryResults] = useState<Map<string, SalaryResult>>(new Map());
 
   // Edit state
-  const [editingEmployee, setEditingEmployee] = useState<string | null>(null);
+  const [editingEmployeeIdx, setEditingEmployeeIdx] = useState<number | null>(null);
   const [editingPointage, setEditingPointage] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
 
@@ -85,7 +85,8 @@ export default function BaudDossierPage() {
       const lignesData = parsed.employees.map((emp, i) => ({ source_feuille: 'DP', source_ligne: i + 5, champs: [emp.matricule, emp.nom, emp.prenom, emp.cin, emp.date_naissance, emp.situation_fam, String(emp.nombre_enfants), emp.fonction, emp.type_contrat, emp.numero_cnss, emp.rib_ou_ccp, String(emp.salaire_brut), String(emp.nouveau_salaire_brut)] }));
       await api.baud.upload(dossier.id, file.name, lignesData);
 
-      // Save extraction to memory only (no backend persist until export)
+      const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
+      await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
       setMsg(`${parsed.employees.length} salaries extraits, ${parsed.pointage.length} pointages`);
       setTab('employees');
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
@@ -326,9 +327,9 @@ export default function BaudDossierPage() {
     await fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
   };
 
-  const startEditEmployee = (emp: Employee) => {
-    setEditingEmployee(emp.matricule);
-    setEditValues({ ...emp });
+  const startEditEmployee = (idx: number) => {
+    setEditingEmployeeIdx(idx);
+    setEditValues({ ...employees[idx] });
   };
 
   // TÂCHE 1 : saveEditEmployee
@@ -336,8 +337,8 @@ export default function BaudDossierPage() {
   // On NE l'écrase QUE si le champ édité est explicitement salaire_brut.
   // Les autres champs (SF, NE, fonction...) ne doivent PAS toucher nouveau_salaire_brut.
   const saveEditEmployee = () => {
-    if (!editingEmployee) return;
-    const original = employees.find(e => e.matricule === editingEmployee);
+    if (editingEmployeeIdx === null) return;
+    const original = employees[editingEmployeeIdx];
     const updated = { ...editValues };
 
     // Si salaire_brut a été modifié (comparé à l'original), on sync nouveau_salaire_brut
@@ -347,9 +348,9 @@ export default function BaudDossierPage() {
       updated.salaire_manually_edited = true;
     }
 
-    const newEmployees = employees.map(e => e.matricule === editingEmployee ? { ...e, ...updated } : e);
+    const newEmployees = employees.map((e, i) => i === editingEmployeeIdx ? { ...e, ...updated } : e);
     setEmployees(newEmployees);
-    setEditingEmployee(null);
+    setEditingEmployeeIdx(null);
     setMsg('Employé mis à jour');
     persistExtraction(newEmployees, pointage, heuresNuit);
   };
@@ -466,7 +467,7 @@ export default function BaudDossierPage() {
                   <tbody className="divide-y">
                     {employees.map((emp, idx) => (
                       <tr key={emp.matricule || `emp-${idx}`} className="hover:bg-gray-50">
-                        {editingEmployee === emp.matricule ? (
+                        {editingEmployeeIdx === idx ? (
                           <>
                             <td className="p-1"><input value={editValues.matricule} onChange={e => setEditValues({...editValues, matricule: e.target.value})} className="w-20 text-xs border rounded px-1" /></td>
                             <td className="p-1"><input value={editValues.nom} onChange={e => setEditValues({...editValues, nom: e.target.value})} className="w-24 text-xs border rounded px-1" /></td>
@@ -481,7 +482,7 @@ export default function BaudDossierPage() {
                             <td className="p-1"><input type="number" step="0.001" value={editValues.salaire_brut} onChange={e => setEditValues({...editValues, salaire_brut: parseFloat(e.target.value) || 0})} className="w-24 text-xs border rounded px-1 text-right" /></td>
                             <td className="p-1 flex gap-1">
                               <button onClick={saveEditEmployee} className="p-1 text-green-600 hover:text-green-800"><Save size={14} /></button>
-                              <button onClick={() => setEditingEmployee(null)} className="p-1 text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                              <button onClick={() => setEditingEmployeeIdx(null)} className="p-1 text-gray-400 hover:text-gray-600"><X size={14} /></button>
                             </td>
                           </>
                         ) : (
@@ -510,7 +511,7 @@ export default function BaudDossierPage() {
                                 title="Heures de nuit (taux_horaire × 1.25)" />
                             </td>
                             <td className="p-1">
-                              <button onClick={() => startEditEmployee(emp)} className="p-1 text-blue-600 hover:text-blue-800"><Edit2 size={14} /></button>
+                              <button onClick={() => startEditEmployee(idx)} className="p-1 text-blue-600 hover:text-blue-800"><Edit2 size={14} /></button>
                             </td>
                           </>
                         )}
