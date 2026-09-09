@@ -57,14 +57,6 @@ export default function BaudDossierPage() {
         const e = await api.baud.getExports(id);
         setExports(e);
       }
-      if (d.extraction_json) {
-        try {
-          const ej = JSON.parse(d.extraction_json);
-          if (ej.employees) setEmployees(ej.employees);
-          if (ej.pointage) setPointage(ej.pointage);
-          if (ej.heures_nuit) setHeuresNuit(ej.heures_nuit);
-        } catch {}
-      }
     } catch {}
   };
 
