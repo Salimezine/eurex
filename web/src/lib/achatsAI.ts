@@ -258,18 +258,6 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     const pdfResult = await (await import('./achatsParser')).extractFromPDF(file);
     text = pdfResult.text;
     isHandwritten = !text || text.replace(/\s/g, '').length < 50;
-
-    if (isHandwritten && text.replace(/\s/g, '').length < 50) {
-      try {
-        const Tesseract = await import('tesseract.js');
-        const result = await Tesseract.default.recognize(file, 'fra+ara');
-        text = result.data.text;
-        confidence = result.data.confidence;
-        isHandwritten = true;
-      } catch (e) {
-        console.warn('Tesseract OCR failed:', e);
-      }
-    }
   }
 
   const allInvoices: AchatInvoice[] = [];
