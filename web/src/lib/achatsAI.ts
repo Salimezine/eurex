@@ -45,37 +45,43 @@ function getFournisseursText(plan: PlanComptable): string {
   return lines.join('\n');
 }
 
-async function callAI(prompt: string, systemPrompt: string): Promise<string> {
+async function callAI(prompt: string, systemPrompt: string): Promise<string | null> {
   const apiToken = import.meta.env.VITE_CF_API_TOKEN;
   if (!apiToken) {
-    throw new Error('VITE_CF_API_TOKEN non configuré. Ajoutez la variable d\'environnement.');
+    return null;
   }
 
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${CF_MODEL}`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: 2000,
-        temperature: 0.1,
-      }),
+  try {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${CF_MODEL}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: 2000,
+          temperature: 0.1,
+        }),
+      }
+    );
+
+    const result = await response.json();
+    if (!result.success) {
+      console.warn('AI error:', result.errors);
+      return null;
     }
-  );
 
-  const result = await response.json();
-  if (!result.success) {
-    throw new Error('Erreur AI: ' + JSON.stringify(result.errors));
+    return result.result?.response || result.result || '';
+  } catch (e) {
+    console.warn('AI call failed:', e);
+    return null;
   }
-
-  return result.result?.response || result.result || '';
 }
 
 export async function parseInvoiceWithAI(
@@ -122,25 +128,27 @@ Règles:
 
   const response = await callAI(prompt, systemPrompt);
 
-  try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0]);
-      return {
-        numero: data.numero || '',
-        date: data.date || '',
-        fournisseur: data.fournisseur || '',
-        description: data.description || '',
-        ht0: parseFloat(data.ht0) || 0,
-        ht19: parseFloat(data.ht19) || 0,
-        tva19: parseFloat(data.tva19) || 0,
-        tva7: parseFloat(data.tva7) || 0,
-        fodec: parseFloat(data.fodec) || 0,
-        timbre: parseFloat(data.timbre) || 1,
-        ttc: parseFloat(data.ttc) || 0,
-      };
-    }
-  } catch {}
+  if (response) {
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        return {
+          numero: data.numero || '',
+          date: data.date || '',
+          fournisseur: data.fournisseur || '',
+          description: data.description || '',
+          ht0: parseFloat(data.ht0) || 0,
+          ht19: parseFloat(data.ht19) || 0,
+          tva19: parseFloat(data.tva19) || 0,
+          tva7: parseFloat(data.tva7) || 0,
+          fodec: parseFloat(data.fodec) || 0,
+          timbre: parseFloat(data.timbre) || 1,
+          ttc: parseFloat(data.ttc) || 0,
+        };
+      }
+    } catch {}
+  }
 
   return {
     numero: '', date: '', fournisseur: '', description: '',
@@ -215,24 +223,26 @@ Mapping description → compte d'achat:
 
   const response = await callAI(prompt, systemPrompt);
 
-  try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0]);
-      if (data.ecritures && Array.isArray(data.ecritures)) {
-        return data.ecritures.map((e: any) => ({
-          id: genId(),
-          numero_doc: invoice.numero,
-          date_operation: invoice.date,
-          journal_code: 'AC',
-          compte: String(e.compte),
-          libelle: String(e.libelle),
-          sens: e.sens === 'C' ? 'C' : 'D',
-          montant: Math.round(parseFloat(e.montant) * 1000) / 1000,
-        }));
+  if (response) {
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        if (data.ecritures && Array.isArray(data.ecritures)) {
+          return data.ecritures.map((e: any) => ({
+            id: genId(),
+            numero_doc: invoice.numero,
+            date_operation: invoice.date,
+            journal_code: 'AC',
+            compte: String(e.compte),
+            libelle: String(e.libelle),
+            sens: e.sens === 'C' ? 'C' : 'D',
+            montant: Math.round(parseFloat(e.montant) * 1000) / 1000,
+          }));
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   return generateFallbackEcritures(invoice, plan);
 }
@@ -326,18 +336,20 @@ ${planText}
 
   const response = await callAI(prompt, systemPrompt);
 
-  try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0]);
-      return {
-        verdict: data.verdict || 'ATTENTION',
-        score: parseInt(data.score) || 0,
-        checks: data.checks || [],
-        summary: data.summary || '',
-      };
-    }
-  } catch {}
+  if (response) {
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        return {
+          verdict: data.verdict || 'ATTENTION',
+          score: parseInt(data.score) || 0,
+          checks: data.checks || [],
+          summary: data.summary || '',
+        };
+      }
+    } catch {}
+  }
 
   return verifyEcrituresLocally(ecritures, plan);
 }
