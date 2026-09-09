@@ -302,10 +302,13 @@ export default function BaudDossierPage() {
     persistExtraction(newEmps, newPtg, heuresNuit);
   };
 
-  // No auto-save: edits stay in memory until export
-  const persistExtraction = useCallback((_employeesSnap: Employee[], _pointageSnap: PointageData[], _heuresNuitSnap: Record<string, number>) => {
-    // intentionally empty — no auto-persist
-  }, []);
+  // Save only when user explicitly edits (no auto-save on load)
+  const persistExtraction = useCallback((employeesSnap: Employee[], pointageSnap: PointageData[], heuresNuitSnap: Record<string, number>) => {
+    if (!dossier?.id) return;
+    const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
+    const extractionJson = { employees: employeesSnap, pointage: pointageSnap, heures_nuit: heuresNuitSnap, mois: dossier.mois, annee: dossier.annee, source_file: dossier.fichier_navette_nom || '' };
+    fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
+  }, [dossier?.id, dossier?.mois, dossier?.annee, dossier?.fichier_navette_nom]);
 
   // Save extraction only before export
   const saveBeforeExport = async () => {
