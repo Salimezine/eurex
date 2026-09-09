@@ -247,31 +247,41 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
   let isHandwritten = false;
   let confidence = 100;
 
+  console.log(`[ACHATS] Fichier: ${file.name}, type: ${file.type}, taille: ${(file.size/1024).toFixed(0)}KB`);
+  console.log(`[ACHATS] API Token: ${apiToken ? 'PRÉSENT (' + apiToken.substring(0, 10) + '...)' : 'MANQUANT!'}`);
+
   if (isImage) {
+    console.log('[ACHATS] Mode IMAGE - extraction OCR...');
     const imgResult = await (await import('./achatsParser')).extractFromImage(file);
     text = imgResult.text;
     confidence = imgResult.confidence;
     isHandwritten = true;
   } else {
+    console.log('[ACHATS] Mode PDF - extraction texte...');
     const pdfResult = await (await import('./achatsParser')).extractFromPDF(file);
     text = pdfResult.text;
     isHandwritten = !text || text.replace(/\s/g, '').length < 50;
+    console.log(`[ACHATS] Texte extrait: ${text.length} chars, isHandwritten: ${isHandwritten}`);
   }
 
   const allInvoices: AchatInvoice[] = [];
   const needsVision = (isImage || isHandwritten) && file.type === 'application/pdf';
+  console.log(`[ACHATS] needsVision: ${needsVision}, apiToken: ${!!apiToken}`);
 
   if (needsVision && apiToken) {
+    console.log('[ACHATS] Début conversion PDF → images...');
     try {
       const pages = await pdfToImages(file, 37);
-      console.log(`PDF: ${pages.length} pages à traiter`);
+      console.log(`[ACHATS] ${pages.length} pages extraites, début Vision AI...`);
       for (let i = 0; i < pages.length; i++) {
         try {
+          console.log(`[ACHATS] Page ${i + 1}/${pages.length}...`);
           const planText = getPlanText(plan);
           const fournText = getFournisseursText(plan);
           const prompt = `Extrait les données de cette facture d'achat en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\nPlan: ${planText}\nFournisseurs: ${fournText}`;
           const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture. Si la page ne contient pas de facture, réponds juste "null".';
           const response = await callVisionAI([pages[i]], prompt, systemPrompt);
+          console.log(`[ACHATS] Page ${i + 1} réponse:`, response?.substring(0, 200) || 'VIDE');
           if (response && response.trim() !== 'null' && response.trim() !== '{}') {
             const jsonMatch = response.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
@@ -285,17 +295,17 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
                   timbre: parseFloat(data.timbre) || 1, ttc: parseFloat(data.ttc) || 0,
                   is_handwritten: true, raw_text: '', ocr_confidence: confidence,
                 });
-                console.log(`Page ${i + 1}: facture trouvée - ${data.fournisseur || 'inconnu'} ${data.ttc} DT`);
+                console.log(`[ACHATS] ✓ Page ${i + 1}: ${data.fournisseur || 'inconnu'} ${data.ttc} DT`);
               }
             }
           }
         } catch (e) {
-          console.warn(`Page ${i + 1} failed:`, e);
+          console.error(`[ACHATS] ✗ Page ${i + 1} failed:`, e);
         }
       }
-      console.log(`Total: ${allInvoices.length} factures extraites`);
+      console.log(`[ACHATS] Total: ${allInvoices.length} factures extraites`);
     } catch (e) {
-      console.warn('Vision AI failed:', e);
+      console.error('[ACHATS] Vision AI failed:', e);
     }
   }
 
@@ -331,6 +341,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
   }
 
   if (allInvoices.length === 0) {
+    console.log('[ACHATS] Fallback: parseInvoiceText');
     const parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
     allInvoices.push({
       ...parsed,
@@ -341,6 +352,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
     });
   }
 
+  console.log(`[ACHATS] Retour: ${allInvoices.length} facture(s)`);
   return allInvoices;
 }
 

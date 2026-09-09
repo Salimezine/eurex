@@ -124,4 +124,58 @@ describe('Export Variables Sage — generateSageVariablesExport', () => {
     expect(result.invalidMatricules).toBeDefined();
     expect(result.invalidMatricules!.length).toBe(0);
   });
+
+  describe('Export pour chaque mois (1-12)', () => {
+    const moisNoms = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+
+    for (let mois = 1; mois <= 12; mois++) {
+      it(`mois ${mois} (${moisNoms[mois - 1]}) — même structure, bonne période`, () => {
+        const pointage = [{ matricule: '209071', absences: String(mois), avances: mois * 10, heures_supplementaires: String(mois) }];
+        const heuresNuit = { [`${mois}-209071`]: mois * 2 };
+        const result = generateSageVariablesExport(defaultEmployees, pointage, heuresNuit, mois, 2026);
+
+        // 3 employés × 4 variables = 12 rows
+        expect(result.rows.length).toBe(12);
+        expect(result.summary.totalEmployees).toBe(3);
+
+        // Toutes les rows ont la bonne période
+        const periode = `${String(mois).padStart(2, '0')}/2026`;
+        expect(result.rows.every(r => r.periode === periode)).toBe(true);
+
+        // Les 4 variables toujours présentes
+        expect(result.summary.variablesExported).toEqual([
+          'ABSENCES_JOURS', 'HEURES_SUP', 'HEURES_NUIT', 'AVANCES',
+        ]);
+
+        // 209071 a les bonnes valeurs du pointage
+        const emp1 = result.rows.filter(r => r.matricule === '209071');
+        expect(emp1.find(r => r.variable === 'ABSENCES_JOURS')?.valeur).toBe(String(mois));
+        expect(emp1.find(r => r.variable === 'HEURES_SUP')?.valeur).toBe(String(mois) + '.0');
+        expect(emp1.find(r => r.variable === 'HEURES_NUIT')?.valeur).toBe(String(mois * 2) + '.0');
+        expect(emp1.find(r => r.variable === 'AVANCES')?.valeur).toBe((mois * 10).toFixed(3));
+
+        // 209074 et 209070 ont 0 (pas de pointage)
+        const emp2 = result.rows.filter(r => r.matricule === '209074');
+        expect(emp2.find(r => r.variable === 'ABSENCES_JOURS')?.valeur).toBe('0');
+        expect(emp2.find(r => r.variable === 'HEURES_SUP')?.valeur).toBe('0.0');
+        expect(emp2.find(r => r.variable === 'HEURES_NUIT')?.valeur).toBe('0.0');
+        expect(emp2.find(r => r.variable === 'AVANCES')?.valeur).toBe('0.000');
+      });
+    }
+  });
+
+  it('12 mois consécutifs — chaque mois a une période distincte', () => {
+    for (let mois = 1; mois <= 12; mois++) {
+      const result = generateSageVariablesExport(defaultEmployees, [], {}, mois, 2026);
+      const periode = `${String(mois).padStart(2, '0')}/2026`;
+      expect(result.rows[0].periode).toBe(periode);
+    }
+  });
+
+  it('décembre 2026 vs janvier 2027 — changement d\'année', () => {
+    const r1 = generateSageVariablesExport(defaultEmployees, [], {}, 12, 2026);
+    const r2 = generateSageVariablesExport(defaultEmployees, [], {}, 1, 2027);
+    expect(r1.rows[0].periode).toBe('12/2026');
+    expect(r2.rows[0].periode).toBe('01/2027');
+  });
 });
