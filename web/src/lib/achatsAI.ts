@@ -118,10 +118,7 @@ async function callVisionAI(images: string[], prompt: string, systemPrompt: stri
   }
 
   try {
-    const imageMessages = images.map((img, i) => ({
-      type: 'image_url' as const,
-      image_url: { url: `data:image/png;base64,${img}` },
-    }));
+    const imageDataUrl = `data:image/png;base64,${images[0]}`;
 
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${CF_VISION_MODEL}`,
@@ -134,8 +131,9 @@ async function callVisionAI(images: string[], prompt: string, systemPrompt: stri
         body: JSON.stringify({
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: [...imageMessages, { type: 'text' as const, text: prompt }] },
+            { role: 'user', content: prompt },
           ],
+          image: imageDataUrl,
           max_tokens: 2000,
           temperature: 0.1,
         }),
