@@ -3,6 +3,7 @@ ecritures_*.csv
 
 # Config with local paths (keep local)
 config.json
+web/.env
 
 # Debug/test files
 debug-*.mjs
