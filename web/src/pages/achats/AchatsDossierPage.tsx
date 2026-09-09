@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { processAchatFile, AchatInvoice } from '../../lib/achatsParser';
-import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult } from '../../lib/achatsAI';
+import { AchatInvoice } from '../../lib/achatsParser';
+import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, formatPlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
 
@@ -72,13 +72,14 @@ export default function AchatsDossierPage() {
   }, [id]);
 
   const handleUploadFiles = async (files: FileList) => {
-    if (!files.length) return;
+    if (!files.length || !plan) return;
     setUploading(true);
     setMsg('');
     const newFactures: AchatInvoice[] = [];
     for (const file of Array.from(files)) {
       try {
-        const inv = await processAchatFile(file);
+        setMsg(`Traitement de ${file.name} par AI...`);
+        const inv = await processFileWithAI(file, plan);
         newFactures.push(inv);
       } catch (e: any) {
         setMsg(`Erreur ${file.name}: ${e.message}`);
@@ -86,10 +87,9 @@ export default function AchatsDossierPage() {
     }
     const updatedFactures = [...factures, ...newFactures];
     setFactures(updatedFactures);
-    setMsg(`${newFactures.length} facture(s) extraite(s)`);
     setUploading(false);
 
-    if (updatedFactures.length > 0 && plan) {
+    if (updatedFactures.length > 0) {
       setMsg('Génération des écritures...');
       setGenerating(true);
       try {
