@@ -238,6 +238,7 @@ Règles:
 }
 
 export async function processFileWithAI(file: File, plan: PlanComptable): Promise<AchatInvoice> {
+  const apiToken = import.meta.env.VITE_CF_API_TOKEN;
   const isImage = file.type.startsWith('image/');
   let text = '';
   let isHandwritten = false;
@@ -257,7 +258,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
   let parsed;
   const needsVision = (isImage || isHandwritten) && file.type === 'application/pdf';
 
-  if (needsVision) {
+  if (needsVision && apiToken) {
     try {
       const images = await pdfToImages(file, 3);
       if (images.length > 0) {
@@ -285,6 +286,9 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
   }
 
   if (!parsed) {
+    if (needsVision && !apiToken) {
+      console.warn('Token VITE_CF_API_TOKEN manquant - extraction texte impossible pour PDF scanné');
+    }
     parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
   }
 
