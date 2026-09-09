@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -41,6 +41,10 @@ export default function BaudDossierPage() {
   const [sageVariablesResult, setSageVariablesResult] = useState<SageVariablesExportResult | null>(null);
   const [exportMode, setExportMode] = useState<'variables' | 'legacy'>('variables');
   const [showControlReport, setShowControlReport] = useState(false);
+
+  // Ref to always have latest dossier in callbacks
+  const dossierRef = useRef(dossier);
+  dossierRef.current = dossier;
 
   const load = async () => {
     if (!id) return;
@@ -303,12 +307,13 @@ export default function BaudDossierPage() {
   };
 
   // Save only when user explicitly edits (no auto-save on load)
-  const persistExtraction = useCallback((employeesSnap: Employee[], pointageSnap: PointageData[], heuresNuitSnap: Record<string, number>) => {
-    if (!dossier?.id) return;
+  const persistExtraction = (employeesSnap: Employee[], pointageSnap: PointageData[], heuresNuitSnap: Record<string, number>) => {
+    const d = dossierRef.current;
+    if (!d?.id) return;
     const BASE = import.meta.env.VITE_API_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api';
-    const extractionJson = { employees: employeesSnap, pointage: pointageSnap, heures_nuit: heuresNuitSnap, mois: dossier.mois, annee: dossier.annee, source_file: dossier.fichier_navette_nom || '' };
-    fetch(`${BASE}/baud/dossiers/${dossier.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
-  }, [dossier?.id, dossier?.mois, dossier?.annee, dossier?.fichier_navette_nom]);
+    const extractionJson = { employees: employeesSnap, pointage: pointageSnap, heures_nuit: heuresNuitSnap, mois: d.mois, annee: d.annee, source_file: d.fichier_navette_nom || '' };
+    fetch(`${BASE}/baud/dossiers/${d.id}/parsed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractionJson) }).catch(() => {});
+  };
 
   // Save extraction only before export
   const saveBeforeExport = async () => {
