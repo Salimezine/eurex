@@ -136,13 +136,18 @@ describe('Export SAGE BTP (format fixe salariés)', () => {
     expect(res.invalidMatricules?.length ?? 0).toBe(0);
   });
 
-  it('NSS/CNSS en double détectés (blocage export)', () => {
+  it('NSS/CNSS en double : vidé sur le 2e salarié, export libre', () => {
     const res = generateSageSalariesExport([
       { matricule: '209132', matricule_valid: true, nom: 'SASSI', prenom: 'Faouzi', numero_cnss: '17152426-6' },
       { matricule: '209133', matricule_valid: true, nom: 'EL WAER', prenom: 'Morthadha', numero_cnss: '17152426-6' },
     ]);
-    expect(res.duplicateCnss?.length).toBe(1);
-    expect(res.duplicateCnss?.[0].cnss).toBe('17152426-6');
-    expect(res.duplicateCnss?.[0].matricule).toBe('209133');
+    expect(res.clearedCnss?.length).toBe(1);
+    expect(res.clearedCnss?.[0].cnss).toBe('17152426-6');
+    expect(res.clearedCnss?.[0].matricule).toBe('209133');
+    // Le 2e ligne (EL WAER) a le CNSS vidé, le 1er (SASSI) le conserve
+    expect(res.lines[0].substr(326, 13).trim()).toBe('17152426-6');
+    expect(res.lines[1].substr(326, 13).trim()).toBe('');
+    // Export non bloqué
+    expect(res.lines.length).toBe(2);
   });
 });

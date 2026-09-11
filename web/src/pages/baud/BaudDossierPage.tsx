@@ -266,9 +266,9 @@ export default function BaudDossierPage() {
       const res = generateSageSalariesExport(employees);
       setSageSalariesResult(res);
       const assigned = (res.assignedMatricules || []).length;
-      const dupCnss = (res.duplicateCnss || []).length;
-      if (dupCnss > 0) {
-        setMsg(`BLOQUÉ: ${dupCnss} NSS/CNSS en double détecté(s) — SAGE refuserait l'import. Corriger dans le fichier personnel.`);
+      const cleared = (res.clearedCnss || []).length;
+      if (cleared > 0) {
+        setMsg(`Export généré: ${cleared} NSS en double vidé(s) automatiquement (à saisir dans SAGE). ${assigned} matricule(s) attribué(s).`);
       } else if (assigned > 0) {
         setMsg(`${assigned} matricule(s) vide(s) attribué(s) automatiquement — ${res.totalEmployees} salarié(s) exporté(s) (${res.recordLength} car./ligne)`);
       } else {
@@ -280,9 +280,9 @@ export default function BaudDossierPage() {
 
   const downloadSageSalariesTxt = () => {
     if (!sageSalariesResult || sageSalariesResult.lines.length === 0) return;
-    if (sageSalariesResult.duplicateCnss && sageSalariesResult.duplicateCnss.length > 0) {
-      setMsg(`BLOQUÉ: ${sageSalariesResult.duplicateCnss.length} NSS/CNSS en double — corrigez le fichier personnel puis régénérez l'export.`);
-      return;
+    const cleared = (sageSalariesResult.clearedCnss || []).length;
+    if (cleared > 0) {
+      setMsg(`Attention: ${cleared} NSS/CNSS était/sont en double et ont été vidé(s) — saisir le bon numéro dans SAGE après import.`);
     }
     const content = sageSalariesResult.lines.join('');
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -783,17 +783,17 @@ export default function BaudDossierPage() {
                     </ul>
                   </div>
                 )}
-                {sageSalariesResult.duplicateCnss && sageSalariesResult.duplicateCnss.length > 0 && (
-                  <div className="bg-red-50 border border-red-300 rounded p-2 text-red-700">
+                {sageSalariesResult.clearedCnss && sageSalariesResult.clearedCnss.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
                     <div className="font-semibold mb-1">
-                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.duplicateCnss.length} NSS/CNSS en double — SAGE refusera l'import :
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.clearedCnss.length} NSS/CNSS en double — vidé(s) automatiquement (le 1er est conservé) :
                     </div>
                     <ul className="max-h-24 overflow-y-auto space-y-0.5">
-                      {sageSalariesResult.duplicateCnss.map((c, i) => (
-                        <li key={i}>• CNSS « {c.cnss} » : {c.nom} {c.prenom} (matricule {c.matricule})</li>
+                      {sageSalariesResult.clearedCnss.map((c, i) => (
+                        <li key={i}>• CNSS « {c.cnss} » retiré : {c.nom} {c.prenom} (matricule {c.matricule})</li>
                       ))}
                     </ul>
-                    <div className="mt-1">Corriger dans le fichier personnel puis régénérer l'export.</div>
+                    <div className="mt-1">Saisir le NSS correct de ces salariés dans SAGE après import.</div>
                   </div>
                 )}
                 {sageSalariesResult.assignedMatricules && sageSalariesResult.assignedMatricules.length > 0 && (

@@ -1331,7 +1331,7 @@ export interface SageSalariesExportResult {
   totalEmployees: number;
   invalidMatricules?: { matricule: string; nom: string; prenom: string }[];
   assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
-  duplicateCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
+  clearedCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
 }
 
 /**
@@ -1418,20 +1418,23 @@ export function generateSageSalariesExport(
     return emp;
   });
 
-  const lines = prepared.map(emp => buildSageSalariesRecord(emp));
-
-  // Détection des NSS/CNSS en double (SAGE rejette un NSS dupliqué)
+  // Correction automatique des NSS/CNSS en double : on vide le CNSS des doublons
+  // (jamais d'invention de numéro) et on liste les salariés concernés pour saisie
+  // manuelle dans SAGE. SAGE rejette un NSS dupliqué mais accepte un champ vide.
   const cnssSeen = new Map<string, string>();
-  const duplicateCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
-  for (const emp of prepared) {
+  const clearedCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
+  const deduped = prepared.map(emp => {
     const c = (emp.numero_cnss || '').trim();
-    if (!c) continue;
+    if (!c) return emp;
     if (cnssSeen.has(c)) {
-      duplicateCnss.push({ cnss: c, matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom });
-    } else {
-      cnssSeen.set(c, emp.matricule);
+      clearedCnss.push({ cnss: c, matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom });
+      return { ...emp, numero_cnss: '' };
     }
-  }
+    cnssSeen.set(c, emp.matricule);
+    return emp;
+  });
+
+  const lines = deduped.map(emp => buildSageSalariesRecord(emp));
 
   return {
     lines,
@@ -1439,6 +1442,6 @@ export function generateSageSalariesExport(
     totalEmployees: employees.length,
     invalidMatricules: [],
     assignedMatricules,
-    duplicateCnss,
+    clearedCnss,
   };
 }
