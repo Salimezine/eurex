@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData } from '../achatsAI';
 
 describe('ACHATS rules', () => {
   it('fixDate rejette une année trop éloignée du lot (2018 → 2026)', () => {
@@ -58,8 +58,36 @@ describe('ACHATS rules', () => {
   });
 
   it('facture sans n° ou sans date marquée À VÉRIFIER', () => {
-    const inv: any = { numero: 'NC-2026-09-05-209_377', date: '', fournisseur: 'FRS SAVEUR DE CARTHAGE', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
-    const es = buildBalancedEcritures(inv, '607000', '401097');
+    const inv: any = { numero: '', date: '2026-09-05', fournisseur: '', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const es = buildBalancedEcritures(inv, '607000', '401999');
     expect(es.some(e => e.libelle.includes('À VÉRIFIER MANUELLEMENT'))).toBe(true);
+    expect(es.some(e => e.compte === '401999')).toBe(true);
+  });
+
+  it('règle 9: écart arithmétique signalé, TOTAL écrit conservé', () => {
+    const raw = {
+      numero: 'BL-123', date: '2026-09-05', fournisseur: 'FOURNI',
+      lignes: [
+        { designation: 'A', taux_tva: 19, montant_ht: 50.0 },
+        { designation: 'B', taux_tva: 19, montant_ht: 40.0 },
+      ],
+      tva19: 17.1, tva7: 0, fodec: 0, timbre: 0, ttc: 90.0,
+    };
+    const inv = normalizeInvoiceData(raw);
+    expect(inv.arith_note).toBeDefined();
+    const es = buildBalancedEcritures({ id: 'x', ...inv, is_handwritten: true, raw_text: '', ocr_confidence: 60 }, '607000', '401001');
+    expect(es.some(e => e.libelle.includes('Écart de calcul'))).toBe(true);
+    const frs = es.find(e => e.sens === 'C')!;
+    expect(frs.montant).toBeCloseTo(90.0, 3);
+  });
+
+  it('règle 9: pas de note si sous-totaux = TOTAL', () => {
+    const raw = {
+      numero: 'BL-124', date: '2026-09-05', fournisseur: 'FOURNI',
+      lignes: [{ designation: 'A', taux_tva: 19, montant_ht: 100.0 }],
+      tva19: 19.0, tva7: 0, fodec: 0, timbre: 0, ttc: 119.0,
+    };
+    const inv = normalizeInvoiceData(raw);
+    expect(inv.arith_note).toBeUndefined();
   });
 });

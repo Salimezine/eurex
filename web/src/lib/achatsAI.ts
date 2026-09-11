@@ -344,7 +344,7 @@ export function harmonizeDatesAndFournisseurs(invoices: AchatInvoice[]): void {
   }
 }
 
-function normalizeInvoiceData(data: any): any {
+export function normalizeInvoiceData(data: any): any {
   if (!data) return null;
   const numero = cleanNumero(data.numero);
   const date = fixDate(data.date);
@@ -392,7 +392,20 @@ function normalizeInvoiceData(data: any): any {
   const description = String(data.description || '').trim()
     || lignes.map((l: any) => String(l.designation || '').trim()).filter(Boolean).join(', ');
 
-  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, ttc };
+  // Règle 9: contrôle arithmétique ligne par ligne vs TOTAL écrit sur le document.
+  // On reprend TOUJOURS le TOTAL réellement écrit (ttc) comme valeur de référence,
+  // et on signale l'écart au lieu de corriger silencieusement.
+  let arith_note: string | undefined;
+  if (lignes.length > 0 && ttc > 0) {
+    const linesHt = Math.round((ht0 + ht19 + ht7) * 1000) / 1000;
+    const recomputed = Math.round((linesHt + tva19 + tva7 + fodec + timbre) * 1000) / 1000;
+    const diff = Math.round((recomputed - ttc) * 1000) / 1000;
+    if (Math.abs(diff) > 0.02) {
+      arith_note = `Écart de calcul: sous-totaux (${recomputed.toFixed(3)}) ≠ TOTAL écrit (${ttc.toFixed(3)}) — le TOTAL écrit fait foi`;
+    }
+  }
+
+  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, ttc, arith_note };
 }
 
 export async function parseInvoiceWithAI(
@@ -539,6 +552,7 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
                 tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
                 timbre: inv.timbre, ttc: inv.ttc,
                 is_handwritten: true, raw_text: '', ocr_confidence: confidence,
+                page: i + 1, arith_note: inv.arith_note,
               });
               console.log(`[ACHATS]   ✓ ${inv.numero || '(sans n°)'} ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
             }
@@ -711,10 +725,13 @@ function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: num
 export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string): EcritureAchat[] {
   const docNum = safeDocNum(invoice);
   const date_operation = invoice.date;
-  // Règle 7: lignes éventuellement incertaines (n° non lisible ou date absente) → à vérifier
-  const needCheck = !invoice.numero || !date_operation;
-  const checkTag = needCheck ? ' [À VÉRIFIER MANUELLEMENT]' : '';
-  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}${checkTag}`;
+  // Règles 7 & 11: lignes incertaines (n° non lisible, date absente, tiers illisible) → à vérifier,
+  // avec le n° de page source pour retrouver le document (règle 11).
+  const needCheck = !invoice.numero || !date_operation || !invoice.fournisseur;
+  const pageRef = invoice.page ? ` (p.${invoice.page})` : '';
+  const checkTag = needCheck ? ` [À VÉRIFIER MANUELLEMENT${pageRef}]` : '';
+  const arithTag = invoice.arith_note ? ` [${invoice.arith_note}]` : '';
+  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}${checkTag}${arithTag}`;
 
   const ht = round3(invoice.ht0 + invoice.ht19);
   const tvaModel = round3(invoice.tva19 + invoice.tva7);
@@ -767,7 +784,7 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
 
   const totalD = round3(entries.reduce((s, e) => s + e.montant, 0));
   if (totalD > 0.005) {
-    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || docNum}${checkTag}`, sens: 'C', montant: totalD });
+    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || docNum}${checkTag}${arithTag}`, sens: 'C', montant: totalD });
   }
 
   return entries;
@@ -886,11 +903,15 @@ export function verifyEcrituresLocally(
       if (ratio < 0.92) continue;
       const sameFrs = a.frs && b.frs && a.frs.toUpperCase() === b.frs.toUpperCase();
       const sameDate = a.date === b.date && a.date !== '';
-      if (sameFrs || (sameDate && ratio > 0.85)) {
+      // Règle 10: jamais de doublon sans la MÊME date manuscrite — deux pièces à des dates
+      // différentes restent deux écritures même si le tiers est illisible et les montants égaux.
+      if (sameFrs && (sameDate ? ratio >= 0.92 : ratio >= 0.997)) {
         checks.push({
           name: `Doublon probable`,
           status: 'warning',
-          detail: `"${a.num}" (${a.totalC.toFixed(3)}) et "${b.num}" (${b.totalC.toFixed(3)}) — même fournisseur${sameDate ? ' et même date' : ''}, montants proches. À supprimer l'un des deux.`,
+          detail: sameDate
+            ? `"${a.num}" et "${b.num}" — même fournisseur et même date (${a.date}), montants ${a.totalC.toFixed(3)} vs ${b.totalC.toFixed(3)}. À supprimer l'un des deux.`
+            : `"${a.num}" (${a.date}) et "${b.num}" (${b.date}) — montants quasi identiques (${a.totalC.toFixed(3)} vs ${b.totalC.toFixed(3)}) mais dates différentes: vérifier qu'il ne s'agit pas de deux pièces distinctes.`,
         });
         warnings++;
         checked.add(`${a.num}|${b.num}`);
