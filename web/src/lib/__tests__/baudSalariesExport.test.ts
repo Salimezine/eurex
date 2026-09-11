@@ -99,6 +99,32 @@ describe('Export SAGE BTP (format fixe salariés)', () => {
     expect(res.recordLength).toBe(657);
   });
 
+  it('adresse longue (>32) scindée adresse+complément, ligne toujours 657', () => {
+    const long = {
+      matricule: '209143',
+      matricule_valid: true,
+      nom: 'RGUEZ',
+      prenom: 'Ali',
+      adresse: 'RUE MAHMOUH BAYREM ETOUNSI, 1152 ZRIBA HAMMAM, GOUVERNORAT DE ZAGHOUAN',
+      date_naissance: '1977-01-14',
+      date_recrutement: '2014-01-31',
+      situation_fam: 'M',
+      numero_cnss: '11854899/01',
+    };
+    const line = buildSageSalariesRecord(long as any);
+    expect(line.length).toBe(TOTAL_LINE + 1);
+    // Adresse (230,32) = 32 premiers caractères de l'adresse
+    const addr = line.substr(229, 32);
+    expect(addr).toBe('RUE MAHMOUH BAYREM ETOUNSI, 1152');
+    // Complément d'adresse (262,32) = suite
+    const comp = line.substr(261, 32);
+    expect(comp.trim().startsWith('ZRIBA HAMMAM, GOUVERNORAT DE')).toBe(true);
+    // Le reste des champs reste aligné : CNSS toujours à 327
+    expect(line.substr(326, 13).trim()).toBe('11854899/01');
+    // Date d'embauche toujours à 519
+    expect(line.substr(518, 8)).toBe('20140131');
+  });
+
   it('matricules invalides listés (blocage export côté UI)', () => {
     const res = generateSageSalariesExport([
       { matricule: '', nom: 'BAD', prenom: 'X' },

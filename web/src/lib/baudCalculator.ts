@@ -1358,8 +1358,8 @@ function sageFieldValue(emp: SageSalariesEmployee, code: number): string {
     case 8: return '';
     case 9: return 'TN';
     case 10: return (emp.situation_fam || 'C').toUpperCase();
-    case 11: return (emp.adresse || '').toUpperCase();
-    case 12: return '';
+    case 11: return (emp.adresse || '').toUpperCase().slice(0, 32);
+    case 12: return (emp.adresse || '').toUpperCase().slice(32, 64);
     case 13: return '';
     case 14: return '';
     case 15: return 'TN';
@@ -1385,7 +1385,9 @@ function sageFieldValue(emp: SageSalariesEmployee, code: number): string {
 
 /** Construit la ligne fixe de 657 caractères pour un salarié. */
 export function buildSageSalariesRecord(emp: SageSalariesEmployee): string {
-  return SAGE_SALARIES_SPEC.map(f => sageFieldValue(emp, f.code).padEnd(f.size)).join('') + '\n';
+  return (
+    SAGE_SALARIES_SPEC.map(f => sageFieldValue(emp, f.code).padEnd(f.size).slice(0, f.size)).join('') + '\n'
+  );
 }
 
 /**
