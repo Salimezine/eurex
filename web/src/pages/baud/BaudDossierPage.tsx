@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
-import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult } from '../../lib/baudCalculator';
+import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult, generateSageSalariesExport, SageSalariesExportResult } from '../../lib/baudCalculator';
 import { verifySalaryCalculations, applyCorrections, applyAutoFixes, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
 import * as XLSX from 'xlsx';
 
@@ -252,6 +252,36 @@ export default function BaudDossierPage() {
       setMsg(msgLines.join(' | '));
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
     setGenerating(false);
+  };
+
+  const [sageSalariesResult, setSageSalariesResult] = useState<SageSalariesExportResult | null>(null);
+
+  const generateSageSalariesExportHandler = async () => {
+    if (!dossier || employees.length === 0) { setMsg('Importez d\'abord le fichier personnel'); return; }
+    setGenerating(true); setMsg('');
+    try {
+      await saveBeforeExport();
+      const res = generateSageSalariesExport(employees);
+      setSageSalariesResult(res);
+      if (res.invalidMatricules && res.invalidMatricules.length > 0) {
+        setMsg(`ATTENTION: ${res.invalidMatricules.length} matricule(s) invalide(s) — vérifier avant import SAGE`);
+      } else {
+        setMsg(`${res.totalEmployees} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
+      }
+    } catch (e: any) { setMsg('Erreur: ' + e.message); }
+    setGenerating(false);
+  };
+
+  const downloadSageSalariesTxt = () => {
+    if (!sageSalariesResult || sageSalariesResult.lines.length === 0) return;
+    const content = sageSalariesResult.lines.join('');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SageBTP_Salaries_${String(dossier?.mois || 1).padStart(2, '0')}-${dossier?.annee || 2026}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const download = async (eid: string, filename: string) => { try { const blob = await api.baud.downloadExport(eid); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); } catch (e: any) { setMsg(e.message); } };
@@ -708,6 +738,48 @@ export default function BaudDossierPage() {
               )}
             </div>
           )}
+
+          {/* Export Salariés SAGE BTP — format fixe import */}
+          <div className="bg-white border rounded-lg p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <FileSpreadsheet size={20} className="text-green-600" />
+              <h3 className="font-medium text-sm">Export Salariés SAGE BTP (format fixe)</h3>
+            </div>
+            <p className="text-xs text-gray-500">Génère le fichier d'import des fiches salariés au format SAGE BTP (657 car./ligne, 31 champs).</p>
+            <div className="flex gap-2">
+              <button onClick={generateSageSalariesExportHandler} disabled={generating || employees.length === 0} className="px-4 py-2 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
+                {generating ? 'Generation...' : 'Generer export salaries'}
+              </button>
+              {sageSalariesResult && sageSalariesResult.lines.length > 0 && (
+                <button onClick={downloadSageSalariesTxt} className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 flex items-center gap-1">
+                  Telecharger .txt
+                </button>
+              )}
+            </div>
+            {sageSalariesResult && (
+              <div className="bg-gray-50 rounded p-3 text-xs space-y-2">
+                <div className="font-semibold text-green-700">
+                  {sageSalariesResult.totalEmployees} salarié(s) | {sageSalariesResult.recordLength} caractères/ligne
+                </div>
+                {sageSalariesResult.invalidMatricules && sageSalariesResult.invalidMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.invalidMatricules.length} matricule(s) invalide(s) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.invalidMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} (matricule: « {m.matricule || '(vide)'} »)</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-gray-400">
+                  Champs remplis : Matricule, Nom, Prénom, Sexe, Naissance, Situation familiale, Adresse, CNSS, Banque/RIB, Dates embauche/sortie.<br/>
+                  Les champs vides seront remplis dans Sage lors de l'import.
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Mode: Legacy — calcul interne */}
           {exportMode === 'legacy' && (
