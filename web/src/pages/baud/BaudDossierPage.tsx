@@ -324,13 +324,14 @@ export default function BaudDossierPage() {
         if (nbCorrections > 0) {
           currentResults = applyCorrections(currentEmps, currentPtg, currentResults, result.corrections);
         }
+        const prevEmps = currentEmps;
         if (autoFixesList.length > 0) {
           const fixed = applyAutoFixes(currentEmps, currentPtg, autoFixesList);
           currentEmps = fixed.employees;
           currentPtg = fixed.pointage;
         }
         totalApplied += nbCorrections + autoFixesList.length;
-        currentResults = rekeySalaryResults(employees, currentEmps, currentResults);
+        currentResults = rekeySalaryResults(prevEmps, currentEmps, currentResults);
         result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
       }
       setEmployees(currentEmps);
