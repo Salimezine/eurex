@@ -84,6 +84,7 @@ Règles de calcul EXACTES:
 - timbre = 1 DT si timbre mentionné, sinon 0
 - ttc = Total "NET A PAYER" / "TOTAL TTC" affiché sur la facture; si absent: ht0 + ht19 + tva19 + tva7 + fodec + timbre
 - numero: numéro de facture tel qu'affiché (ex: "FV100-26", "123/2026", "FA-0042")
+- fournisseur: lis le nom sur la facture, PUIS s'il ressemble à un fournisseur de la liste "Fournisseurs connus", utilise son nom EXACT du plan
 
 Fournisseur attendu: ${planText}
 Fournisseurs connus: ${fournText}`;
@@ -106,6 +107,36 @@ function getFournisseursText(plan: PlanComptable): string {
     lines.push(`${code} | ${c.libelle}`);
   }
   return lines.join('\n');
+}
+
+function sigTokens(s: string): string[] {
+  return s.toUpperCase().replace(/[^A-Z0-9À-ÿ ]/g, ' ').split(/\s+/)
+    .filter(t => t.length >= 3 && !['LE', 'LA', 'LES', 'DE', 'DU', 'DES', 'STE', 'SOCIETE'].includes(t));
+}
+
+function matchFournisseur(fournisseur: string, plan: PlanComptable): { code: string; libelle: string } | null {
+  if (!fournisseur) return null;
+  const tokens = sigTokens(fournisseur);
+  const target = fournisseur.toUpperCase().replace(/[^A-Z0-9À-ÿ]/g, '');
+  if (target.length < 3) return null;
+
+  let best: { code: string; libelle: string; score: number } | null = null;
+  for (const [code, c] of plan.fournisseurs) {
+    const name = c.libelle.toUpperCase().replace(/[^A-Z0-9À-ÿ]/g, '');
+    if (!name) continue;
+    if (name === target) return { code, libelle: c.libelle };
+    if (name.includes(target) && target.length >= 6) return { code, libelle: c.libelle };
+    if (target.includes(name) && name.length >= 6) return { code, libelle: c.libelle };
+
+    const nt = sigTokens(c.libelle);
+    const common = tokens.filter(t => nt.includes(t)).length;
+    const maxTokens = Math.max(tokens.length, nt.length);
+    if (common >= 2 && common / maxTokens >= 0.5) {
+      const score = common / maxTokens;
+      if (!best || score > best.score) best = { code, libelle: c.libelle, score };
+    }
+  }
+  return best ? { code: best.code, libelle: best.libelle } : null;
 }
 
 async function callAI(prompt: string, systemPrompt: string): Promise<string | null> {
@@ -313,6 +344,8 @@ Règles:
   if (response) {
     const data = normalizeInvoiceData(extractJSON(response));
     if (data) {
+      const fm = matchFournisseur(data.fournisseur, plan);
+      if (fm) data.fournisseur = fm.libelle;
       return {
         numero: data.numero,
         date: data.date,
@@ -384,6 +417,8 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
 
           const inv = normalizeInvoiceData(data);
           if (inv && (inv.numero || inv.fournisseur || inv.ttc > 0)) {
+            const fm = matchFournisseur(inv.fournisseur, plan);
+            if (fm) inv.fournisseur = fm.libelle;
             allInvoices.push({
               id: genId(),
               numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
@@ -419,8 +454,9 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
         if (aiResponse) {
           const data = extractJSON(aiResponse);
           if (data) {
+            const fm = matchFournisseur(String(data.fournisseur || ''), plan);
             allInvoices.push({
-              id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: String(data.fournisseur || ''),
+              id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
               description: String(data.description || ''), ht0: parseNum(data.ht0), ht19: parseNum(data.ht19),
               tva19: parseNum(data.tva19), tva7: parseNum(data.tva7), fodec: parseNum(data.fodec),
               timbre: parseNum(data.timbre) || 1, ttc: parseNum(data.ttc),
@@ -496,7 +532,7 @@ Règles de comptabilisation:
 2. DEBIT: TVA déductible 19% → 436660 (ou 436663 pour TVA 7%)
 3. DEBIT: FODEC si applicable → 436680
 4. DEBIT: Timbre fiscal → 437003
-5. CREDIT: Fournisseur 401xxx (cherche le bon compte dans la liste)
+5. CREDIT: Fournisseur — choisis le code EXACT dans "FOURNISSEURS CONNUS" (ex: 401065 pour BEN YAGHLANE); si introuvable → 401999 FRS DIVERS
 6. La somme des DEBITs doit = somme des CREDITs
 
 Mapping description → compte d'achat:
@@ -553,7 +589,10 @@ function generateFallbackEcritures(invoice: AchatInvoice, plan: PlanComptable): 
   }
 
   let compteFournisseur = '401999';
-  if (invoice.fournisseur) {
+  const fm = invoice.fournisseur ? matchFournisseur(invoice.fournisseur, plan) : null;
+  if (fm) {
+    compteFournisseur = fm.code;
+  } else if (invoice.fournisseur) {
     const found = plan.fournisseurs;
     for (const [code, c] of found) {
       if (c.libelle.toUpperCase().includes(invoice.fournisseur.toUpperCase())) {
