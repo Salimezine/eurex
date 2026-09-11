@@ -68,23 +68,26 @@ function round3(n: number): number {
 }
 
 function buildExtractionPrompt(plan: PlanComptable, planText: string, fournText: string): string {
-  return `Extrais les données COMPLÈTES de cette facture d'achat tunisienne.
+  return `Extrais les données COMPLÈTES des factures d'achat tunisiennes sur cette page.
 
-Lis TOUTES les lignes de détail de la facture (designations, quantites, prix unitaires, taux TVA).
+IMPORTANT: la page peut contenir UNE seule facture OU PLUSIEURS factures collées (souvent un tableau récapitulatif).
+- Une seule facture → réponds UN objet JSON.
+- Plusieurs factures distinctes → réponds un TABLEAU JSON [ {...}, {...} ] (un élément par facture, chaque facture = une ligne du tableau).
+- Aucune facture utilisable → réponds null.
 
-Réponds UNIQUEMENT avec un objet JSON valide, sans texte, sans markdown, sans code block:
-{"numero":"numero de la facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}
+Schéma de chaque facture:
+{"numero":"numero de facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"ttc":0}
 
-Règles de calcul EXACTES:
-- ht19 = somme des montants_ht de toutes les lignes à TVA 19%
-- ht0 = somme des montants_ht de toutes les lignes à TVA 0%
-- tva19 = ht19 × 0.19 (arrondi à 3 décimales)
-- tva7 = somme de la TVA des lignes à 7% (= ht7 × 0.07)
-- fodec = FODEC 1% si clairement mentionné sur la facture, sinon 0
-- timbre = 1 DT si timbre mentionné, sinon 0
-- ttc = Total "NET A PAYER" / "TOTAL TTC" affiché sur la facture; si absent: ht0 + ht19 + tva19 + tva7 + fodec + timbre
-- numero: numéro de facture tel qu'affiché (ex: "FV100-26", "123/2026", "FA-0042")
-- fournisseur: lis le nom sur la facture, PUIS s'il ressemble à un fournisseur de la liste "Fournisseurs connus", utilise son nom EXACT du plan
+Règles EXACTES (pour CHAQUE facture séparément):
+- ht19 = somme des montants_ht des lignes à 19%; ht0 = somme des lignes à 0%; ht7 = somme des lignes à 7%
+- tva19 = TVA 19% AFFICHÉE sur la facture (0 si la facture n'affiche AUCUNE ligne TVA; ne la calcule pas toi-même depuis l'HT)
+- tva7 = TVA 7% affichée (0 sinon)
+- fodec = FODEC si mentionné, sinon 0
+- timbre = 1 DT si mentionné, sinon 0
+- ttc = Total "NET A PAYER" / "TOTAL TTC" affiché (pivot de comptabilisation); si absent: ht0 + ht19 + ht7 + tva19 + tva7 + fodec + timbre
+- numero: UNIQUEMENT le numéro (ex: "FV10-26+107258", "FA-31378") — jamais de texte autour
+- date: format YYYY-MM-DD; si la case date est VIDE sur la facture, mets ""
+- fournisseur: le nom EXACT depuis la liste "Fournisseurs connus" si reconnaissable
 
 Fournisseur attendu: ${planText}
 Fournisseurs connus: ${fournText}`;
@@ -176,7 +179,7 @@ async function callVisionAI(images: string[], prompt: string, systemPrompt: stri
         prompt,
         systemPrompt,
         image: imageDataUrl,
-        max_tokens: 3000,
+        max_tokens: 9000,
       }),
     });
 
@@ -220,6 +223,12 @@ function extractJSON(response: string | object | null | undefined): any | null {
       return JSON.parse(fenced[1].trim());
     } catch {}
   }
+  const arr = t.match(/\[[\s\S]*\]/);
+  if (arr) {
+    try {
+      return JSON.parse(arr[0]);
+    } catch {}
+  }
   const obj = t.match(/\{[\s\S]*\}/);
   if (obj) {
     try {
@@ -229,20 +238,46 @@ function extractJSON(response: string | object | null | undefined): any | null {
   return null;
 }
 
+function toInvoices(data: any): any[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data.filter(Boolean);
+  if (typeof data === 'object') {
+    if ('lignes' in data || 'ttc' in data || 'ht19' in data || 'numero' in data || 'fournisseur' in data) {
+      return [data];
+    }
+    for (const k of ['factures', 'invoices', 'liste', 'items', 'rows']) {
+      if (Array.isArray(data[k]) && data[k].length) return data[k].filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function cleanDate(d: string): string {
+  const s = (d || '').trim();
+  if (!s) return '';
+  if (/jj[/-]mm[/-]aaaa|dd[/-]mm[/-]yyyy|-+[/-]*-+|NÀ|N:/i.test(s)) return '';
+  return s;
+}
+
+function cleanNumero(n: string): string {
+  const s = (n || '').replace(/^(n°|no\s?|num|nà\s*:?\s*|facture\s*:?\s*|factura\s*:?\s*|bl\s*:?\s*)/i, '').trim();
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 function normalizeInvoiceData(data: any): any {
   if (!data) return null;
-  const numero = String(data.numero || '').trim();
-  const date = String(data.date || '').trim();
+  const numero = cleanNumero(data.numero);
+  const date = cleanDate(data.date);
   const fournisseur = String(data.fournisseur || '').trim();
   const lignes = Array.isArray(data.lignes) ? data.lignes : [];
 
   let ht0 = parseNum(data.ht0);
   let ht19 = parseNum(data.ht19);
-  let ht7 = parseNum(data.ht7) || 0;
+  let ht7 = parseNum(data.ht7);
   let tva19 = parseNum(data.tva19);
   let tva7 = parseNum(data.tva7);
   let fodec = parseNum(data.fodec);
-  let timbre = data.timbre === null || data.timbre === undefined ? 1 : parseNum(data.timbre);
+  let timbre = parseNum(data.timbre);
   let ttc = parseNum(data.ttc);
 
   if (lignes.length > 0) {
@@ -267,21 +302,17 @@ function normalizeInvoiceData(data: any): any {
       ht7 = Math.round(s7 * 1000) / 1000;
     }
   }
-  if (tva19 === 0 && ht19 > 0) tva19 = Math.round(ht19 * 0.19 * 1000) / 1000;
-  if (tva7 === 0 && ht7 > 0) tva7 = Math.round(ht7 * 0.07 * 1000) / 1000;
-
-  const known = !(ht0 === 0 && ht19 === 0 && tva19 === 0 && tva7 === 0 && fodec === 0);
+  // Ne PAS inventer de TVA: la TVA ne se déduit que si elle est affichée sur la facture.
+  // Si le TTC imprimé est absent, on reconstruit le TTC avec l'HT seul (la TVA non affichée n'est pas déductible).
   const computedSum = Math.round((ht0 + ht19 + ht7 + tva19 + tva7 + fodec + timbre) * 1000) / 1000;
-  if (ttc === 0 && known) {
+  if (ttc === 0 && (ht0 > 0 || ht19 > 0 || ht7 > 0 || tva19 > 0 || tva7 > 0 || fodec > 0)) {
     ttc = computedSum;
-  } else if (ttc > 0 && computedSum > 0 && ht19 > 0) {
-    if (Math.abs(ttc - computedSum) > 0.5) ttc = computedSum;
   }
 
-  const description = `${String(data.description || '')}`.trim()
+  const description = String(data.description || '').trim()
     || lignes.map((l: any) => String(l.designation || '').trim()).filter(Boolean).join(', ');
 
-  return { numero, date, fournisseur, description, ht0, ht19, tva19, tva7, fodec, timbre, ttc };
+  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, ttc };
 }
 
 export async function parseInvoiceWithAI(
@@ -415,19 +446,22 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
             console.log(`[ACHATS] Page ${i + 1} conversion:`, (data ? 'OK' : 'ÉCHEC'));
           }
 
-          const inv = normalizeInvoiceData(data);
-          if (inv && (inv.numero || inv.fournisseur || inv.ttc > 0)) {
-            const fm = matchFournisseur(inv.fournisseur, plan);
-            if (fm) inv.fournisseur = fm.libelle;
-            allInvoices.push({
-              id: genId(),
-              numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
-              description: inv.description, ht0: inv.ht0, ht19: inv.ht19,
-              tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
-              timbre: inv.timbre, ttc: inv.ttc,
-              is_handwritten: true, raw_text: '', ocr_confidence: confidence,
-            });
-            console.log(`[ACHATS] ✓ Page ${i + 1}: ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
+          const invs = toInvoices(data);
+          for (const raw of invs) {
+            const inv = normalizeInvoiceData(raw);
+            if (inv && (inv.numero || inv.fournisseur || inv.ttc > 0)) {
+              const fm = matchFournisseur(inv.fournisseur, plan);
+              if (fm) inv.fournisseur = fm.libelle;
+              allInvoices.push({
+                id: genId(),
+                numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
+                description: inv.description, ht0: inv.ht0, ht19: inv.ht19,
+                tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
+                timbre: inv.timbre, ttc: inv.ttc,
+                is_handwritten: true, raw_text: '', ocr_confidence: confidence,
+              });
+              console.log(`[ACHATS]   ✓ ${inv.numero || '(sans n°)'} ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
+            }
           }
         } catch (e) {
           console.error(`[ACHATS] ✗ Page ${i + 1} failed:`, e);
@@ -459,7 +493,7 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
               id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
               description: String(data.description || ''), ht0: parseNum(data.ht0), ht19: parseNum(data.ht19),
               tva19: parseNum(data.tva19), tva7: parseNum(data.tva7), fodec: parseNum(data.fodec),
-              timbre: parseNum(data.timbre) || 1, ttc: parseNum(data.ttc),
+              timbre: typeof data.timbre !== 'undefined' ? parseNum(data.timbre) : 0, ttc: parseNum(data.ttc),
               is_handwritten: true, raw_text: text.substring(0, 500), ocr_confidence: confidence,
             });
           }
@@ -490,95 +524,60 @@ export async function generateEcrituresWithAI(
   invoice: AchatInvoice,
   plan: PlanComptable
 ): Promise<EcritureAchat[]> {
-  const planText = getPlanText(plan);
   const fournText = getFournisseursText(plan);
 
-  const systemPrompt = `Tu es un expert-comptable tunisien. Tu dois générer les écritures comptables pour une facture d'achat dans le journal AC.
-Réponds TOUJOURS en JSON valide sans aucun texte avant ou après.`;
+  let compteAchat = pickCompteAchat(invoice.description);
+  let compteFournisseur = pickCompteFournisseur(invoice.fournisseur, plan);
 
-  const prompt = `## FACTURE D'ACHAT
+  try {
+    const response = await callAI(
+      `## FACTURE D'ACHAT
 - Numéro: ${invoice.numero}
-- Date: ${invoice.date}
 - Fournisseur: ${invoice.fournisseur}
 - Description: ${invoice.description}
-- HT 0%: ${invoice.ht0}
-- HT 19%: ${invoice.ht19}
-- TVA 19%: ${invoice.tva19}
-- TVA 7%: ${invoice.tva7}
-- FODEC: ${invoice.fodec}
-- Timbre: ${invoice.timbre}
-- TTC: ${invoice.ttc}
-
-## PLAN COMPTABLE (comptes d'achats et fournisseurs)
-${planText}
+- TTC à payer: ${invoice.ttc}
 
 ## FOURNISSEURS CONNUS
 ${fournText}
 
-## GÉNÈRE les écritures comptables en JSON:
+## PLAN (extrait comptes achat)
+${getAchatComptesText(plan)}
+
+## CHOISIS uniquement les comptes pour cette facture (pas les montants):
 {
-  "ecritures": [
-    {
-      "compte": "numéro de compte",
-      "libelle": "libellé de l'écriture",
-      "sens": "D ou C",
-      "montant": montant (nombre)
-    }
-  ]
+  "compte_achat": "compte 6xxxxx adapté à la nature de l'achat (description)",
+  "compte_fournisseur": "compte 401xxx EXACT depuis FOURNISSEURS CONNUS, sinon 401999"
 }
-
-Règles de comptabilisation:
-1. DEBIT: Compte d'achat (601xxx, 602xxx, 604xxx, 605xxx, 606xxx, 607xxx) selon la nature de l'achat
-2. DEBIT: TVA déductible 19% → 436660 (ou 436663 pour TVA 7%)
-3. DEBIT: FODEC si applicable → 436680
-4. DEBIT: Timbre fiscal → 437003
-5. CREDIT: Fournisseur — choisis le code EXACT dans "FOURNISSEURS CONNUS" (ex: 401065 pour BEN YAGHLANE); si introuvable → 401999 FRS DIVERS
-6. La somme des DEBITs doit = somme des CREDITs
-
-Mapping description → compte d'achat:
-- "marchandise" / "produits" → 607000
-- "matière première" → 601000
-- "entretien" / "maintenance" → 601002
-- "quincaillerie" → 601010
-- "consommable" → 602100 / 602200
-- "fourniture bureau" → 602400
-- "emballage" → 602600
-- "électricité" → 606002
-- "eau" → 606003
-- "transport" → 624100
-- "location" → 613002
-- "assurance" → 616000
-- "réparation" → 615000
-- "divers" → 606600`;
-
-  const response = await callAI(prompt, systemPrompt);
-
-  if (response) {
+Réponds UNIQUEMENT ce JSON.`,
+      'Tu es un expert-comptable tunisien. Réponds uniquement avec le JSON demandé.'
+    );
     const data = extractJSON(response);
-    if (data?.ecritures && Array.isArray(data.ecritures)) {
-      return data.ecritures.map((e: any) => ({
-        id: genId(),
-        numero_doc: invoice.numero,
-        date_operation: invoice.date,
-        journal_code: 'AC',
-        compte: String(e.compte),
-        libelle: String(e.libelle),
-        sens: e.sens === 'C' ? 'C' : 'D',
-        montant: Math.round(parseNum(e.montant) * 1000) / 1000,
-      }));
+    if (data) {
+      const ac = String(data.compte_achat || '').trim();
+      if (/^6\d{5}$/.test(ac) && plan.comptes.has(ac)) compteAchat = ac;
+      const fc = String(data.compte_fournisseur || '').trim();
+      if (/^401\d{3}$/.test(fc) && plan.comptes.has(fc)) compteFournisseur = fc;
     }
+  } catch {
+    // garde le fallback
   }
 
-  return generateFallbackEcritures(invoice, plan);
+  return buildBalancedEcritures(invoice, compteAchat, compteFournisseur);
 }
 
-function generateFallbackEcritures(invoice: AchatInvoice, plan: PlanComptable): EcritureAchat[] {
-  const entries: EcritureAchat[] = [];
-  const lib = `ACHAT ${invoice.fournisseur || invoice.numero}`;
+function getAchatComptesText(plan: PlanComptable): string {
+  const lines: string[] = [];
+  for (const [code, c] of plan.comptes) {
+    if (c.nature !== 'Comptable') continue;
+    if (code.startsWith('6')) lines.push(`${code} | ${c.libelle}`);
+  }
+  return lines.join('\n');
+}
 
+function pickCompteAchat(description: string): string {
   let compteAchat = '606600';
-  if (invoice.description) {
-    const d = invoice.description.toLowerCase();
+  if (description) {
+    const d = description.toLowerCase();
     if (/marchandise|produits?|alimentaire/.test(d)) compteAchat = '607000';
     else if (/mati[eè]re/.test(d)) compteAchat = '601000';
     else if (/entretien|maintenance/.test(d)) compteAchat = '601002';
@@ -586,42 +585,86 @@ function generateFallbackEcritures(invoice: AchatInvoice, plan: PlanComptable): 
     else if (/transport|livraison/.test(d)) compteAchat = '624100';
     else if (/location|loyer/.test(d)) compteAchat = '613002';
     else if (/assurance/.test(d)) compteAchat = '616000';
+    else if (/quincaill/.test(d)) compteAchat = '601010';
   }
+  return compteAchat;
+}
 
-  let compteFournisseur = '401999';
-  const fm = invoice.fournisseur ? matchFournisseur(invoice.fournisseur, plan) : null;
-  if (fm) {
-    compteFournisseur = fm.code;
-  } else if (invoice.fournisseur) {
-    const found = plan.fournisseurs;
-    for (const [code, c] of found) {
-      if (c.libelle.toUpperCase().includes(invoice.fournisseur.toUpperCase())) {
-        compteFournisseur = code;
-        break;
-      }
+function pickCompteFournisseur(fournisseur: string, plan: PlanComptable): string {
+  if (fournisseur) {
+    const fm = matchFournisseur(fournisseur, plan);
+    if (fm) return fm.code;
+    for (const [code, c] of plan.fournisseurs) {
+      if (c.libelle.toUpperCase().includes(fournisseur.toUpperCase())) return code;
     }
   }
+  return '401999';
+}
 
-  const totalHT = invoice.ht0 + invoice.ht19;
+function safeDocNum(invoice: AchatInvoice): string {
+  if (invoice.numero && invoice.numero.trim()) return invoice.numero.trim();
+  return `NC-${(invoice.date || 'SD').slice(0, 10).replace(/[^0-9-]/g, '') || 'SD'}-${String(invoice.ttc).replace('.', '_')}`;
+}
 
-  if (totalHT > 0) {
-    if (invoice.ht19 > 0) {
-      entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: invoice.ht19 });
-    }
-    if (invoice.ht0 > 0) {
-      entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: invoice.ht0 });
-    }
-  } else if (invoice.ttc > 0) {
-    entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: invoice.ttc - invoice.tva19 - invoice.tva7 - invoice.fodec - invoice.timbre });
+function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: number; c19: number } {
+  if (tva <= 0.005) return { c7: 0, c19: 0 };
+  if (tva7Model > 0 && tva19Model > 0) {
+    const r = tva7Model / (tva7Model + tva19Model);
+    const c7 = Math.round(tva * r * 1000) / 1000;
+    return { c7, c19: round3(tva - c7) };
+  }
+  if (tva7Model > 0) return { c7: round3(tva), c19: 0 };
+  return { c7: 0, c19: round3(tva) };
+}
+
+function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string): EcritureAchat[] {
+  const docNum = safeDocNum(invoice);
+  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}`;
+  const date_operation = invoice.date;
+
+  const ht = round3(invoice.ht0 + invoice.ht19);
+  const tvaModel = round3(invoice.tva19 + invoice.tva7);
+  const fodec = round3(invoice.fodec);
+  const timbre = round3(invoice.timbre);
+
+  let ttc = round3(invoice.ttc);
+  if (ttc <= 0 && (ht > 0 || tvaModel > 0 || fodec > 0 || timbre > 0)) {
+    ttc = round3(ht + tvaModel + fodec + timbre);
   }
 
-  if (invoice.tva19 > 0) entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: '436660', libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: invoice.tva19 });
-  if (invoice.tva7 > 0) entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: '436663', libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: invoice.tva7 });
-  if (invoice.fodec > 0) entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: '436680', libelle: 'FODEC', sens: 'D', montant: invoice.fodec });
-  if (invoice.timbre > 0) entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: '437003', libelle: 'TIMBRE FISCAL', sens: 'D', montant: invoice.timbre });
+  // TVA déductible = TVA réellement affichée (ancrée au TTC imprimé)
+  let tva = tvaModel;
+  let achat = ht;
+  if (ttc > 0 && ht > 0) {
+    const implied = round3(ttc - ht - fodec - timbre);
+    if (Math.abs(implied) < 0.011) {
+      tva = 0;
+    } else if (tvaModel > 0 && Math.abs(implied - tvaModel) <= 0.011) {
+      tva = tvaModel;
+    } else {
+      tva = Math.max(0, implied);
+    }
+    achat = round3(ttc - tva - fodec - timbre);
+  } else if (ttc > 0 && ht <= 0 && tvaModel === 0) {
+    achat = round3(ttc - fodec - timbre);
+  }
+  if (achat < 0) {
+    achat = 0;
+  }
 
-  if (invoice.ttc > 0) {
-    entries.push({ id: genId(), numero_doc: invoice.numero, date_operation: invoice.date, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || invoice.numero}`, sens: 'C', montant: invoice.ttc });
+  const entries: EcritureAchat[] = [];
+  if (achat > 0.005) {
+    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: achat });
+  }
+  const { c7, c19 } = splitTVA(tva, invoice.tva7, invoice.tva19);
+  if (c19 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436660', libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: c19 });
+  if (c7 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436663', libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: c7 });
+  if (fodec > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436680', libelle: 'FODEC', sens: 'D', montant: fodec });
+  if (timbre > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '437003', libelle: 'TIMBRE FISCAL', sens: 'D', montant: timbre });
+
+  const totalD = round3(entries.reduce((s, e) => s + e.montant, 0));
+  if (totalD > 0.005) {
+    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || docNum}`, sens: 'C', montant: totalD });
   }
 
   return entries;
@@ -631,52 +674,54 @@ export async function verifyEcrituresWithAI(
   ecritures: EcritureAchat[],
   plan: PlanComptable
 ): Promise<VerificationResult> {
-  const planText = getPlanText(plan);
-  const ecrituresText = ecritures.map(e =>
-    `${e.numero_doc} | ${e.date_operation} | ${e.journal_code} | ${e.compte} | ${e.libelle} | ${e.sens}=${e.montant}`
-  ).join('\n');
+  const local = verifyEcrituresLocally(ecritures, plan);
 
-  const systemPrompt = `Tu es un expert-comptable tunisien. Tu dois vérifier des écritures comptables d'achat.
-Réponds TOUJOURS en JSON valide sans aucun texte avant ou après.`;
+  if (local.verdict !== 'OK') {
+    return local;
+  }
 
-  const prompt = `## ÉCRITURES À VÉRIFIER
+  // Tout passe en local: on demande UNIQUEMENT des alerts qualitatives à l'IA
+  try {
+    const ecrituresText = ecritures.map(e =>
+      `${e.numero_doc} | ${e.date_operation} | ${e.compte} | ${e.libelle} | ${e.sens}=${e.montant}`
+    ).join('\n');
+    const response = await callAI(
+      `## ÉCRITURES DU JOURNAL AC (déjà équilibrées et validées)
 ${ecrituresText}
 
-## PLAN COMPTABLE
-${planText}
-
-## VÉRIFICATIONS À EFFECTUER
-1. Balance: somme(D) = somme(C) pour chaque facture
-2. TVA: vérifier que TVA = HT × 19% (tolérance 0.01)
-3. Comptes: vérifier que tous les comptes existent dans le plan
-4. Sens: vérifier le sens normal des comptes (D pour charges, C pour fournisseurs)
-5. Cohérence: HT + TVA + FODEC + Timbre = TTC
+## VÉRIFICATION MAX 3 MINUTES
+Identifie uniquement les PROBLÈMES QUANTITATIFS suivants (sinon réponds {"warnings":[]}):
+1. "TVA non déductible" : facture dont la TVA affichée ne devrait pas être portée en déductible (TVA au taux forfaitaire, restaurateur, non assujetti), listée par numéro de facture
+2. "TVA douteuse" : facture où D(TVA 436660/436663) s'écarte nettement de 19%/7% du débit achat
+3. "Montant suspect" : montants > 2 000 DT sans rapport avec les autres lignes
 
 ## RÉPONSE JSON
 {
-  "verdict": "OK" ou "ERREUR" ou "ATTENTION",
-  "score": nombre 0-100,
-  "checks": [
-    {"name": "nom du check", "status": "ok" ou "error" ou "warning", "detail": "description"}
-  ],
-  "summary": "résumé en une ligne"
-}`;
-
-  const response = await callAI(prompt, systemPrompt);
-
-  if (response) {
+  "warnings": [
+    {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Montant suspect", "detail": "explication"}
+  ]
+}`,
+      'Tu es un expert-comptable tunisien. Réponds uniquement avec le JSON demandé.'
+    );
     const data = extractJSON(response);
-    if (data) {
+    const warns = data && Array.isArray(data.warnings) ? data.warnings : [];
+    const checks = [...local.checks];
+    warns.slice(0, 8).forEach((w: any) => {
+      checks.push({ name: w.type || 'Warning', status: 'warning', detail: `${w.facture || ''} — ${w.detail || ''}` });
+    });
+    if (warns.length > 0) {
       return {
-        verdict: data.verdict || 'ATTENTION',
-        score: parseInt(data.score) || 0,
-        checks: data.checks || [],
-        summary: data.summary || '',
+        verdict: 'ATTENTION',
+        score: Math.max(0, local.score - warns.length * 5),
+        checks,
+        summary: `Comptablement 100% équilibré, ${warns.length} alerte(s) qualité à vérifier`,
       };
     }
+  } catch {
+    // warning IA non bloquant
   }
 
-  return verifyEcrituresLocally(ecritures, plan);
+  return local;
 }
 
 export function verifyEcrituresLocally(
@@ -685,44 +730,86 @@ export function verifyEcrituresLocally(
 ): VerificationResult {
   const checks: VerificationResult['checks'] = [];
   let errors = 0;
+  let warnings = 0;
 
   const byFacture = new Map<string, EcritureAchat[]>();
   for (const e of ecritures) {
-    const key = e.numero_doc;
+    const key = e.numero_doc || '';
     if (!byFacture.has(key)) byFacture.set(key, []);
     byFacture.get(key)!.push(e);
   }
 
   for (const [num, entries] of byFacture) {
-    const totalD = entries.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
-    const totalC = entries.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    const totalD = round3(entries.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0));
+    const totalC = round3(entries.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0));
     const diff = Math.abs(totalD - totalC);
 
     if (diff > 0.01) {
-      checks.push({ name: `Balance ${num}`, status: 'error', detail: `D=${totalD.toFixed(3)} ≠ C=${totalC.toFixed(3)} (écart ${diff.toFixed(3)})` });
+      checks.push({ name: `Balance ${num || '(sans n°)'}`, status: 'error', detail: `D=${totalD.toFixed(3)} ≠ C=${totalC.toFixed(3)} (écart ${diff.toFixed(3)})` });
       errors++;
     } else {
-      checks.push({ name: `Balance ${num}`, status: 'ok', detail: `D=C=${totalD.toFixed(3)}` });
+      checks.push({ name: `Balance ${num || '(sans n°)'}`, status: 'ok', detail: `D=C=${totalD.toFixed(3)}` });
     }
 
-    for (const e of entries) {
-      const compte = plan.comptes.get(e.compte);
-      if (!compte) {
-        checks.push({ name: `Compte ${e.compte}`, status: 'error', detail: `Compte ${e.compte} introuvable dans le plan comptable` });
-        errors++;
-      } else if (compte.nature === 'Regroupement') {
-        checks.push({ name: `Compte ${e.compte}`, status: 'error', detail: `Compte ${e.compte} est un regroupement, pas un compte postable` });
-        errors++;
-      } else {
-        checks.push({ name: `Compte ${e.compte}`, status: 'ok', detail: `${compte.libelle} (${compte.sens})` });
-      }
+    if (!num || num.startsWith('NC-')) {
+      checks.push({ name: `Facture sans n°`, status: 'warning', detail: `Ligne(s) sans numéro de facture lisible (${entries.length} écriture(s))` });
+      warnings++;
+    }
+    if (entries.some(e => !e.date_operation || !/\d/.test(e.date_operation))) {
+      checks.push({ name: `Date invalide (${num || '?'})`, status: 'warning', detail: 'Un ou plusieurs montants ont une date non lisible (case absente sur le scan)' });
+      warnings++;
     }
   }
 
+  const globalD = round3(ecritures.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0));
+  const globalC = round3(ecritures.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0));
+  const gDiff = Math.abs(globalD - globalC);
+  checks.push({
+    name: `Balance totale du journal`,
+    status: gDiff > 0.011 ? 'error' : 'ok',
+    detail: gDiff <= 0.011 ? `D=C=${globalD.toFixed(3)}` : `D=${globalD.toFixed(3)} ≠ C=${globalC.toFixed(3)} (écart ${gDiff.toFixed(3)})`,
+  });
+  if (gDiff > 0.011) errors++;
+
+  for (const e of ecritures) {
+    const compte = plan.comptes.get(e.compte);
+    if (!compte) {
+      checks.push({ name: `Compte ${e.compte}`, status: 'error', detail: `${e.compte} introuvable dans le plan comptable` });
+      errors++;
+      continue;
+    }
+    if (compte.nature === 'Regroupement') {
+      checks.push({ name: `Compte ${e.compte}`, status: 'error', detail: `${e.compte} (${compte.libelle}) est un regroupement, pas postable` });
+      errors++;
+      continue;
+    }
+    if (e.compte.startsWith('401') && e.sens === 'D') {
+      checks.push({ name: `Sens ${e.compte}`, status: 'warning', detail: `Fournisseur ${e.compte} débité dans le journal AC (normalement crédité)` });
+      warnings++;
+    } else if ((e.compte.startsWith('60') || e.compte.startsWith('436') || e.compte.startsWith('437')) && e.sens === 'C') {
+      checks.push({ name: `Sens ${e.compte}`, status: 'warning', detail: `${e.compte} ${compte.libelle} crédité dans le journal AC (normalement débité)` });
+      warnings++;
+    }
+    if (e.montant === 0) {
+      checks.push({ name: `Montant nul ${e.compte}`, status: 'warning', detail: `Écriture ${e.numero_doc || '?'} d'un montant de 0.000` });
+      warnings++;
+    }
+  }
+
+  const has401999 = ecritures.some(e => e.compte === '401999');
+  if (has401999) {
+    checks.push({ name: 'Fournisseur inconnu', status: 'warning', detail: "Au moins une facture a été affectée à 'FRS DIVERS' (401999), fournisseur absent du plan comptable" });
+    warnings++;
+  }
+
   return {
-    verdict: errors > 0 ? 'ERREUR' : 'OK',
-    score: Math.max(0, 100 - errors * 10),
+    verdict: errors > 0 ? 'ERREUR' : warnings > 0 ? 'ATTENTION' : 'OK',
+    score: Math.max(0, 100 - errors * 10 - warnings * 3),
     checks,
-    summary: errors > 0 ? `${errors} erreur(s) détectée(s)` : 'Toutes les vérifications passent',
+    summary: errors > 0
+      ? `${errors} erreur(s) comptable(s): le journal doit être équilibré et utiliser des comptes valides`
+      : warnings > 0
+        ? 'Journal équilibré OK — quelques alertes qualité à vérifier manuellement'
+        : 'Toutes les vérifications passent: journal équilibré, comptes valides',
   };
 }
