@@ -154,12 +154,18 @@ export default function AchatsDossierPage() {
     setVerifying(false);
   };
 
+  const formatDatePiece = (iso: string): string => {
+    if (!iso) return 'date à vérifier';
+    const [y, m, d] = iso.split('-');
+    if (!y || !m || !d || /^0+$/.test(y)) return 'date à vérifier';
+    return `${d}/${m}/${y}`;
+  };
+
   const handleExportCSV = () => {
     if (ecritures.length === 0) return;
     const header = 'N° pièce comptable;Date pièce comptable;Journal;Libellé;N° compte;Libellé trésorerie;Débit;Crédit';
     const lines = ecritures.map(e => {
-      const [y, m, d] = e.date_operation.split('-');
-      const dateFormatted = `${d}/${m}/${y}`;
+      const dateFormatted = formatDatePiece(e.date_operation);
       const debit = e.sens === 'D' ? e.montant.toFixed(3) : '';
       const credit = e.sens === 'C' ? e.montant.toFixed(3) : '';
       return `${e.numero_doc};${dateFormatted};${e.journal_code};${e.libelle};${e.compte};;${debit};${credit}`;
@@ -176,8 +182,7 @@ export default function AchatsDossierPage() {
     const header = ['N° pièce', 'Date pièce', 'Journal', 'Libellé', 'N° compte', 'Libellé trésorerie', 'Débit', 'Crédit'];
     const rows: any[][] = [header];
     for (const e of ecritures) {
-      const [y, m, d] = e.date_operation.split('-');
-      rows.push([e.numero_doc, `${d}/${m}/${y}`, e.journal_code, e.libelle, e.compte, '', e.sens === 'D' ? e.montant : 0, e.sens === 'C' ? e.montant : 0]);
+      rows.push([e.numero_doc, formatDatePiece(e.date_operation), e.journal_code, e.libelle, e.compte, '', e.sens === 'D' ? e.montant : 0, e.sens === 'C' ? e.montant : 0]);
     }
     const ws = XLSX.utils.aoa_to_sheet(rows);
     ws['!cols'] = [{ wch: 20 }, { wch: 12 }, { wch: 8 }, { wch: 40 }, { wch: 10 }, { wch: 20 }, { wch: 15 }, { wch: 15 }];

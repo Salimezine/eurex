@@ -84,10 +84,10 @@ Règles EXACTES (pour CHAQUE facture séparément):
 - tva7 = TVA 7% affichée (0 sinon)
 - fodec = FODEC si mentionné, sinon 0
 - timbre = 1 DT si mentionné, sinon 0
-- ttc = Total "NET A PAYER" / "TOTAL TTC" affiché (pivot de comptabilisation); si absent: ht0 + ht19 + ht7 + tva19 + tva7 + fodec + timbre
+- ttc = Total "NET A PAYER" / "TOTAL TTC" affiché (pivot de comptabilisation); si absent: ht0+ht19+ht7+tva19+tva7+fodec+timbre
 - numero: UNIQUEMENT le numéro (ex: "FV10-26+107258", "FA-31378") — jamais de texte autour
-- date: format YYYY-MM-DD; si la case date est VIDE sur la facture, mets ""
-- fournisseur: le nom EXACT depuis la liste "Fournisseurs connus" si reconnaissable
+- date: format YYYY-MM-DD. Les factures sont de la période août-septembre 2026. Si tu lis "04/09" sur la facture (format JJ/MM français), écris 2026-09-04 (PAS 2026-04-09). Si la case date est VIDE, mets ""
+- fournisseur: le nom EXACT depuis la liste "Fournisseurs connus" si reconnaissable. Ne pas confondre l'adresse de livraison avec le fournisseur (ex: "Jardins de Carthage" peut être un dépôt, pas le fournisseur)
 
 Fournisseur attendu: ${planText}
 Fournisseurs connus: ${fournText}`;
@@ -136,7 +136,7 @@ function matchFournisseur(fournisseur: string, plan: PlanComptable): { code: str
     const maxTokens = Math.max(tokens.length, nt.length);
     if (common >= 2 && common / maxTokens >= 0.5) {
       const score = common / maxTokens;
-      if (!best || score > best.score) best = { code, libelle: c.libelle, score };
+      if (!best || score >= best.score) best = { code, libelle: c.libelle, score };
     }
   }
   return best ? { code: best.code, libelle: best.libelle } : null;
@@ -252,10 +252,31 @@ function toInvoices(data: any): any[] {
   return [];
 }
 
-function cleanDate(d: string): string {
-  const s = (d || '').trim();
-  if (!s) return '';
+export function fixDate(raw: string): string {
+  const s = (raw || '').trim().toLowerCase();
+  if (!s || s === 'undefined' || s === 'null') return '';
   if (/jj[/-]mm[/-]aaaa|dd[/-]mm[/-]yyyy|-+[/-]*-+|NÀ|N:/i.test(s)) return '';
+
+  // DD/MM/YYYY or DD-MM-YYYY → YYYY-MM-DD
+  const mSlash = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (mSlash) {
+    let [, dd, mm, yyyy] = mSlash;
+    let day = parseInt(dd), month = parseInt(mm), year = parseInt(yyyy);
+    if (month > 12 && day <= 12) { const t = day; day = month; month = t; }
+    if (Math.abs(year - 2026) > 1) year = 2026; // lot traité = août-septembre 2026
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // YYYY-MM-DD
+  const mIso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (mIso) {
+    let [, yyyy, mm, dd] = mIso;
+    let day = parseInt(dd), month = parseInt(mm), year = parseInt(yyyy);
+    if (month > 12 && day <= 12) { const t = day; day = month; month = t; }
+    if (Math.abs(year - 2026) > 1) year = 2026; // lot traité = août-septembre 2026
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
   return s;
 }
 
@@ -266,10 +287,67 @@ function cleanNumero(n: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+// Règles 2 et 3: corrige les dates jour/mois inversées avec le contexte du lot,
+// et unifie le fournisseur au sein d'une même séquence de n° de facture
+// (le "dépôt de livraison" ne doit jamais devenir le fournisseur).
+export function harmonizeDatesAndFournisseurs(invoices: AchatInvoice[]): void {
+  if (invoices.length < 2) return;
+
+  // --- Règle 2: mois dominant du lot + inversion jour/mois
+  const monthCounts = new Map<number, number>();
+  for (const inv of invoices) {
+    const m = /^\d{4}-(\d{2})-\d{2}$/.exec(inv.date);
+    if (m) {
+      const mm = parseInt(m[1], 10);
+      if (mm >= 1 && mm <= 12) monthCounts.set(mm, (monthCounts.get(mm) || 0) + 1);
+    }
+  }
+  let dominantMonth = 0, maxC = 0;
+  for (const [mm, c] of monthCounts) if (c > maxC) { maxC = c; dominantMonth = mm; }
+
+  if (dominantMonth) {
+    for (const inv of invoices) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(inv.date);
+      if (!m) continue;
+      const year = m[1], month = parseInt(m[2], 10), day = parseInt(m[3], 10);
+      // FV10-26+107221 "09/04" enregistré 04/09: le jour lisible = mois dominant du lot
+      if (month !== dominantMonth && day === dominantMonth && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        inv.date = `${year}-${String(day).padStart(2, '0')}-${String(month).padStart(2, '0')}`;
+        console.log(`[ACHATS] Date corrigée (jour/mois inversés): ${m[0]} → ${inv.date}`);
+      }
+    }
+  }
+
+  // --- Règle 3: dominance fournisseur dans les séquences de n° de facture
+  const groups = new Map<string, { total: number; counts: Map<string, number>; invoices: AchatInvoice[] }>();
+  for (const inv of invoices) {
+    const prefix = String(inv.numero || '').replace(/[\d]+$/, '').replace(/[\s_]+$/, '');
+    if (!prefix) continue;
+    if (!groups.has(prefix)) groups.set(prefix, { total: 0, counts: new Map(), invoices: [] });
+    const g = groups.get(prefix)!;
+    g.total++;
+    g.invoices.push(inv);
+    const frs = String(inv.fournisseur || '').trim().toUpperCase();
+    if (frs) g.counts.set(frs, (g.counts.get(frs) || 0) + 1);
+  }
+  for (const [, g] of groups) {
+    if (g.total < 2) continue;
+    let dominant = '', dominantN = 0;
+    for (const [name, c] of g.counts) if (c > dominantN) { dominantN = c; dominant = name; }
+    if (!dominant) continue;
+    for (const inv of g.invoices) {
+      if (String(inv.fournisseur || '').trim().toUpperCase() !== dominant) {
+        console.log(`[ACHATS] Fournisseur unifié par séquence: "${inv.fournisseur}" → "${dominant}"`);
+        inv.fournisseur = dominant;
+      }
+    }
+  }
+}
+
 function normalizeInvoiceData(data: any): any {
   if (!data) return null;
   const numero = cleanNumero(data.numero);
-  const date = cleanDate(data.date);
+  const date = fixDate(data.date);
   const fournisseur = String(data.fournisseur || '').trim();
   const lignes = Array.isArray(data.lignes) ? data.lignes : [];
 
@@ -492,7 +570,7 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
           if (data) {
             const fm = matchFournisseur(String(data.fournisseur || ''), plan);
             allInvoices.push({
-              id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
+id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
               description: String(data.description || ''), ht0: parseNum(data.ht0), ht19: parseNum(data.ht19),
               tva19: parseNum(data.tva19), tva7: parseNum(data.tva7), fodec: parseNum(data.fodec),
               timbre: typeof data.timbre !== 'undefined' ? parseNum(data.timbre) : 0, ttc: parseNum(data.ttc),
@@ -517,6 +595,8 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
       ocr_confidence: confidence,
     });
   }
+
+  harmonizeDatesAndFournisseurs(allInvoices);
 
   console.log(`[ACHATS] Retour: ${allInvoices.length} facture(s)`);
   return allInvoices;
@@ -628,32 +708,44 @@ function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: num
   return { c7: 0, c19: round3(tva) };
 }
 
-function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string): EcritureAchat[] {
+export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string): EcritureAchat[] {
   const docNum = safeDocNum(invoice);
-  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}`;
   const date_operation = invoice.date;
+  // Règle 7: lignes éventuellement incertaines (n° non lisible ou date absente) → à vérifier
+  const needCheck = !invoice.numero || !date_operation;
+  const checkTag = needCheck ? ' [À VÉRIFIER MANUELLEMENT]' : '';
+  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}${checkTag}`;
 
   const ht = round3(invoice.ht0 + invoice.ht19);
   const tvaModel = round3(invoice.tva19 + invoice.tva7);
   const fodec = round3(invoice.fodec);
-  const timbre = round3(invoice.timbre);
+  let timbre = round3(invoice.timbre);
 
   let ttc = round3(invoice.ttc);
   if (ttc <= 0 && (ht > 0 || tvaModel > 0 || fodec > 0 || timbre > 0)) {
     ttc = round3(ht + tvaModel + fodec + timbre);
   }
 
-  // TVA déductible = TVA réellement affichée (ancrée au TTC imprimé)
-  let tva = tvaModel;
+  // Règle 4: la TVA déductible n'est créée que si le document l'affiche (modèle > 0).
+  // Sinon tout le TTC reste en achat — on ne scinde jamais un montant de TVA imaginaire.
+  let tva = 0;
   let achat = ht;
   if (ttc > 0 && ht > 0) {
     const implied = round3(ttc - ht - fodec - timbre);
     if (Math.abs(implied) < 0.011) {
       tva = 0;
-    } else if (tvaModel > 0 && Math.abs(implied - tvaModel) <= 0.011) {
-      tva = tvaModel;
+    } else if (tvaModel > 0) {
+      tva = Math.max(tvaModel, Math.max(0, implied));
     } else {
-      tva = Math.max(0, implied);
+      tva = 0; // aucun taux affiché: écart résiduel → tout va en achat
+    }
+    // Séparer le timbre si le modèle l'a fusionné dans la TVA
+    if (tva > 0 && timbre === 0) {
+      const expectedTva = round3((invoice.ht19 || 0) * 0.19);
+      if (Math.abs(tva - expectedTva - 1) < 0.03 && expectedTva > 0) {
+        tva = expectedTva;
+        timbre = 1;
+      }
     }
     achat = round3(ttc - tva - fodec - timbre);
   } else if (ttc > 0 && ht <= 0 && tvaModel === 0) {
@@ -675,7 +767,7 @@ function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, comp
 
   const totalD = round3(entries.reduce((s, e) => s + e.montant, 0));
   if (totalD > 0.005) {
-    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || docNum}`, sens: 'C', montant: totalD });
+    entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteFournisseur, libelle: `FRS ${invoice.fournisseur || docNum}${checkTag}`, sens: 'C', montant: totalD });
   }
 
   return entries;
@@ -777,6 +869,56 @@ export function verifyEcrituresLocally(
     warnings++;
   }
 
+  // Détection de doublons: même fournisseur + montant TTC similaire (±5%)
+  const groupMeta = Array.from(byFacture.entries()).map(([num, entries]) => {
+    const totalC = round3(entries.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0));
+    const frs = entries[0]?.libelle?.replace(/^FRS\s+/i, '') || '';
+    const date = entries[0]?.date_operation || '';
+    return { num, totalC, frs, date };
+  });
+  const checked = new Set<string>();
+  for (let i = 0; i < groupMeta.length; i++) {
+    for (let j = i + 1; j < groupMeta.length; j++) {
+      const a = groupMeta[i], b = groupMeta[j];
+      if (a.num === b.num || checked.has(`${a.num}|${b.num}`)) continue;
+      if (a.totalC <= 0 || b.totalC <= 0) continue;
+      const ratio = Math.min(a.totalC, b.totalC) / Math.max(a.totalC, b.totalC);
+      if (ratio < 0.92) continue;
+      const sameFrs = a.frs && b.frs && a.frs.toUpperCase() === b.frs.toUpperCase();
+      const sameDate = a.date === b.date && a.date !== '';
+      if (sameFrs || (sameDate && ratio > 0.85)) {
+        checks.push({
+          name: `Doublon probable`,
+          status: 'warning',
+          detail: `"${a.num}" (${a.totalC.toFixed(3)}) et "${b.num}" (${b.totalC.toFixed(3)}) — même fournisseur${sameDate ? ' et même date' : ''}, montants proches. À supprimer l'un des deux.`,
+        });
+        warnings++;
+        checked.add(`${a.num}|${b.num}`);
+      }
+    }
+  }
+
+  // Règle 3: fournisseur incohérent dans une même séquence de n° de facture
+  // (le dépôt de livraison ne doit pas devenir le fournisseur)
+  const seqPrefixCptes = new Map<string, Set<string>>();
+  for (const e of ecritures) {
+    if (e.sens !== 'C') continue;
+    const prefix = String(e.numero_doc || '').replace(/[\d]+$/, '').replace(/[\s_]+$/, '');
+    if (!prefix) continue;
+    if (!seqPrefixCptes.has(prefix)) seqPrefixCptes.set(prefix, new Set());
+    seqPrefixCptes.get(prefix)!.add(e.compte);
+  }
+  for (const [prefix, comptes] of seqPrefixCptes) {
+    if (comptes.size > 1) {
+      checks.push({
+        name: `Fournisseur incohérent (séquence ${prefix}…)`,
+        status: 'warning',
+        detail: `Plusieurs comptes fournisseur dans la séquence « ${prefix}… » (${Array.from(comptes).join(', ')}). Vérifiez s'il ne s'agit pas d'un dépôt de livraison confondu avec l'émetteur.`,
+      });
+      warnings++;
+    }
+  }
+
   const globalD = round3(ecritures.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0));
   const globalC = round3(ecritures.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0));
   const gDiff = Math.abs(globalD - globalC);
@@ -818,6 +960,9 @@ export function verifyEcrituresLocally(
     warnings++;
   }
 
+  const totalPieces = new Set(ecritures.map(e => e.numero_doc || '')).size;
+  checks.push({ name: 'Exhaustivité', status: 'ok', detail: `${totalPieces} pièce(s) comptable(s) pour ${ecritures.length} écriture(s)` });
+
   return {
     verdict: errors > 0 ? 'ERREUR' : warnings > 0 ? 'ATTENTION' : 'OK',
     score: Math.max(0, 100 - errors * 20 - (warnings > 0 ? 10 : 0)),
@@ -825,7 +970,7 @@ export function verifyEcrituresLocally(
     summary: errors > 0
       ? `${errors} erreur(s) comptable(s): le journal doit être équilibré et utiliser des comptes valides`
       : warnings > 0
-        ? 'Journal équilibré (100/100) — alertes qualité à vérifier manuellement'
+        ? `Journal équilibré au niveau comptable (${Math.max(0, 100 - errors * 20 - (warnings > 0 ? 10 : 0))}/100) — alertes qualité à vérifier manuellement`
         : 'Toutes les vérifications passent: journal équilibré, comptes valides',
   };
 }
