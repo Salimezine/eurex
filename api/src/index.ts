@@ -539,6 +539,61 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"name":"detail","status":"
         return handleEFTabAmt(request, env);
       }
 
+      // --- ACHATS AI PROXY (free Workers AI binding) ---
+      if (path === '/api/achats/ai' && method === 'POST') {
+        const b = await request.json() as any;
+        const { model, prompt, systemPrompt, image, max_tokens } = b;
+        if (!prompt) return json({ error: 'prompt requis' }, 400);
+        const visionModels = [
+          '@cf/meta/llama-4-scout-17b-16e-instruct',
+          '@cf/meta/llama-3.2-11b-vision-instruct',
+        ];
+        const textModel = '@cf/meta/llama-3.1-8b-instruct-fast';
+        const runVision = async (img: string) => {
+          const dataUrl = img.startsWith('data:') ? img : `data:image/png;base64,${img}`;
+          let lastErr: any = null;
+          for (const m of visionModels) {
+            try {
+              // One-time license agreement for Meta models
+              try { await env.AI.run(m, { prompt: 'agree' }); } catch {}
+              return await env.AI.run(m, {
+                messages: [
+                  { role: 'system', content: systemPrompt || 'Reponds en JSON valide sans texte avant ou apres.' },
+                  { role: 'user', content: [
+                    { type: 'text', text: prompt },
+                    { type: 'image_url', image_url: { url: dataUrl } },
+                  ]},
+                ],
+                max_tokens: max_tokens || 2000,
+                temperature: 0.1,
+              });
+            } catch (e: any) { lastErr = e; }
+          }
+          throw lastErr;
+        };
+        try {
+          let aiResponse: any;
+          if (model === 'vision') {
+            const img = image || (b.images && b.images[0]);
+            if (!img) return json({ error: 'image requis pour le mode vision' }, 400);
+            aiResponse = await runVision(img);
+          } else {
+            aiResponse = await env.AI.run(textModel, {
+              messages: [
+                { role: 'system', content: systemPrompt || 'Reponds en JSON valide sans texte avant ou apres.' },
+                { role: 'user', content: prompt },
+              ],
+              max_tokens: max_tokens || 2000,
+              temperature: 0.1,
+            });
+          }
+          const response = aiResponse?.response || aiResponse?.result?.response || JSON.stringify(aiResponse);
+          return json({ ok: true, response });
+        } catch (e: any) {
+          return json({ error: 'Workers AI error: ' + (e.message || e) }, 500);
+        }
+      }
+
       // --- FIX TVA 19% ---
       const fixTvaMatch = path.match(/^\/api\/dossiers\/([^/]+)\/fix-tva$/);
       if (fixTvaMatch && method === 'POST') {
