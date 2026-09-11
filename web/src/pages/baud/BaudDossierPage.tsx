@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
-import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult, generateSageSalariesExport, SageSalariesExportResult } from '../../lib/baudCalculator';
+import { calculateSalary, SalaryResult, buildSalaryKeys, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult, generateSageSalariesExport, SageSalariesExportResult } from '../../lib/baudCalculator';
 import { verifySalaryCalculations, applyCorrections, applyAutoFixes, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
 import * as XLSX from 'xlsx';
 
@@ -107,8 +107,10 @@ export default function BaudDossierPage() {
   const calculateAll = () => {
     const mois = dossier?.mois || 1;
     const results = new Map<string, SalaryResult>();
-    for (const emp of employees) {
-      const ptg = pointage.find(p => p.matricule === emp.matricule || p.nom === emp.nom);
+    const keys = buildSalaryKeys(employees);
+    for (let i = 0; i < employees.length; i++) {
+      const emp = employees[i];
+      const ptg = pointage.find(p => p.matricule === emp.matricule || (p.nom && emp.nom && p.nom === emp.nom));
       const absences = parseInt(ptg?.absences || '') || 0;
       const avances = ptg?.avances || 0;
 
@@ -132,7 +134,7 @@ export default function BaudDossierPage() {
         annee: dossier?.annee || 2026,
         heures_nuit: heuresNuit[nuitKey] || emp.heures_nuit || 0,
       });
-      results.set(emp.matricule, result);
+      results.set(keys[i], result);
     }
     setSalaryResults(results);
     setTab('calcul');
@@ -653,8 +655,8 @@ export default function BaudDossierPage() {
                     <th className="p-2 text-right">Brut</th><th className="p-2 text-right">CNSS</th><th className="p-2 text-right">IRPP</th><th className="p-2 text-right">CSS</th><th className="p-2 text-right">Net</th><th className="p-2 text-right">Net a payer</th>
                   </tr></thead>
                   <tbody className="divide-y">
-                    {employees.map(emp => { const r = salaryResults.get(emp.matricule); if (!r) return null; return (
-                      <tr key={emp.matricule} className="hover:bg-gray-50">
+                    {buildSalaryKeys(employees).map((key, idx) => { const r = salaryResults.get(key); const emp = employees[idx]; if (!r) return null; return (
+                      <tr key={key} className="hover:bg-gray-50">
                         <td className="p-2 font-mono text-xs">{emp.matricule}</td><td className="p-2 text-xs">{emp.nom} {emp.prenom}</td>
                         <td className="p-2 text-right font-mono text-xs">{r.salaire_de_base.toFixed(3)}</td>
                         <td className="p-2 text-right font-mono text-xs text-purple-600">{r.prime_anciennete > 0 ? `${r.prime_anciennete.toFixed(3)} (${r.taux_anciennete}%)` : '-'}</td>

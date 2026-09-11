@@ -276,6 +276,36 @@ export function calculateIRPPAnnuel(
   return { irpp_annuel, detail };
 }
 
+/**
+ * Clé d'identité stable pour keyer salaryResults.
+ * Problème corrigé : deux salariés peuvent partager un matricule vide ou dupliqué
+ * (ex: 209130 ×2, 41331 ×2), ce qui écrasait la Map et faisait vérifier les
+ * résultats d'un autre salarié (faux IRPP 157.923 identiques).
+ * Règle : matricule si unique et >= 3 car., sinon nom+prénom, sinon index.
+ */
+export function buildSalaryKeys(
+  employees: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }[]
+): string[] {
+  const counts = new Map<string, number>();
+  for (const emp of employees) {
+    const base = baseSalaryKey(emp);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return employees.map((emp, i) => {
+    const base = baseSalaryKey(emp);
+    return (counts.get(base) || 0) > 1 ? `${base}#${i}` : base;
+  });
+}
+
+function baseSalaryKey(emp: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }): string {
+  const mat = (emp.matricule || '').trim();
+  if (mat.length >= 3) return mat;
+  const nom = (emp.nom || '').trim();
+  const prenom = (emp.prenom || '').trim();
+  if (nom || prenom) return `${nom}_${prenom}`.toUpperCase();
+  return `MAT_EMPTY`;
+}
+
 export function calculateSalary(input: SalaryInput): SalaryResult {
   const {
     salaire_brut: salaire_de_base_input,
@@ -790,8 +820,11 @@ export function generateSagePaieExport(
   let warnings = 0;
   let errors = 0;
 
-  for (const emp of employees) {
-    const result = salaryResults.get(emp.matricule);
+  const keys = buildSalaryKeys(employees);
+
+  for (let empIdx = 0; empIdx < employees.length; empIdx++) {
+    const emp = employees[empIdx];
+    const result = salaryResults.get(keys[empIdx]) || (emp.matricule ? salaryResults.get(emp.matricule) : undefined);
     if (!result) {
       controlReport.push({
         matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom,

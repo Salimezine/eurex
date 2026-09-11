@@ -13,7 +13,7 @@
  */
 
 import { Employee, PointageData } from './baudParser.js';
-import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete } from './baudCalculator.js';
+import { calculateSalary, SalaryResult, calculateAnciennete, getTauxAnciennete, buildSalaryKeys } from './baudCalculator.js';
 import { getConfig } from './baudConfig.js';
 
 export interface VerificationCheck {
@@ -48,6 +48,7 @@ export interface CorrectionAction {
   oldValue: any;
   newValue: any;
   reason: string;
+  salaryKey?: string; // Clé unique employee (matricule sinon nom+prénom+index)
 }
 
 export interface AutoFixAction {
@@ -101,13 +102,19 @@ export function verifySalaryCalculations(
     pointageMap.set(ptg.matricule, ptg);
   }
 
+  const salaryKeys = buildSalaryKeys(employees);
+  const salaryKeyAt = (i: number): string => salaryKeys[i];
+
   let verified = 0;
   let warnings = 0;
   let errors = 0;
 
   // 1. Salaries manquants
-  for (const emp of employees) {
-    if (!salaryResults.has(emp.matricule)) {
+  for (let i = 0; i < employees.length; i++) {
+    const emp = employees[i];
+    const key = salaryKeyAt(i);
+    const found = salaryResults.has(key) || (emp.matricule ? salaryResults.has(emp.matricule) : false);
+    if (!found) {
       missing.push(`${emp.matricule} ${emp.nom} ${emp.prenom}`);
       checks.push({
         name: 'Salaire manquant',
@@ -120,12 +127,14 @@ export function verifySalaryCalculations(
   }
 
   // 2. Verification individuelle
-  for (const emp of employees) {
-    const result = salaryResults.get(emp.matricule);
+  for (let i = 0; i < employees.length; i++) {
+    const emp = employees[i];
+    const key = salaryKeyAt(i);
+    const result = salaryResults.get(key) || (emp.matricule ? salaryResults.get(emp.matricule) : undefined);
     if (!result) continue;
 
     const ptg = pointageMap.get(emp.matricule);
-    const empChecks = verifyEmployee(emp, ptg, result, corrections, autoFixes);
+    const empChecks = verifyEmployee(emp, ptg, result, corrections, autoFixes, key);
 
     for (const check of empChecks) {
       checks.push(check);
@@ -170,7 +179,8 @@ function verifyEmployee(
   ptg: PointageData | undefined,
   result: SalaryResult,
   corrections: CorrectionAction[],
-  autoFixes: AutoFixAction[]
+  autoFixes: AutoFixAction[],
+  salaryKey: string
 ): VerificationCheck[] {
   const checks: VerificationCheck[] = [];
   const empLabel = `${emp.nom} ${emp.prenom}`;
@@ -208,6 +218,7 @@ function verifyEmployee(
       matricule: emp.matricule, nom: empLabel,
       field: 'cnss_salariale', oldValue: result.cnss_salariale, newValue: expectedCNSS,
       reason: 'Recalcul CNSS 9.68% sur brut excluant lait et prime_aid (Loi 73-40, Décret 2003-1098)',
+      salaryKey,
     });
   }
 
@@ -230,6 +241,7 @@ function verifyEmployee(
       matricule: emp.matricule, nom: empLabel,
       field: 'irpp', oldValue: result.irpp, newValue: expectedIRPP,
       reason: 'Recalcul IRPP bareme annuel LF 2025 (Loi 74-9)',
+      salaryKey,
     });
   }
 
@@ -316,6 +328,7 @@ function verifyEmployee(
         matricule: emp.matricule, nom: empLabel,
         field: 'taux_anciennete', oldValue: result.taux_anciennete, newValue: expectedTaux,
         reason: `Recalcul taux anciennete pour ${result.anciennete_annees} ans (Art. 135 CT)`,
+        salaryKey,
       });
     }
   }
@@ -442,8 +455,11 @@ function verifyTotals(
   let totalNet = 0;
   let totalLait = 0;
 
-  for (const emp of employees) {
-    const result = salaryResults.get(emp.matricule);
+  const keys = buildSalaryKeys(employees);
+
+  for (let i = 0; i < employees.length; i++) {
+    const emp = employees[i];
+    const result = salaryResults.get(keys[i]) || (emp.matricule ? salaryResults.get(emp.matricule) : undefined);
     if (!result) continue;
     totalBrut += result.salaire_brut;
     totalCNSS += result.cnss_salariale;
@@ -496,7 +512,8 @@ export function applyCorrections(
   const correctedResults = new Map<string, SalaryResult>(salaryResults);
 
   for (const correction of corrections) {
-    const result = correctedResults.get(correction.matricule);
+    const key = correction.salaryKey || correction.matricule;
+    const result = correctedResults.get(key);
     if (!result) continue;
 
     const newResult = { ...result };
@@ -508,7 +525,7 @@ export function applyCorrections(
       newResult.net_a_payer = newResult.salaire_net;
     }
 
-    correctedResults.set(correction.matricule, newResult);
+    correctedResults.set(key, newResult);
   }
 
   return correctedResults;
