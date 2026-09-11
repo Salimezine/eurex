@@ -280,6 +280,10 @@ export default function BaudDossierPage() {
 
   const downloadSageSalariesTxt = () => {
     if (!sageSalariesResult || sageSalariesResult.lines.length === 0) return;
+    if (sageSalariesResult.duplicateCnss && sageSalariesResult.duplicateCnss.length > 0) {
+      setMsg(`BLOQUÉ: ${sageSalariesResult.duplicateCnss.length} NSS/CNSS en double — corrigez le fichier personnel puis régénérez l'export.`);
+      return;
+    }
     const content = sageSalariesResult.lines.join('');
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
