@@ -4,7 +4,7 @@ import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, 
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
 import { calculateSalary, SalaryResult, buildSalaryKeys, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult, generateSageSalariesExport, SageSalariesExportResult } from '../../lib/baudCalculator';
-import { verifySalaryCalculations, applyCorrections, applyAutoFixes, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
+import { verifySalaryCalculations, applyCorrections, applyAutoFixes, rekeySalaryResults, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
 import * as XLSX from 'xlsx';
 
 type Tab = 'navette' | 'employees' | 'controle' | 'calcul' | 'export';
@@ -327,6 +327,7 @@ export default function BaudDossierPage() {
           currentEmps = fixed.employees;
           currentPtg = fixed.pointage;
         }
+        currentResults = rekeySalaryResults(employees, currentEmps, currentResults);
         setEmployees(currentEmps);
         setPointage(currentPtg);
         setSalaryResults(currentResults);
@@ -344,23 +345,25 @@ export default function BaudDossierPage() {
     try {
       let currentEmps = employees;
       let currentPtg = pointage;
+      let currentResults = salaryResults;
       // Apply salary corrections
       if (verifyResult.corrections.length > 0) {
-        const correctedResults = applyCorrections(currentEmps, currentPtg, salaryResults, verifyResult.corrections);
-        setSalaryResults(correctedResults);
+        currentResults = applyCorrections(currentEmps, currentPtg, currentResults, verifyResult.corrections);
       }
       // Apply auto-fixes (pointage, matricules, SMIG)
       if (verifyResult.autoFixes && verifyResult.autoFixes.length > 0) {
         const fixed = applyAutoFixes(currentEmps, currentPtg, verifyResult.autoFixes);
         currentEmps = fixed.employees;
         currentPtg = fixed.pointage;
-        setEmployees(currentEmps);
-        setPointage(currentPtg);
       }
+      currentResults = rekeySalaryResults(employees, currentEmps, currentResults);
+      setEmployees(currentEmps);
+      setPointage(currentPtg);
+      setSalaryResults(currentResults);
       const totalFixed = (verifyResult.corrections?.length || 0) + (verifyResult.autoFixes?.filter((f: AutoFixAction) => f.type !== 'fix_duplicate')?.length || 0);
       setMsg(`${totalFixed} corrections appliquées`);
-      // Re-verify after corrections (avec les données fraîches, pas le closure stale)
-      const newResult = verifySalaryCalculations(currentEmps, currentPtg, salaryResults);
+      // Re-verify after corrections
+      const newResult = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
       setVerifyResult(newResult);
       persistExtraction(currentEmps, currentPtg, heuresNuit);
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
@@ -368,11 +371,13 @@ export default function BaudDossierPage() {
 
   const handleApplySingleFix = (fix: AutoFixAction) => {
     const { employees: newEmps, pointage: newPtg } = applyAutoFixes(employees, pointage, [{ ...fix, applied: false }]);
+    const rekeyedResults = rekeySalaryResults(employees, newEmps, salaryResults);
     setEmployees(newEmps);
     setPointage(newPtg);
+    setSalaryResults(rekeyedResults);
     setMsg(`Fix appliqué: ${fix.description}`);
     // Re-verify
-    const newResult = verifySalaryCalculations(newEmps, newPtg, salaryResults);
+    const newResult = verifySalaryCalculations(newEmps, newPtg, rekeyedResults);
     setVerifyResult(newResult);
     persistExtraction(newEmps, newPtg, heuresNuit);
   };

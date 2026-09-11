@@ -59,6 +59,23 @@ export interface AutoFixAction {
   applied: boolean;
 }
 
+// Re-key salaryResults après un changement de matricule (fix_duplicate).
+// Anciens vs nouveaux clés calculées à partir de la même liste ordonnée d'employés.
+export function rekeySalaryResults(
+  oldEmployees: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }[],
+  newEmployees: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }[],
+  results: Map<string, SalaryResult>
+): Map<string, SalaryResult> {
+  const oldKeys = buildSalaryKeys(oldEmployees);
+  const newKeys = buildSalaryKeys(newEmployees);
+  const rekeyed = new Map<string, SalaryResult>();
+  for (let i = 0; i < newEmployees.length; i++) {
+    const res = results.get(oldKeys[i]);
+    if (res) rekeyed.set(newKeys[i], res);
+  }
+  return rekeyed;
+}
+
 /**
  * Constantes legales tunisiennes 2026 — lecture depuis config
  */
@@ -399,14 +416,17 @@ function detectCrossEmployeeAnomalies(
   for (const emp of employees) {
     matriculeCount.set(emp.matricule, (matriculeCount.get(emp.matricule) || 0) + 1);
   }
+  let maxMat = Math.max(...employees.map(e => parseInt(e.matricule) || 0));
   for (const [mat, count] of matriculeCount) {
     if (count > 1) {
-      anomalies.push(`Matricule ${mat} en double (${count} fois)`);
-      const maxMat = Math.max(...employees.map(e => parseInt(e.matricule) || 0));
+      anomalies.push(`Matricule ${mat || '(vide)'} en double (${count} fois)`);
+      maxMat += count - 1;
       autoFixes.push({
         type: 'fix_duplicate',
-        description: `Changer le matricule duplique ${mat} en ${maxMat + 1}`,
-        matricule: mat, data: { newMatricule: String(maxMat + 1) }, applied: false,
+        description: `Renuméroter ${count - 1} salarié(s) au matricule ${mat || '(vide)'} en ${maxMat - (count - 2)}-${maxMat}`,
+        matricule: mat,
+        data: { newMatricules: Array.from({ length: count - 1 }, (_, i) => String(maxMat - (count - 2) + i)) },
+        applied: false,
       });
     }
   }
@@ -551,9 +571,14 @@ export function applyAutoFixes(
         break;
 
       case 'fix_duplicate': {
-        const lastIndex = newEmployees.findIndex(e => e.matricule === fix.matricule);
-        if (lastIndex >= 0) {
-          newEmployees[lastIndex] = { ...newEmployees[lastIndex], matricule: fix.data.newMatricule };
+        const newMatricules: string[] = fix.data?.newMatricules ?? [fix.data?.newMatricule];
+        const matches = newEmployees.map((e, i) => ({ e, i })).filter(({ e }) => e.matricule === fix.matricule);
+        // Garder le 1er inchangé, renuméroter les suivants
+        for (let j = 1; j < matches.length; j++) {
+          const newMat = newMatricules[j - 1];
+          if (newMat) {
+            newEmployees[matches[j].i] = { ...newEmployees[matches[j].i], matricule: newMat };
+          }
         }
         break;
       }

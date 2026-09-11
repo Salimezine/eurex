@@ -113,4 +113,37 @@ describe('Vérification IA sans faux positifs (régression bug IRPP 157.923)', (
     const raysiKey = keys[raysiIdx];
     expect(corrected.get(raysiKey)!.irpp).toBe(results.get(raysiKey)!.irpp);
   });
+
+  it('rekeySalaryResults suit le changement de matricule (fix_duplicate)', async () => {
+    const { rekeySalaryResults } = await import('../baudAI');
+    const employees = buildEmployees();
+    const results = buildResults(employees);
+    const keys = buildSalaryKeys(employees);
+
+    // Renumérote le 2e salarié partageant le matricule 41331 (RAYSI → 99999)
+    const newEmps = employees.map((e, i) => i === employees.findIndex(x => x.nom === 'RAYSI') ? { ...e, matricule: '99999' } : e);
+
+    const rekeyed = rekeySalaryResults(employees, newEmps, results);
+    const newKeys = buildSalaryKeys(newEmps);
+    const raysiIdx = newEmps.findIndex(e => e.nom === 'RAYSI')!;
+    expect(rekeyed.has(newKeys[raysiIdx])).toBe(true);
+    // Le 1er salarié au matricule 41331 garde son résultat sous sa clé
+    expect(rekeyed.get(newKeys[newEmps.findIndex(x => x.nom === 'KAABI')])!.irpp).toBe(results.get(keys[employees.findIndex(x => x.nom === 'KAABI')])?.irpp);
+  });
+
+  it('fix_duplicate multi-occurrences renumérote chaque excédent', async () => {
+    const { applyAutoFixes } = await import('../baudAI');
+    const emps = [
+      { matricule: '', nom: 'A', prenom: 'B' },
+      { matricule: '', nom: 'C', prenom: 'D' },
+      { matricule: '', nom: 'E', prenom: 'F' },
+    ];
+    const autoFixes = [
+      { type: 'fix_duplicate', description: 'fix all extras', matricule: '', data: { newMatricules: ['99901', '99902'] }, applied: false },
+    ];
+    const fixed = applyAutoFixes(emps as any, [], autoFixes as any);
+    expect(fixed.employees[0].matricule).toBe('');    // 1er reste vide
+    expect(fixed.employees[1].matricule).toBe('99901'); // 2e renuméroté
+    expect(fixed.employees[2].matricule).toBe('99902'); // 3e renuméroté
+  });
 });
