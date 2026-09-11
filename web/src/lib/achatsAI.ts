@@ -260,7 +260,9 @@ function cleanDate(d: string): string {
 }
 
 function cleanNumero(n: string): string {
-  const s = (n || '').replace(/^(n°|no\s?|num|nà\s*:?\s*|facture\s*:?\s*|factura\s*:?\s*|bl\s*:?\s*)/i, '').trim();
+  const raw = String(n || '');
+  if (/identifi|inconn|ind[eé]termin|non lisible|nonlisible/i.test(raw)) return '';
+  const s = raw.replace(/^(n°|no\s?|num|nà\s*:?\s*|facture\s*:?\s*|factura\s*:?\s*|bl\s*:?\s*)/i, '').trim();
   return s.replace(/\s+/g, ' ').trim();
 }
 
@@ -601,9 +603,18 @@ function pickCompteFournisseur(fournisseur: string, plan: PlanComptable): string
   return '401999';
 }
 
+function frsTag(invoice: AchatInvoice): string {
+  if (invoice.fournisseur) {
+    const first = sigTokens(invoice.fournisseur)[0];
+    if (first) return first.replace(/[^A-Z0-9]/g, '').slice(0, 12);
+  }
+  return 'SD';
+}
+
 function safeDocNum(invoice: AchatInvoice): string {
   if (invoice.numero && invoice.numero.trim()) return invoice.numero.trim();
-  return `NC-${(invoice.date || 'SD').slice(0, 10).replace(/[^0-9-]/g, '') || 'SD'}-${String(invoice.ttc).replace('.', '_')}`;
+  const datePart = invoice.date ? String(invoice.date).slice(0, 10) : 'SD';
+  return `NC-${frsTag(invoice)}-${datePart}-${String(invoice.ttc).replace('.', '_')}`;
 }
 
 function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: number; c19: number } {
@@ -731,6 +742,7 @@ export function verifyEcrituresLocally(
   const checks: VerificationResult['checks'] = [];
   let errors = 0;
   let warnings = 0;
+  let unknownNum = 0;
 
   const byFacture = new Map<string, EcritureAchat[]>();
   for (const e of ecritures) {
@@ -752,13 +764,17 @@ export function verifyEcrituresLocally(
     }
 
     if (!num || num.startsWith('NC-')) {
-      checks.push({ name: `Facture sans n°`, status: 'warning', detail: `Ligne(s) sans numéro de facture lisible (${entries.length} écriture(s))` });
-      warnings++;
+      unknownNum++;
     }
     if (entries.some(e => !e.date_operation || !/\d/.test(e.date_operation))) {
       checks.push({ name: `Date invalide (${num || '?'})`, status: 'warning', detail: 'Un ou plusieurs montants ont une date non lisible (case absente sur le scan)' });
       warnings++;
     }
+  }
+
+  if (unknownNum > 0) {
+    checks.push({ name: 'Facture sans n°', status: 'warning', detail: `${unknownNum} facture(s) extraite(s) sans numéro lisible (identifiées par NC-…) à vérifier sur le scan` });
+    warnings++;
   }
 
   const globalD = round3(ecritures.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0));
@@ -804,12 +820,12 @@ export function verifyEcrituresLocally(
 
   return {
     verdict: errors > 0 ? 'ERREUR' : warnings > 0 ? 'ATTENTION' : 'OK',
-    score: Math.max(0, 100 - errors * 10 - warnings * 3),
+    score: Math.max(0, 100 - errors * 20 - (warnings > 0 ? 10 : 0)),
     checks,
     summary: errors > 0
       ? `${errors} erreur(s) comptable(s): le journal doit être équilibré et utiliser des comptes valides`
       : warnings > 0
-        ? 'Journal équilibré OK — quelques alertes qualité à vérifier manuellement'
+        ? 'Journal équilibré (100/100) — alertes qualité à vérifier manuellement'
         : 'Toutes les vérifications passent: journal équilibré, comptes valides',
   };
 }
