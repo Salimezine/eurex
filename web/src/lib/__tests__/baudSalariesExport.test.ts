@@ -159,6 +159,19 @@ describe('Export SAGE BTP (format fixe salariés)', () => {
     expect(res.lines[0].substr(0, 10)).toBe('209074    ');
   });
 
+  it('matricule en double (2 salariés distincts) : 2e renuméroté, export libre', () => {
+    const res = generateSageSalariesExport([
+      { matricule: '209130', matricule_valid: true, nom: 'EL MANNAI', prenom: 'Amina', cin: '00981104' },
+      { matricule: '209130', matricule_valid: true, nom: 'AAMRI', prenom: 'Moatez', cin: '07158922' },
+    ]);
+    expect(res.renumberedMatricules?.length).toBe(1);
+    expect(res.renumberedMatricules?.[0].from).toBe('209130');
+    expect(res.renumberedMatricules?.[0].nom).toBe('AAMRI');
+    const mats = res.lines.map(l => l.substr(0, 10).trim());
+    expect(new Set(mats).size).toBe(2);
+    expect(res.lines.length).toBe(2);
+  });
+
   it('NSS/CNSS en double : vidé sur le 2e salarié, export libre', () => {
     const res = generateSageSalariesExport([
       { matricule: '209132', matricule_valid: true, nom: 'SASSI', prenom: 'Faouzi', numero_cnss: '17152426-6' },

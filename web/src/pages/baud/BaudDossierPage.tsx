@@ -266,6 +266,7 @@ export default function BaudDossierPage() {
       const res = generateSageSalariesExport(employees);
       setSageSalariesResult(res);
       const assigned = (res.assignedMatricules || []).length;
+      const renumbered = (res.renumberedMatricules || []).length;
       const dups = (res.duplicateEmployees || []).length;
       const stacked = (res.stackedCnss || []).length;
       const cleared = (res.clearedCnss || []).length;
@@ -274,6 +275,7 @@ export default function BaudDossierPage() {
       if (dups > 0) parts.push(`${dups} ligne(s) dupliquée(s) écartée(s)`);
       if (stacked > 0) parts.push(`${stacked} CNSS placeholder ignoré(s)`);
       if (cleared > 0) parts.push(`${cleared} doublon CNSS vidé(s)`);
+      if (renumbered > 0) parts.push(`${renumbered} matricule(s) en double renuméroté(s)`);
       if (assigned > 0) parts.push(`${assigned} matricule(s) attribué(s)`);
       if (parts.length > 0) setMsg(`${exported} salarié(s) exporté(s) (${res.recordLength} car./ligne) — ${parts.join(', ')}.`);
       else setMsg(`${exported} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
@@ -788,6 +790,19 @@ export default function BaudDossierPage() {
                         <li key={i}>• {m.nom} {m.prenom} (matricule: « {m.matricule || '(vide)'} »)</li>
                       ))}
                     </ul>
+                  </div>
+                )}
+                {sageSalariesResult.renumberedMatricules && sageSalariesResult.renumberedMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.renumberedMatricules.length} matricule(s) en double dans l'Excel — renuméroté(s) automatiquement :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.renumberedMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} : « {m.from} » → « {m.to} »</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Reporter le nouveau matricule dans SAGE (le fichier personnel garde l'ancien).</div>
                   </div>
                 )}
                 {sageSalariesResult.duplicateEmployees && sageSalariesResult.duplicateEmployees.length > 0 && (

@@ -1332,6 +1332,7 @@ export interface SageSalariesExportResult {
   totalEmployees: number;
   invalidMatricules?: { matricule: string; nom: string; prenom: string }[];
   assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules?: { from: string; to: string; nom: string; prenom: string }[];
   stackedCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
   duplicateEmployees?: { matricule: string; nom: string; prenom: string; cin: string }[];
   clearedCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
@@ -1421,10 +1422,26 @@ export function generateSageSalariesExport(
     return emp;
   });
 
+  // 1bis. Matricule en double (deux salariés distincts, même matricule dans l'Excel)
+  //       → le 2e est renuméroté (SAGE rejette un matricule dupliqué).
+  const matSeen = new Map<string, string>();
+  const renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[] = [];
+  const matDeduped = prepared.map(emp => {
+    const m = (emp.matricule || '').trim();
+    if (!m) return emp;
+    if (matSeen.has(m)) {
+      const to = String(nextMat++);
+      renumberedMatricules.push({ from: m, to, nom: emp.nom, prenom: emp.prenom });
+      return { ...emp, matricule: to };
+    }
+    matSeen.set(m, emp.matricule);
+    return emp;
+  });
+
   // 1. Nettoyage CNSS : les valeurs non numériques (FIAP, SIAP, EN COURS, manquant…)
   //    sont des placeholders — jamais exportées, jamais comptées comme doublons.
   const stackedCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
-  const cleaned = prepared.map(emp => {
+  const cleaned = matDeduped.map(emp => {
     const c = (emp.numero_cnss || '').trim();
     if (!c) return emp;
     const numericOnly = c.replace(/[^0-9]/g, '');
@@ -1471,6 +1488,7 @@ export function generateSageSalariesExport(
     totalEmployees: employees.length,
     invalidMatricules: [],
     assignedMatricules,
+    renumberedMatricules,
     stackedCnss,
     duplicateEmployees,
     clearedCnss,
