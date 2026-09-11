@@ -25,12 +25,12 @@ describe('SMIG — Decret 67/2026', () => {
   });
 
   it('salaire < SMIG est detecte par rapport de controle', () => {
-    const employees = [{ matricule: 'T1', nom: 'TEST', prenom: 'Low', nouveau_salaire_brut: 300, salaire_brut: 300 }];
+    const employees = [{ matricule: '209130', nom: 'TEST', prenom: 'Low', nouveau_salaire_brut: 300, salaire_brut: 300 }];
     const results = new Map<string, SalaryResult>();
-    results.set('T1', calculateSalary({ salaire_brut: 300, situation_fam: 'C', nombre_enfants: 0 }));
+    results.set('209130', calculateSalary({ salaire_brut: 300, situation_fam: 'C', nombre_enfants: 0 }));
     const exportResult = generateSagePaieExport(employees, [], results, 6, 2026, false);
     expect(exportResult.smigViolations.length).toBe(1);
-    expect(exportResult.smigViolations[0].matricule).toBe('T1');
+    expect(exportResult.smigViolations[0].matricule).toBe('209130');
   });
 });
 

@@ -770,7 +770,7 @@ export default function BaudDossierPage() {
                   <div className="flex items-center gap-2 mb-2">
                     <AlertTriangle size={14} className="text-amber-600" />
                     <span className="font-semibold text-amber-700">
-                      {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length} salarié(s) sans matricule Sage — exportés avec matricule vide
+                      {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length} salarié(s) sans matricule Sage — matricule(s) attribué(s) automatiquement dans les 2 exports (fiches + paie)
                     </span>
                   </div>
                   <ul className="max-h-32 overflow-y-auto space-y-1 text-amber-600">

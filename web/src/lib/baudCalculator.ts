@@ -764,6 +764,8 @@ export interface SageExportResult {
   rows: SageExportRow[];
   controlReport: ControlReportItem[];
   smigViolations: { matricule: string; nom: string; brut: number; smig: number }[];
+  assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules?: { from: string; to: string; nom: string; prenom: string }[];
   summary: {
     totalRows: number;
     totalEmployees: number;
@@ -800,6 +802,56 @@ export interface SageExportResult {
  * @param primeAncienneteEnabled Flag global : activer la prime d'ancienneté (default: false)
  * @returns Résultat avec lignes Excel, rapport de contrôle, violations SMIG
  */
+/**
+ * Matricule effectif utilisé dans les exports Sage.
+ * Regroupe les règles partagées entre le fichier fiches salariés et l'export paie :
+ *  1. Matricules vides/invalides → attribués séquentiellement après le max existant
+ *  2. Matricules dupliqués (même valeur, salariés distincts) → 2e+ renumérotés
+ * Retourne la liste préparée (même ordre que l'entrée) + les rapports d'attribution/renumérotation.
+ */
+export interface SageMatriculePreparation<T> {
+  list: (T & { matricule: string })[];
+  assignedMatricules: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[];
+}
+
+export function prepareSageMatricules<T extends { matricule?: string; nom?: string; prenom?: string; matricule_valid?: boolean }>(
+  employees: T[]
+): SageMatriculePreparation<T> {
+  const assignedMatricules: { matricule: string; nom: string; prenom: string }[] = [];
+  const renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[] = [];
+
+  let nextMat = 1;
+  for (const emp of employees) {
+    const n = parseInt(emp.matricule || '', 10);
+    if (!isNaN(n) && n >= nextMat) nextMat = n + 1;
+  }
+
+  const prepared = employees.map(emp => {
+    if (emp.matricule_valid === false || !emp.matricule || emp.matricule.length < 3) {
+      const m = String(nextMat++);
+      assignedMatricules.push({ matricule: m, nom: emp.nom || '', prenom: emp.prenom || '' });
+      return { ...emp, matricule: m, matricule_valid: true };
+    }
+    return emp as T & { matricule: string };
+  });
+
+  const matSeen = new Map<string, string>();
+  const deduped = prepared.map(emp => {
+    const m = (emp.matricule || '').trim();
+    if (!m) return emp;
+    if (matSeen.has(m)) {
+      const to = String(nextMat++);
+      renumberedMatricules.push({ from: m, to, nom: emp.nom || '', prenom: emp.prenom || '' });
+      return { ...emp, matricule: to };
+    }
+    matSeen.set(m, emp.matricule);
+    return emp;
+  });
+
+  return { list: deduped, assignedMatricules, renumberedMatricules };
+}
+
 export function generateSagePaieExport(
   employees: { matricule: string; nom: string; prenom: string; nouveau_salaire_brut: number; salaire_brut: number }[],
   pointage: { matricule: string; avances: number; absences: string; heures_supplementaires: string; conges_payes: string }[],
@@ -821,10 +873,13 @@ export function generateSagePaieExport(
   let errors = 0;
 
   const keys = buildSalaryKeys(employees);
+  const matPrep = prepareSageMatricules(employees);
+  const { list: preparedEmps } = matPrep;
 
   for (let empIdx = 0; empIdx < employees.length; empIdx++) {
-    const emp = employees[empIdx];
-    const result = salaryResults.get(keys[empIdx]) || (emp.matricule ? salaryResults.get(emp.matricule) : undefined);
+    const origEmp = employees[empIdx];
+    const emp = preparedEmps[empIdx]; // matricule vide → assigné automatiquement
+    const result = salaryResults.get(keys[empIdx]) || (origEmp.matricule ? salaryResults.get(origEmp.matricule) : undefined);
     if (!result) {
       controlReport.push({
         matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom,
@@ -834,7 +889,7 @@ export function generateSagePaieExport(
       continue;
     }
 
-    const ptg = pointage.find(p => p.matricule === emp.matricule);
+    const ptg = pointage.find(p => p.matricule === origEmp.matricule);
 
     // --- CONTRÔLE SMIG ---
     // Décret n°2026-67 du 30/04/2026 : salaire brut ne peut être inférieur au SMIG
@@ -1121,6 +1176,8 @@ export function generateSagePaieExport(
     rows,
     controlReport,
     smigViolations,
+    assignedMatricules: matPrep.assignedMatricules,
+    renumberedMatricules: matPrep.renumberedMatricules,
     summary: {
       totalRows: rows.length,
       totalEmployees: employees.length,
@@ -1405,38 +1462,8 @@ export function buildSageSalariesRecord(emp: SageSalariesEmployee): string {
 export function generateSageSalariesExport(
   employees: SageSalariesEmployee[]
 ): SageSalariesExportResult {
-  const assignedMatricules: { matricule: string; nom: string; prenom: string }[] = [];
-
-  // Attribution automatique des matricules vides/invalides (séquentiel après le max existant)
-  let nextMat = 1;
-  for (const emp of employees) {
-    const n = parseInt(emp.matricule, 10);
-    if (!isNaN(n) && n >= nextMat) nextMat = n + 1;
-  }
-  const prepared = employees.map(emp => {
-    if (emp.matricule_valid === false || !emp.matricule || emp.matricule.length < 3) {
-      const m = String(nextMat++);
-      assignedMatricules.push({ matricule: m, nom: emp.nom, prenom: emp.prenom });
-      return { ...emp, matricule: m, matricule_valid: true };
-    }
-    return emp;
-  });
-
-  // 1bis. Matricule en double (deux salariés distincts, même matricule dans l'Excel)
-  //       → le 2e est renuméroté (SAGE rejette un matricule dupliqué).
-  const matSeen = new Map<string, string>();
-  const renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[] = [];
-  const matDeduped = prepared.map(emp => {
-    const m = (emp.matricule || '').trim();
-    if (!m) return emp;
-    if (matSeen.has(m)) {
-      const to = String(nextMat++);
-      renumberedMatricules.push({ from: m, to, nom: emp.nom, prenom: emp.prenom });
-      return { ...emp, matricule: to };
-    }
-    matSeen.set(m, emp.matricule);
-    return emp;
-  });
+  // Attribution + dé-duplication des matricules (helper partagé avec l'export paie)
+  const { list: matDeduped, assignedMatricules, renumberedMatricules } = prepareSageMatricules(employees);
 
   // 1. Nettoyage CNSS : les valeurs non numériques (FIAP, SIAP, EN COURS, manquant…)
   //    sont des placeholders — jamais exportées, jamais comptées comme doublons.
