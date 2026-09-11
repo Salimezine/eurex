@@ -136,6 +136,29 @@ describe('Export SAGE BTP (format fixe salariés)', () => {
     expect(res.invalidMatricules?.length ?? 0).toBe(0);
   });
 
+  it('NSS/CNSS placeholder non numériques ignorés (jamais exportés, jamais considérés doublons)', () => {
+    const res = generateSageSalariesExport([
+      { matricule: '209125', matricule_valid: true, nom: 'RAYSI', prenom: 'Salwa', cin: '07744635', numero_cnss: 'FIAP' },
+      { matricule: '209094', matricule_valid: true, nom: 'BACCOUCHE', prenom: 'Ahlem', cin: '10810515', numero_cnss: 'FIAP' },
+      { matricule: '209075', matricule_valid: true, nom: 'MARZOUKI', prenom: 'Ilhem', cin: '10808110', numero_cnss: 'EN COURS' },
+    ]);
+    expect(res.stackedCnss?.length).toBe(3);
+    expect(res.clearedCnss?.length ?? 0).toBe(0);
+    // Aucune ligne ne contient ces placeholders
+    for (const l of res.lines) expect(l.substr(326, 13).trim()).toBe('');
+  });
+
+  it('lignes salariés dupliquées (même CIN) : seule la 1re exportée', () => {
+    const res = generateSageSalariesExport([
+      { matricule: '209074', matricule_valid: true, nom: 'BEN ARBI', prenom: 'Radhia', cin: '00993919', numero_cnss: '16516994- 05' },
+      { matricule: '209076', matricule_valid: true, nom: 'BEN ARBI', prenom: 'Radhia', cin: '00993919', numero_cnss: '16516994- 05' },
+    ]);
+    expect(res.duplicateEmployees?.length).toBe(1);
+    expect(res.duplicateEmployees?.[0].matricule).toBe('209076');
+    expect(res.lines.length).toBe(1);
+    expect(res.lines[0].substr(0, 10)).toBe('209074    ');
+  });
+
   it('NSS/CNSS en double : vidé sur le 2e salarié, export libre', () => {
     const res = generateSageSalariesExport([
       { matricule: '209132', matricule_valid: true, nom: 'SASSI', prenom: 'Faouzi', numero_cnss: '17152426-6' },

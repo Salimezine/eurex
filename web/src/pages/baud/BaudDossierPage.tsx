@@ -266,14 +266,17 @@ export default function BaudDossierPage() {
       const res = generateSageSalariesExport(employees);
       setSageSalariesResult(res);
       const assigned = (res.assignedMatricules || []).length;
+      const dups = (res.duplicateEmployees || []).length;
+      const stacked = (res.stackedCnss || []).length;
       const cleared = (res.clearedCnss || []).length;
-      if (cleared > 0) {
-        setMsg(`Export généré: ${cleared} NSS en double vidé(s) automatiquement (à saisir dans SAGE). ${assigned} matricule(s) attribué(s).`);
-      } else if (assigned > 0) {
-        setMsg(`${assigned} matricule(s) vide(s) attribué(s) automatiquement — ${res.totalEmployees} salarié(s) exporté(s) (${res.recordLength} car./ligne)`);
-      } else {
-        setMsg(`${res.totalEmployees} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
-      }
+      const exported = res.lines.length;
+      const parts: string[] = [];
+      if (dups > 0) parts.push(`${dups} ligne(s) dupliquée(s) écartée(s)`);
+      if (stacked > 0) parts.push(`${stacked} CNSS placeholder ignoré(s)`);
+      if (cleared > 0) parts.push(`${cleared} doublon CNSS vidé(s)`);
+      if (assigned > 0) parts.push(`${assigned} matricule(s) attribué(s)`);
+      if (parts.length > 0) setMsg(`${exported} salarié(s) exporté(s) (${res.recordLength} car./ligne) — ${parts.join(', ')}.`);
+      else setMsg(`${exported} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
     setGenerating(false);
   };
@@ -281,8 +284,12 @@ export default function BaudDossierPage() {
   const downloadSageSalariesTxt = () => {
     if (!sageSalariesResult || sageSalariesResult.lines.length === 0) return;
     const cleared = (sageSalariesResult.clearedCnss || []).length;
+    const dups = (sageSalariesResult.duplicateEmployees || []).length;
     if (cleared > 0) {
-      setMsg(`Attention: ${cleared} NSS/CNSS était/sont en double et ont été vidé(s) — saisir le bon numéro dans SAGE après import.`);
+      setMsg(`Attention: ${cleared} NSS en double vidé(s) — saisir le bon numéro dans SAGE après import.`);
+    }
+    if (dups > 0) {
+      setMsg(`Attention: ${dups} ligne(s) dupliquée(s) non exportée(s) — vérifier le fichier personnel.`);
     }
     const content = sageSalariesResult.lines.join('');
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -781,6 +788,32 @@ export default function BaudDossierPage() {
                         <li key={i}>• {m.nom} {m.prenom} (matricule: « {m.matricule || '(vide)'} »)</li>
                       ))}
                     </ul>
+                  </div>
+                )}
+                {sageSalariesResult.duplicateEmployees && sageSalariesResult.duplicateEmployees.length > 0 && (
+                  <div className="bg-red-50 border border-red-300 rounded p-2 text-red-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.duplicateEmployees.length} ligne(s) salarié dupliquée(s) (même CIN) — non exportée(s) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.duplicateEmployees.map((d, i) => (
+                        <li key={i}>• {d.nom} {d.prenom} (CIN {d.cin}, matricule {d.matricule}) — doublon de la ligne clé {d.matricule}</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Vérifier dans le fichier personnel (même personne saisie 2× ?).</div>
+                  </div>
+                )}
+                {sageSalariesResult.stackedCnss && sageSalariesResult.stackedCnss.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.stackedCnss.length} CNSS placeholder(s) ignoré(s) (non numériques — FIAP, SIAP, EN COURS…) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.stackedCnss.map((c, i) => (
+                        <li key={i}>• « {c.cnss} » : {c.nom} {c.prenom} (matricule {c.matricule})</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Saisir le vrai NSS dans SAGE après import.</div>
                   </div>
                 )}
                 {sageSalariesResult.clearedCnss && sageSalariesResult.clearedCnss.length > 0 && (
