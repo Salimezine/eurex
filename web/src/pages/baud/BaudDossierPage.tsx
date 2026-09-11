@@ -314,11 +314,13 @@ export default function BaudDossierPage() {
       let currentResults = salaryResults;
       let result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
 
-      // Auto-correction immédiate : applique les corrections de salaire puis les auto-fixes,
-      // sans clic, puis re-vérifie.
-      const nbCorrections = (result.corrections || []).length;
-      const autoFixesList = (result.autoFixes || []).filter((f: AutoFixAction) => !f.applied);
-      if (nbCorrections > 0 || autoFixesList.length > 0) {
+      // Auto-correction : boucle jusqu'à stabilité (max 5 passes) — applique
+      // corrections de salaire puis auto-fixes, sans clic, puis re-vérifie.
+      let totalApplied = 0;
+      for (let pass = 0; pass < 5; pass++) {
+        const nbCorrections = (result.corrections || []).length;
+        const autoFixesList = (result.autoFixes || []).filter((f: AutoFixAction) => !f.applied);
+        if (nbCorrections === 0 && autoFixesList.length === 0) break;
         if (nbCorrections > 0) {
           currentResults = applyCorrections(currentEmps, currentPtg, currentResults, result.corrections);
         }
@@ -327,13 +329,16 @@ export default function BaudDossierPage() {
           currentEmps = fixed.employees;
           currentPtg = fixed.pointage;
         }
+        totalApplied += nbCorrections + autoFixesList.length;
         currentResults = rekeySalaryResults(employees, currentEmps, currentResults);
-        setEmployees(currentEmps);
-        setPointage(currentPtg);
-        setSalaryResults(currentResults);
-        persistExtraction(currentEmps, currentPtg, heuresNuit);
         result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
-        setMsg(`Vérification + ${nbCorrections + autoFixesList.length} correction(s) automatique(s) appliquée(s) — re-vérifié.`);
+      }
+      setEmployees(currentEmps);
+      setPointage(currentPtg);
+      setSalaryResults(currentResults);
+      if (totalApplied > 0) {
+        persistExtraction(currentEmps, currentPtg, heuresNuit);
+        setMsg(`Vérification + ${totalApplied} correction(s) automatique(s) appliquée(s) — re-vérifié.`);
       }
       setVerifyResult(result);
     } catch (e: any) { setVerifyResult({ verdict: 'ERREUR', error: e.message, checks: [], missing: [], anomalies: [], corrections: [], autoFixes: [], summary: { totalEmployees: 0, verified: 0, warnings: 0, errors: 0, corrected: 0, autoFixed: 0 } }); }
