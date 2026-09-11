@@ -2,10 +2,38 @@ export interface Env {
   DB: D1Database;
   AI: Ai;
   ENVIRONMENT: string;
+  AI_FALLBACK_URLS?: string;
 }
 
 function genId(): string {
   return crypto.randomUUID();
+}
+
+// Quota Workers AI épuisé (tous les modèles partagent les 10 000 neurons/jour du compte).
+function isQuotaExhausted(e: any): boolean {
+  const msg = String((e && (e.message || e)) || '').toLowerCase();
+  return /4006|3036|daily free allocation|out of.*allocation|neurons?/i.test(msg) || (e && (e.code === 4006 || e.code === 3036));
+}
+
+// Bascule vers un worker de secours (2e compte Cloudflare = 2e quota de 10 000 neurons/jour).
+// AI_FALLBACK_URLS = liste d'URLs séparées par des virgules (ex. fallback.ezzinesalim21.workers.dev/api/achats/ai).
+async function callFallbackWorkers(body: unknown, env: Env): Promise<string | null> {
+  const urls = (env.AI_FALLBACK_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json() as any;
+        const r = data?.response || data?.result?.response || (data?.ok ? JSON.stringify(data) : '');
+        if (r) return r;
+      }
+    } catch { /* essaie l'URL suivante */ }
+  }
+  return null;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -576,16 +604,33 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"name":"detail","status":"
           if (model === 'vision') {
             const img = image || (b.images && b.images[0]);
             if (!img) return json({ error: 'image requis pour le mode vision' }, 400);
-            aiResponse = await runVision(img);
+            try {
+              aiResponse = await runVision(img);
+            } catch (e: any) {
+              // Quota Cloudflare épuisé → bascule sur un worker de secours (2e compte, autre quota)
+              if (isQuotaExhausted(e)) {
+                const fb = await callFallbackWorkers({ model: 'vision', prompt, systemPrompt, image: img, max_tokens }, env);
+                if (fb) return json({ ok: true, response: fb, fallback: true });
+              }
+              throw e;
+            }
           } else {
-            aiResponse = await env.AI.run(textModel, {
-              messages: [
-                { role: 'system', content: systemPrompt || 'Reponds en JSON valide sans texte avant ou apres.' },
-                { role: 'user', content: prompt },
-              ],
-              max_tokens: max_tokens || 2000,
-              temperature: 0.1,
-            });
+            try {
+              aiResponse = await env.AI.run(textModel, {
+                messages: [
+                  { role: 'system', content: systemPrompt || 'Reponds en JSON valide sans texte avant ou apres.' },
+                  { role: 'user', content: prompt },
+                ],
+                max_tokens: max_tokens || 2000,
+                temperature: 0.1,
+              });
+            } catch (e: any) {
+              if (isQuotaExhausted(e)) {
+                const fb = await callFallbackWorkers({ model: 'text', prompt, systemPrompt, max_tokens }, env);
+                if (fb) return json({ ok: true, response: fb, fallback: true });
+              }
+              throw e;
+            }
           }
           const response = aiResponse?.response || aiResponse?.result?.response || JSON.stringify(aiResponse);
           return json({ ok: true, response });
