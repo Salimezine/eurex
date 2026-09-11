@@ -308,7 +308,34 @@ export default function BaudDossierPage() {
   const handleVerifyAI = async () => {
     if (!dossier || employees.length === 0) return;
     setVerifying(true); setVerifyResult(null);
-    try { const result = verifySalaryCalculations(employees, pointage, salaryResults); setVerifyResult(result); } catch (e: any) { setVerifyResult({ verdict: 'ERREUR', error: e.message, checks: [], missing: [], anomalies: [], corrections: [], autoFixes: [], summary: { totalEmployees: 0, verified: 0, warnings: 0, errors: 0, corrected: 0, autoFixed: 0 } }); }
+    try {
+      let currentEmps = employees;
+      let currentPtg = pointage;
+      let currentResults = salaryResults;
+      let result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
+
+      // Auto-correction immédiate : applique les corrections de salaire puis les auto-fixes,
+      // sans clic, puis re-vérifie.
+      const nbCorrections = (result.corrections || []).length;
+      const autoFixesList = (result.autoFixes || []).filter((f: AutoFixAction) => !f.applied);
+      if (nbCorrections > 0 || autoFixesList.length > 0) {
+        if (nbCorrections > 0) {
+          currentResults = applyCorrections(currentEmps, currentPtg, currentResults, result.corrections);
+        }
+        if (autoFixesList.length > 0) {
+          const fixed = applyAutoFixes(currentEmps, currentPtg, autoFixesList);
+          currentEmps = fixed.employees;
+          currentPtg = fixed.pointage;
+        }
+        setEmployees(currentEmps);
+        setPointage(currentPtg);
+        setSalaryResults(currentResults);
+        persistExtraction(currentEmps, currentPtg, heuresNuit);
+        result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
+        setMsg(`Vérification + ${nbCorrections + autoFixesList.length} correction(s) automatique(s) appliquée(s) — re-vérifié.`);
+      }
+      setVerifyResult(result);
+    } catch (e: any) { setVerifyResult({ verdict: 'ERREUR', error: e.message, checks: [], missing: [], anomalies: [], corrections: [], autoFixes: [], summary: { totalEmployees: 0, verified: 0, warnings: 0, errors: 0, corrected: 0, autoFixed: 0 } }); }
     setVerifying(false);
   };
 
