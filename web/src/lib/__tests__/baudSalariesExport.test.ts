@@ -125,11 +125,24 @@ describe('Export SAGE BTP (format fixe salariés)', () => {
     expect(line.substr(518, 8)).toBe('20140131');
   });
 
-  it('matricules invalides listés (blocage export côté UI)', () => {
+  it('matricules vides attribués automatiquement (séquentiel après max)', () => {
     const res = generateSageSalariesExport([
-      { matricule: '', nom: 'BAD', prenom: 'X' },
-      { matricule_valid: false, matricule: '12', nom: 'SHORT', prenom: 'Y' },
+      { matricule: '', nom: 'RAYSI', prenom: 'SALWA' },
+      { matricule: '209150', matricule_valid: true, nom: 'KAABI', prenom: 'OLFA' },
     ]);
-    expect(res.invalidMatricules?.length).toBe(2);
+    expect(res.lines.length).toBe(2);
+    expect(res.assignedMatricules?.[0].matricule).toBe('209151');
+    expect(res.lines[0].substr(0, 10)).toBe('209151    ');
+    expect(res.invalidMatricules?.length ?? 0).toBe(0);
+  });
+
+  it('NSS/CNSS en double détectés (blocage export)', () => {
+    const res = generateSageSalariesExport([
+      { matricule: '209132', matricule_valid: true, nom: 'SASSI', prenom: 'Faouzi', numero_cnss: '17152426-6' },
+      { matricule: '209133', matricule_valid: true, nom: 'EL WAER', prenom: 'Morthadha', numero_cnss: '17152426-6' },
+    ]);
+    expect(res.duplicateCnss?.length).toBe(1);
+    expect(res.duplicateCnss?.[0].cnss).toBe('17152426-6');
+    expect(res.duplicateCnss?.[0].matricule).toBe('209133');
   });
 });

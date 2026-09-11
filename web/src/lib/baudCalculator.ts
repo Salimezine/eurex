@@ -1330,6 +1330,8 @@ export interface SageSalariesExportResult {
   recordLength: number;
   totalEmployees: number;
   invalidMatricules?: { matricule: string; nom: string; prenom: string }[];
+  assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
+  duplicateCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
 }
 
 /**
@@ -1399,15 +1401,44 @@ export function buildSageSalariesRecord(emp: SageSalariesEmployee): string {
 export function generateSageSalariesExport(
   employees: SageSalariesEmployee[]
 ): SageSalariesExportResult {
-  const invalidMatricules = employees
-    .filter(emp => emp.matricule_valid === false || (!emp.matricule || emp.matricule.length < 3))
-    .map(emp => ({ matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom }));
+  const assignedMatricules: { matricule: string; nom: string; prenom: string }[] = [];
 
-  const lines = employees.map(emp => buildSageSalariesRecord(emp));
+  // Attribution automatique des matricules vides/invalides (séquentiel après le max existant)
+  let nextMat = 1;
+  for (const emp of employees) {
+    const n = parseInt(emp.matricule, 10);
+    if (!isNaN(n) && n >= nextMat) nextMat = n + 1;
+  }
+  const prepared = employees.map(emp => {
+    if (emp.matricule_valid === false || !emp.matricule || emp.matricule.length < 3) {
+      const m = String(nextMat++);
+      assignedMatricules.push({ matricule: m, nom: emp.nom, prenom: emp.prenom });
+      return { ...emp, matricule: m, matricule_valid: true };
+    }
+    return emp;
+  });
+
+  const lines = prepared.map(emp => buildSageSalariesRecord(emp));
+
+  // Détection des NSS/CNSS en double (SAGE rejette un NSS dupliqué)
+  const cnssSeen = new Map<string, string>();
+  const duplicateCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
+  for (const emp of prepared) {
+    const c = (emp.numero_cnss || '').trim();
+    if (!c) continue;
+    if (cnssSeen.has(c)) {
+      duplicateCnss.push({ cnss: c, matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom });
+    } else {
+      cnssSeen.set(c, emp.matricule);
+    }
+  }
+
   return {
     lines,
     recordLength: SAGE_SALARIES_SPEC.reduce((s, f) => s + f.size, 0),
     totalEmployees: employees.length,
-    invalidMatricules,
+    invalidMatricules: [],
+    assignedMatricules,
+    duplicateCnss,
   };
 }

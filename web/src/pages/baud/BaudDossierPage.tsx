@@ -265,8 +265,12 @@ export default function BaudDossierPage() {
       await saveBeforeExport();
       const res = generateSageSalariesExport(employees);
       setSageSalariesResult(res);
-      if (res.invalidMatricules && res.invalidMatricules.length > 0) {
-        setMsg(`ATTENTION: ${res.invalidMatricules.length} matricule(s) invalide(s) — vérifier avant import SAGE`);
+      const assigned = (res.assignedMatricules || []).length;
+      const dupCnss = (res.duplicateCnss || []).length;
+      if (dupCnss > 0) {
+        setMsg(`BLOQUÉ: ${dupCnss} NSS/CNSS en double détecté(s) — SAGE refuserait l'import. Corriger dans le fichier personnel.`);
+      } else if (assigned > 0) {
+        setMsg(`${assigned} matricule(s) vide(s) attribué(s) automatiquement — ${res.totalEmployees} salarié(s) exporté(s) (${res.recordLength} car./ligne)`);
       } else {
         setMsg(`${res.totalEmployees} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
       }
@@ -771,6 +775,31 @@ export default function BaudDossierPage() {
                     <ul className="max-h-24 overflow-y-auto space-y-0.5">
                       {sageSalariesResult.invalidMatricules.map((m, i) => (
                         <li key={i}>• {m.nom} {m.prenom} (matricule: « {m.matricule || '(vide)'} »)</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {sageSalariesResult.duplicateCnss && sageSalariesResult.duplicateCnss.length > 0 && (
+                  <div className="bg-red-50 border border-red-300 rounded p-2 text-red-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.duplicateCnss.length} NSS/CNSS en double — SAGE refusera l'import :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.duplicateCnss.map((c, i) => (
+                        <li key={i}>• CNSS « {c.cnss} » : {c.nom} {c.prenom} (matricule {c.matricule})</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Corriger dans le fichier personnel puis régénérer l'export.</div>
+                  </div>
+                )}
+                {sageSalariesResult.assignedMatricules && sageSalariesResult.assignedMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.assignedMatricules.length} matricule(s) vide(s) attribué(s) automatiquement :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.assignedMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} → matricule « {m.matricule} »</li>
                       ))}
                     </ul>
                   </div>
