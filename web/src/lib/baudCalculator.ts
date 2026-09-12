@@ -276,6 +276,36 @@ export function calculateIRPPAnnuel(
   return { irpp_annuel, detail };
 }
 
+/**
+ * Clé d'identité stable pour keyer salaryResults.
+ * Problème corrigé : deux salariés peuvent partager un matricule vide ou dupliqué
+ * (ex: 209130 ×2, 41331 ×2), ce qui écrasait la Map et faisait vérifier les
+ * résultats d'un autre salarié (faux IRPP 157.923 identiques).
+ * Règle : matricule si unique et >= 3 car., sinon nom+prénom, sinon index.
+ */
+export function buildSalaryKeys(
+  employees: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }[]
+): string[] {
+  const counts = new Map<string, number>();
+  for (const emp of employees) {
+    const base = baseSalaryKey(emp);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return employees.map((emp, i) => {
+    const base = baseSalaryKey(emp);
+    return (counts.get(base) || 0) > 1 ? `${base}#${i}` : base;
+  });
+}
+
+function baseSalaryKey(emp: { matricule?: string; nom?: string; prenom?: string; numero_cnss?: string }): string {
+  const mat = (emp.matricule || '').trim();
+  if (mat.length >= 3) return mat;
+  const nom = (emp.nom || '').trim();
+  const prenom = (emp.prenom || '').trim();
+  if (nom || prenom) return `${nom}_${prenom}`.toUpperCase();
+  return `MAT_EMPTY`;
+}
+
 export function calculateSalary(input: SalaryInput): SalaryResult {
   const {
     salaire_brut: salaire_de_base_input,
@@ -734,6 +764,8 @@ export interface SageExportResult {
   rows: SageExportRow[];
   controlReport: ControlReportItem[];
   smigViolations: { matricule: string; nom: string; brut: number; smig: number }[];
+  assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules?: { from: string; to: string; nom: string; prenom: string }[];
   summary: {
     totalRows: number;
     totalEmployees: number;
@@ -770,6 +802,56 @@ export interface SageExportResult {
  * @param primeAncienneteEnabled Flag global : activer la prime d'ancienneté (default: false)
  * @returns Résultat avec lignes Excel, rapport de contrôle, violations SMIG
  */
+/**
+ * Matricule effectif utilisé dans les exports Sage.
+ * Regroupe les règles partagées entre le fichier fiches salariés et l'export paie :
+ *  1. Matricules vides/invalides → attribués séquentiellement après le max existant
+ *  2. Matricules dupliqués (même valeur, salariés distincts) → 2e+ renumérotés
+ * Retourne la liste préparée (même ordre que l'entrée) + les rapports d'attribution/renumérotation.
+ */
+export interface SageMatriculePreparation<T> {
+  list: (T & { matricule: string })[];
+  assignedMatricules: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[];
+}
+
+export function prepareSageMatricules<T extends { matricule?: string; nom?: string; prenom?: string; matricule_valid?: boolean }>(
+  employees: T[]
+): SageMatriculePreparation<T> {
+  const assignedMatricules: { matricule: string; nom: string; prenom: string }[] = [];
+  const renumberedMatricules: { from: string; to: string; nom: string; prenom: string }[] = [];
+
+  let nextMat = 1;
+  for (const emp of employees) {
+    const n = parseInt(emp.matricule || '', 10);
+    if (!isNaN(n) && n >= nextMat) nextMat = n + 1;
+  }
+
+  const prepared = employees.map(emp => {
+    if (emp.matricule_valid === false || !emp.matricule || emp.matricule.length < 3) {
+      const m = String(nextMat++);
+      assignedMatricules.push({ matricule: m, nom: emp.nom || '', prenom: emp.prenom || '' });
+      return { ...emp, matricule: m, matricule_valid: true };
+    }
+    return emp as T & { matricule: string };
+  });
+
+  const matSeen = new Map<string, string>();
+  const deduped = prepared.map(emp => {
+    const m = (emp.matricule || '').trim();
+    if (!m) return emp;
+    if (matSeen.has(m)) {
+      const to = String(nextMat++);
+      renumberedMatricules.push({ from: m, to, nom: emp.nom || '', prenom: emp.prenom || '' });
+      return { ...emp, matricule: to };
+    }
+    matSeen.set(m, emp.matricule);
+    return emp;
+  });
+
+  return { list: deduped, assignedMatricules, renumberedMatricules };
+}
+
 export function generateSagePaieExport(
   employees: { matricule: string; nom: string; prenom: string; nouveau_salaire_brut: number; salaire_brut: number }[],
   pointage: { matricule: string; avances: number; absences: string; heures_supplementaires: string; conges_payes: string }[],
@@ -790,8 +872,14 @@ export function generateSagePaieExport(
   let warnings = 0;
   let errors = 0;
 
-  for (const emp of employees) {
-    const result = salaryResults.get(emp.matricule);
+  const keys = buildSalaryKeys(employees);
+  const matPrep = prepareSageMatricules(employees);
+  const { list: preparedEmps } = matPrep;
+
+  for (let empIdx = 0; empIdx < employees.length; empIdx++) {
+    const origEmp = employees[empIdx];
+    const emp = preparedEmps[empIdx]; // matricule vide → assigné automatiquement
+    const result = salaryResults.get(keys[empIdx]) || (origEmp.matricule ? salaryResults.get(origEmp.matricule) : undefined);
     if (!result) {
       controlReport.push({
         matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom,
@@ -801,7 +889,7 @@ export function generateSagePaieExport(
       continue;
     }
 
-    const ptg = pointage.find(p => p.matricule === emp.matricule);
+    const ptg = pointage.find(p => p.matricule === origEmp.matricule);
 
     // --- CONTRÔLE SMIG ---
     // Décret n°2026-67 du 30/04/2026 : salaire brut ne peut être inférieur au SMIG
@@ -1088,6 +1176,8 @@ export function generateSagePaieExport(
     rows,
     controlReport,
     smigViolations,
+    assignedMatricules: matPrep.assignedMatricules,
+    renumberedMatricules: matPrep.renumberedMatricules,
     summary: {
       totalRows: rows.length,
       totalEmployees: employees.length,
@@ -1223,5 +1313,211 @@ export function generateSageVariablesExport(
       variablesExported,
     },
     invalidMatricules,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EXPORT SALARIÉS SAGE BTP — structure d'import "salariés" (format fixe)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Structure officielle du fichier d'import salariés SAGE BTP (format fixe).
+ * Chaque champ est défini par sa position de départ (1-based) et sa taille.
+ * La ligne complète fait exactement 657 caractères.
+ */
+export interface SageSalariesField {
+  code: number;
+  name: string;
+  start: number;
+  size: number;
+}
+
+export const SAGE_SALARIES_SPEC: SageSalariesField[] = [
+  { code: 1, name: 'Matricule', start: 1, size: 10 },
+  { code: 2, name: 'Non importable', start: 11, size: 1 },
+  { code: 3, name: 'Nom', start: 12, size: 80 },
+  { code: 4, name: 'Prénom', start: 92, size: 20 },
+  { code: 5, name: 'Nom de jeune fille', start: 112, size: 80 },
+  { code: 6, name: 'Sexe', start: 192, size: 1 },
+  { code: 7, name: 'Date de naissance', start: 193, size: 8 },
+  { code: 8, name: 'Commune de naissance', start: 201, size: 26 },
+  { code: 9, name: 'Code pays de naissance ISO 2', start: 227, size: 2 },
+  { code: 10, name: 'Situation familiale', start: 229, size: 1 },
+  { code: 11, name: 'Adresse', start: 230, size: 32 },
+  { code: 12, name: "Complément d'adresse", start: 262, size: 32 },
+  { code: 13, name: 'Code postal', start: 294, size: 5 },
+  { code: 14, name: 'Commune', start: 299, size: 26 },
+  { code: 15, name: 'Code pays ISO 2', start: 325, size: 2 },
+  { code: 16, name: 'Numéro de Sécurité Sociale', start: 327, size: 13 },
+  { code: 17, name: 'E-mail professionnel', start: 340, size: 128 },
+  { code: 18, name: 'Portable professionnel', start: 468, size: 15 },
+  { code: 19, name: 'Téléphone professionnel', start: 483, size: 15 },
+  { code: 20, name: 'Fax professionnel', start: 498, size: 15 },
+  { code: 21, name: 'Etablissement du salarié', start: 513, size: 5 },
+  { code: 22, name: 'Non importable', start: 518, size: 1 },
+  { code: 23, name: "Date d'embauche société", start: 519, size: 8 },
+  { code: 24, name: 'Date de départ société', start: 527, size: 8 },
+  { code: 25, name: 'Date entrée établissement', start: 535, size: 8 },
+  { code: 26, name: 'Date de sortie établissement', start: 543, size: 8 },
+  { code: 27, name: "Date d'entrée poste", start: 551, size: 8 },
+  { code: 28, name: 'Libellé du compte 1', start: 559, size: 24 },
+  { code: 29, name: 'Nom banque 1', start: 583, size: 30 },
+  { code: 30, name: 'Code BIC 1', start: 613, size: 11 },
+  { code: 31, name: 'Code IBAN 1', start: 624, size: 34 },
+];
+
+export interface SageSalariesEmployee {
+  matricule: string;
+  matricule_valid?: boolean;
+  cin?: string;
+  nom: string;
+  prenom: string;
+  sexe?: string; // H / F
+  date_naissance?: string;
+  situation_fam?: string; // M / C / D / V
+  adresse?: string;
+  numero_cnss?: string;
+  bq_ou_poste?: string;
+  rib_ou_ccp?: string;
+  date_recrutement?: string;
+  date_sortie?: string;
+}
+
+export interface SageSalariesExportResult {
+  lines: string[];
+  recordLength: number;
+  totalEmployees: number;
+  invalidMatricules?: { matricule: string; nom: string; prenom: string }[];
+  assignedMatricules?: { matricule: string; nom: string; prenom: string }[];
+  renumberedMatricules?: { from: string; to: string; nom: string; prenom: string }[];
+  stackedCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
+  duplicateEmployees?: { matricule: string; nom: string; prenom: string; cin: string }[];
+  clearedCnss?: { cnss: string; matricule: string; nom: string; prenom: string }[];
+}
+
+/**
+ * Convertit une date (ISO YYYY-MM-DD, DD/MM/YYYY ou serial Excel)
+ * au format texte SAGE "AAAAMMJJ". Vide si la date est absente/invalide.
+ */
+export function toSageDate(raw?: string): string {
+  if (!raw) return '';
+  const d = parseDate(raw);
+  if (!d) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
+
+function sageFieldValue(emp: SageSalariesEmployee, code: number): string {
+  switch (code) {
+    case 1: return emp.matricule || '';
+    case 2: return '0';
+    case 3: return (emp.nom || '').toUpperCase();
+    case 4: return (emp.prenom || '').toUpperCase();
+    case 5: return '';
+    case 6: return (emp.sexe || 'M').toUpperCase();
+    case 7: return toSageDate(emp.date_naissance);
+    case 8: return '';
+    case 9: return 'TN';
+    case 10: return (emp.situation_fam || 'C').toUpperCase();
+    case 11: return (emp.adresse || '').toUpperCase().slice(0, 32);
+    case 12: return (emp.adresse || '').toUpperCase().slice(32, 64);
+    case 13: return '';
+    case 14: return '';
+    case 15: return 'TN';
+    case 16: return emp.numero_cnss || '';
+    case 17: return '';
+    case 18: return '';
+    case 19: return '';
+    case 20: return '';
+    case 21: return '0';
+    case 22: return '0';
+    case 23: return toSageDate(emp.date_recrutement);
+    case 24: return toSageDate(emp.date_sortie);
+    case 25: return toSageDate(emp.date_recrutement);
+    case 26: return toSageDate(emp.date_sortie);
+    case 27: return toSageDate(emp.date_recrutement);
+    case 28: return emp.bq_ou_poste || '';
+    case 29: return emp.bq_ou_poste || '';
+    case 30: return '';
+    case 31: return emp.rib_ou_ccp || '';
+    default: return '';
+  }
+}
+
+/** Construit la ligne fixe de 657 caractères pour un salarié. */
+export function buildSageSalariesRecord(emp: SageSalariesEmployee): string {
+  return (
+    SAGE_SALARIES_SPEC.map(f => sageFieldValue(emp, f.code).padEnd(f.size).slice(0, f.size)).join('') + '\n'
+  );
+}
+
+/**
+ * Génère le fichier d'import salariés SAGE BTP (format fixe, 1 ligne par salarié).
+ * Colonnes remplies : matricule, nom, prénom, sexe, naissance, situation,
+ * adresse, CNSS, banque/RIB, dates embauche/sortie. Les champs non disponibles
+ * sont laissés vides (espaces) — SAGE ignore les champs vides à l'import.
+ */
+export function generateSageSalariesExport(
+  employees: SageSalariesEmployee[]
+): SageSalariesExportResult {
+  // Attribution + dé-duplication des matricules (helper partagé avec l'export paie)
+  const { list: matDeduped, assignedMatricules, renumberedMatricules } = prepareSageMatricules(employees);
+
+  // 1. Nettoyage CNSS : les valeurs non numériques (FIAP, SIAP, EN COURS, manquant…)
+  //    sont des placeholders — jamais exportées, jamais comptées comme doublons.
+  const stackedCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
+  const cleaned = matDeduped.map(emp => {
+    const c = (emp.numero_cnss || '').trim();
+    if (!c) return emp;
+    const numericOnly = c.replace(/[^0-9]/g, '');
+    if (numericOnly.length < 5) {
+      stackedCnss.push({ cnss: c, matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom });
+      return { ...emp, numero_cnss: '' };
+    }
+    return emp;
+  });
+
+  // 2. Lignes salariés réellement dupliquées (même CIN) : seule la 1re est exportée.
+  const duplicateEmployees: { matricule: string; nom: string; prenom: string; cin: string }[] = [];
+  const cinSeen = new Map<string, string>();
+  const dedupRows = cleaned.filter(emp => {
+    const key = ((emp.cin || '') + '|' + (emp.nom || '').toUpperCase() + '|' + (emp.prenom || '').toUpperCase()).trim();
+    if (!emp.cin) return true;
+    if (cinSeen.has(key)) {
+      duplicateEmployees.push({ matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom, cin: emp.cin });
+      return false;
+    }
+    cinSeen.set(key, emp.matricule);
+    return true;
+  });
+
+  // 3. NSS/CNSS numériques en double : on vide le 2e (pour saisie manuelle SAGE).
+  const cnssSeen = new Map<string, string>();
+  const clearedCnss: { cnss: string; matricule: string; nom: string; prenom: string }[] = [];
+  const deduped = dedupRows.map(emp => {
+    const c = (emp.numero_cnss || '').trim();
+    if (!c) return emp;
+    if (cnssSeen.has(c)) {
+      clearedCnss.push({ cnss: c, matricule: emp.matricule, nom: emp.nom, prenom: emp.prenom });
+      return { ...emp, numero_cnss: '' };
+    }
+    cnssSeen.set(c, emp.matricule);
+    return emp;
+  });
+
+  const lines = deduped.map(emp => buildSageSalariesRecord(emp));
+
+  return {
+    lines,
+    recordLength: SAGE_SALARIES_SPEC.reduce((s, f) => s + f.size, 0),
+    totalEmployees: employees.length,
+    invalidMatricules: [],
+    assignedMatricules,
+    renumberedMatricules,
+    stackedCnss,
+    duplicateEmployees,
+    clearedCnss,
   };
 }

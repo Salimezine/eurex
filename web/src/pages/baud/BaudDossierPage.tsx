@@ -3,8 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Upload, Download, CheckCircle, FileSpreadsheet, Calculator, Users, ShieldCheck, AlertTriangle, Wand2, Save, Edit2, X, Plus, Trash2, Settings } from 'lucide-react';
 import { api } from '../../lib/api';
 import { parseFichePersonnel, Employee, PointageData } from '../../lib/baudParser';
-import { calculateSalary, SalaryResult, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult } from '../../lib/baudCalculator';
-import { verifySalaryCalculations, applyCorrections, applyAutoFixes, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
+import { calculateSalary, SalaryResult, buildSalaryKeys, generateSagePaieExport, SageExportResult, generateSageVariablesExport, SageVariablesExportResult, generateSageSalariesExport, SageSalariesExportResult } from '../../lib/baudCalculator';
+import { verifySalaryCalculations, applyCorrections, applyAutoFixes, rekeySalaryResults, VerificationResult, CorrectionAction, AutoFixAction } from '../../lib/baudAI';
 import * as XLSX from 'xlsx';
 
 type Tab = 'navette' | 'employees' | 'controle' | 'calcul' | 'export';
@@ -107,8 +107,10 @@ export default function BaudDossierPage() {
   const calculateAll = () => {
     const mois = dossier?.mois || 1;
     const results = new Map<string, SalaryResult>();
-    for (const emp of employees) {
-      const ptg = pointage.find(p => p.matricule === emp.matricule || p.nom === emp.nom);
+    const keys = buildSalaryKeys(employees);
+    for (let i = 0; i < employees.length; i++) {
+      const emp = employees[i];
+      const ptg = pointage.find(p => p.matricule === emp.matricule || (p.nom && emp.nom && p.nom === emp.nom));
       const absences = parseInt(ptg?.absences || '') || 0;
       const avances = ptg?.avances || 0;
 
@@ -132,7 +134,7 @@ export default function BaudDossierPage() {
         annee: dossier?.annee || 2026,
         heures_nuit: heuresNuit[nuitKey] || emp.heures_nuit || 0,
       });
-      results.set(emp.matricule, result);
+      results.set(keys[i], result);
     }
     setSalaryResults(results);
     setTab('calcul');
@@ -254,12 +256,93 @@ export default function BaudDossierPage() {
     setGenerating(false);
   };
 
+  const [sageSalariesResult, setSageSalariesResult] = useState<SageSalariesExportResult | null>(null);
+
+  const generateSageSalariesExportHandler = async () => {
+    if (!dossier || employees.length === 0) { setMsg('Importez d\'abord le fichier personnel'); return; }
+    setGenerating(true); setMsg('');
+    try {
+      await saveBeforeExport();
+      const res = generateSageSalariesExport(employees);
+      setSageSalariesResult(res);
+      const assigned = (res.assignedMatricules || []).length;
+      const renumbered = (res.renumberedMatricules || []).length;
+      const dups = (res.duplicateEmployees || []).length;
+      const stacked = (res.stackedCnss || []).length;
+      const cleared = (res.clearedCnss || []).length;
+      const exported = res.lines.length;
+      const parts: string[] = [];
+      if (dups > 0) parts.push(`${dups} ligne(s) dupliquée(s) écartée(s)`);
+      if (stacked > 0) parts.push(`${stacked} CNSS placeholder ignoré(s)`);
+      if (cleared > 0) parts.push(`${cleared} doublon CNSS vidé(s)`);
+      if (renumbered > 0) parts.push(`${renumbered} matricule(s) en double renuméroté(s)`);
+      if (assigned > 0) parts.push(`${assigned} matricule(s) attribué(s)`);
+      if (parts.length > 0) setMsg(`${exported} salarié(s) exporté(s) (${res.recordLength} car./ligne) — ${parts.join(', ')}.`);
+      else setMsg(`${exported} salarié(s) exporté(s) en format fixe SAGE BTP (${res.recordLength} car./ligne)`);
+    } catch (e: any) { setMsg('Erreur: ' + e.message); }
+    setGenerating(false);
+  };
+
+  const downloadSageSalariesTxt = () => {
+    if (!sageSalariesResult || sageSalariesResult.lines.length === 0) return;
+    const cleared = (sageSalariesResult.clearedCnss || []).length;
+    const dups = (sageSalariesResult.duplicateEmployees || []).length;
+    if (cleared > 0) {
+      setMsg(`Attention: ${cleared} NSS en double vidé(s) — saisir le bon numéro dans SAGE après import.`);
+    }
+    if (dups > 0) {
+      setMsg(`Attention: ${dups} ligne(s) dupliquée(s) non exportée(s) — vérifier le fichier personnel.`);
+    }
+    const content = sageSalariesResult.lines.join('');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SageBTP_Salaries_${String(dossier?.mois || 1).padStart(2, '0')}-${dossier?.annee || 2026}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const download = async (eid: string, filename: string) => { try { const blob = await api.baud.downloadExport(eid); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); } catch (e: any) { setMsg(e.message); } };
 
   const handleVerifyAI = async () => {
     if (!dossier || employees.length === 0) return;
     setVerifying(true); setVerifyResult(null);
-    try { const result = verifySalaryCalculations(employees, pointage, salaryResults); setVerifyResult(result); } catch (e: any) { setVerifyResult({ verdict: 'ERREUR', error: e.message, checks: [], missing: [], anomalies: [], corrections: [], autoFixes: [], summary: { totalEmployees: 0, verified: 0, warnings: 0, errors: 0, corrected: 0, autoFixed: 0 } }); }
+    try {
+      let currentEmps = employees;
+      let currentPtg = pointage;
+      let currentResults = salaryResults;
+      let result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
+
+      // Auto-correction : boucle jusqu'à stabilité (max 5 passes) — applique
+      // corrections de salaire puis auto-fixes, sans clic, puis re-vérifie.
+      let totalApplied = 0;
+      for (let pass = 0; pass < 5; pass++) {
+        const nbCorrections = (result.corrections || []).length;
+        const autoFixesList = (result.autoFixes || []).filter((f: AutoFixAction) => !f.applied);
+        if (nbCorrections === 0 && autoFixesList.length === 0) break;
+        if (nbCorrections > 0) {
+          currentResults = applyCorrections(currentEmps, currentPtg, currentResults, result.corrections);
+        }
+        const prevEmps = currentEmps;
+        if (autoFixesList.length > 0) {
+          const fixed = applyAutoFixes(currentEmps, currentPtg, autoFixesList);
+          currentEmps = fixed.employees;
+          currentPtg = fixed.pointage;
+        }
+        totalApplied += nbCorrections + autoFixesList.length;
+        currentResults = rekeySalaryResults(prevEmps, currentEmps, currentResults);
+        result = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
+      }
+      setEmployees(currentEmps);
+      setPointage(currentPtg);
+      setSalaryResults(currentResults);
+      if (totalApplied > 0) {
+        persistExtraction(currentEmps, currentPtg, heuresNuit);
+        setMsg(`Vérification + ${totalApplied} correction(s) automatique(s) appliquée(s) — re-vérifié.`);
+      }
+      setVerifyResult(result);
+    } catch (e: any) { setVerifyResult({ verdict: 'ERREUR', error: e.message, checks: [], missing: [], anomalies: [], corrections: [], autoFixes: [], summary: { totalEmployees: 0, verified: 0, warnings: 0, errors: 0, corrected: 0, autoFixed: 0 } }); }
     setVerifying(false);
   };
 
@@ -268,23 +351,25 @@ export default function BaudDossierPage() {
     try {
       let currentEmps = employees;
       let currentPtg = pointage;
+      let currentResults = salaryResults;
       // Apply salary corrections
       if (verifyResult.corrections.length > 0) {
-        const correctedResults = applyCorrections(currentEmps, currentPtg, salaryResults, verifyResult.corrections);
-        setSalaryResults(correctedResults);
+        currentResults = applyCorrections(currentEmps, currentPtg, currentResults, verifyResult.corrections);
       }
       // Apply auto-fixes (pointage, matricules, SMIG)
       if (verifyResult.autoFixes && verifyResult.autoFixes.length > 0) {
         const fixed = applyAutoFixes(currentEmps, currentPtg, verifyResult.autoFixes);
         currentEmps = fixed.employees;
         currentPtg = fixed.pointage;
-        setEmployees(currentEmps);
-        setPointage(currentPtg);
       }
+      currentResults = rekeySalaryResults(employees, currentEmps, currentResults);
+      setEmployees(currentEmps);
+      setPointage(currentPtg);
+      setSalaryResults(currentResults);
       const totalFixed = (verifyResult.corrections?.length || 0) + (verifyResult.autoFixes?.filter((f: AutoFixAction) => f.type !== 'fix_duplicate')?.length || 0);
       setMsg(`${totalFixed} corrections appliquées`);
-      // Re-verify after corrections (avec les données fraîches, pas le closure stale)
-      const newResult = verifySalaryCalculations(currentEmps, currentPtg, salaryResults);
+      // Re-verify after corrections
+      const newResult = verifySalaryCalculations(currentEmps, currentPtg, currentResults);
       setVerifyResult(newResult);
       persistExtraction(currentEmps, currentPtg, heuresNuit);
     } catch (e: any) { setMsg('Erreur: ' + e.message); }
@@ -292,11 +377,13 @@ export default function BaudDossierPage() {
 
   const handleApplySingleFix = (fix: AutoFixAction) => {
     const { employees: newEmps, pointage: newPtg } = applyAutoFixes(employees, pointage, [{ ...fix, applied: false }]);
+    const rekeyedResults = rekeySalaryResults(employees, newEmps, salaryResults);
     setEmployees(newEmps);
     setPointage(newPtg);
+    setSalaryResults(rekeyedResults);
     setMsg(`Fix appliqué: ${fix.description}`);
     // Re-verify
-    const newResult = verifySalaryCalculations(newEmps, newPtg, salaryResults);
+    const newResult = verifySalaryCalculations(newEmps, newPtg, rekeyedResults);
     setVerifyResult(newResult);
     persistExtraction(newEmps, newPtg, heuresNuit);
   };
@@ -623,8 +710,8 @@ export default function BaudDossierPage() {
                     <th className="p-2 text-right">Brut</th><th className="p-2 text-right">CNSS</th><th className="p-2 text-right">IRPP</th><th className="p-2 text-right">CSS</th><th className="p-2 text-right">Net</th><th className="p-2 text-right">Net a payer</th>
                   </tr></thead>
                   <tbody className="divide-y">
-                    {employees.map(emp => { const r = salaryResults.get(emp.matricule); if (!r) return null; return (
-                      <tr key={emp.matricule} className="hover:bg-gray-50">
+                    {buildSalaryKeys(employees).map((key, idx) => { const r = salaryResults.get(key); const emp = employees[idx]; if (!r) return null; return (
+                      <tr key={key} className="hover:bg-gray-50">
                         <td className="p-2 font-mono text-xs">{emp.matricule}</td><td className="p-2 text-xs">{emp.nom} {emp.prenom}</td>
                         <td className="p-2 text-right font-mono text-xs">{r.salaire_de_base.toFixed(3)}</td>
                         <td className="p-2 text-right font-mono text-xs text-purple-600">{r.prime_anciennete > 0 ? `${r.prime_anciennete.toFixed(3)} (${r.taux_anciennete}%)` : '-'}</td>
@@ -684,7 +771,7 @@ export default function BaudDossierPage() {
                   <div className="flex items-center gap-2 mb-2">
                     <AlertTriangle size={14} className="text-amber-600" />
                     <span className="font-semibold text-amber-700">
-                      {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length} salarié(s) sans matricule Sage — exportés avec matricule vide
+                      {employees.filter(e => !e.matricule || e.matricule.length < 3 || e.matricule_valid === false).length} salarié(s) sans matricule Sage — matricule(s) attribué(s) automatiquement dans les 2 exports (fiches + paie)
                     </span>
                   </div>
                   <ul className="max-h-32 overflow-y-auto space-y-1 text-amber-600">
@@ -708,6 +795,112 @@ export default function BaudDossierPage() {
               )}
             </div>
           )}
+
+          {/* Export Salariés SAGE BTP — format fixe import */}
+          <div className="bg-white border rounded-lg p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <FileSpreadsheet size={20} className="text-green-600" />
+              <h3 className="font-medium text-sm">Export Salariés SAGE BTP (format fixe)</h3>
+            </div>
+            <p className="text-xs text-gray-500">Génère le fichier d'import des fiches salariés au format SAGE BTP (657 car./ligne, 31 champs).</p>
+            <div className="flex gap-2">
+              <button onClick={generateSageSalariesExportHandler} disabled={generating || employees.length === 0} className="px-4 py-2 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
+                {generating ? 'Generation...' : 'Generer export salaries'}
+              </button>
+              {sageSalariesResult && sageSalariesResult.lines.length > 0 && (
+                <button onClick={downloadSageSalariesTxt} className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 flex items-center gap-1">
+                  Telecharger .txt
+                </button>
+              )}
+            </div>
+            {sageSalariesResult && (
+              <div className="bg-gray-50 rounded p-3 text-xs space-y-2">
+                <div className="font-semibold text-green-700">
+                  {sageSalariesResult.totalEmployees} salarié(s) | {sageSalariesResult.recordLength} caractères/ligne
+                </div>
+                {sageSalariesResult.invalidMatricules && sageSalariesResult.invalidMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.invalidMatricules.length} matricule(s) invalide(s) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.invalidMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} (matricule: « {m.matricule || '(vide)'} »)</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {sageSalariesResult.renumberedMatricules && sageSalariesResult.renumberedMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.renumberedMatricules.length} matricule(s) en double dans l'Excel — renuméroté(s) automatiquement :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.renumberedMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} : « {m.from} » → « {m.to} »</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Reporter le nouveau matricule dans SAGE (le fichier personnel garde l'ancien).</div>
+                  </div>
+                )}
+                {sageSalariesResult.duplicateEmployees && sageSalariesResult.duplicateEmployees.length > 0 && (
+                  <div className="bg-red-50 border border-red-300 rounded p-2 text-red-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.duplicateEmployees.length} ligne(s) salarié dupliquée(s) (même CIN) — non exportée(s) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.duplicateEmployees.map((d, i) => (
+                        <li key={i}>• {d.nom} {d.prenom} (CIN {d.cin}, matricule {d.matricule}) — doublon de la ligne clé {d.matricule}</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Vérifier dans le fichier personnel (même personne saisie 2× ?).</div>
+                  </div>
+                )}
+                {sageSalariesResult.stackedCnss && sageSalariesResult.stackedCnss.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.stackedCnss.length} CNSS placeholder(s) ignoré(s) (non numériques — FIAP, SIAP, EN COURS…) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.stackedCnss.map((c, i) => (
+                        <li key={i}>• « {c.cnss} » : {c.nom} {c.prenom} (matricule {c.matricule})</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Saisir le vrai NSS dans SAGE après import.</div>
+                  </div>
+                )}
+                {sageSalariesResult.clearedCnss && sageSalariesResult.clearedCnss.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.clearedCnss.length} NSS/CNSS en double — vidé(s) automatiquement (le 1er est conservé) :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.clearedCnss.map((c, i) => (
+                        <li key={i}>• CNSS « {c.cnss} » retiré : {c.nom} {c.prenom} (matricule {c.matricule})</li>
+                      ))}
+                    </ul>
+                    <div className="mt-1">Saisir le NSS correct de ces salariés dans SAGE après import.</div>
+                  </div>
+                )}
+                {sageSalariesResult.assignedMatricules && sageSalariesResult.assignedMatricules.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-2 text-amber-700">
+                    <div className="font-semibold mb-1">
+                      <AlertTriangle size={12} className="inline" /> {sageSalariesResult.assignedMatricules.length} matricule(s) vide(s) attribué(s) automatiquement :
+                    </div>
+                    <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                      {sageSalariesResult.assignedMatricules.map((m, i) => (
+                        <li key={i}>• {m.nom} {m.prenom} → matricule « {m.matricule} »</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-gray-400">
+                  Champs remplis : Matricule, Nom, Prénom, Sexe, Naissance, Situation familiale, Adresse, CNSS, Banque/RIB, Dates embauche/sortie.<br/>
+                  Les champs vides seront remplis dans Sage lors de l'import.
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Mode: Legacy — calcul interne */}
           {exportMode === 'legacy' && (

@@ -17,6 +17,8 @@ export interface AchatInvoice {
   is_handwritten: boolean;
   raw_text: string;
   ocr_confidence: number;
+  page?: number;
+  arith_note?: string;
 }
 
 function genId(): string {
