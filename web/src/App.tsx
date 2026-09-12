@@ -9,6 +9,7 @@ import ScanDossierPage from './pages/scanflash/ScanDossierPage';
 import EtatsFinanciers from './pages/ef/EtatsFinanciers';
 import AchatsSocietes from './pages/achats/AchatsSocietes';
 import AchatsDossierPage from './pages/achats/AchatsDossierPage';
+import QuotaIndicator from './components/QuotaIndicator';
 
 export default function App() {
   const loc = useLocation();
@@ -38,6 +39,7 @@ export default function App() {
               SCANFLASH
             </Link>
           </div>
+          <QuotaIndicator />
         </div>
       </nav>
       <main className="max-w-7xl mx-auto px-4 py-6">
