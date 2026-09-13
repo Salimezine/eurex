@@ -44,12 +44,15 @@ describe('ACHATS rules', () => {
     expect(totalD).toBeCloseTo(totalC, 2);
   });
 
-  it('timbre isolé sur 437003 quand il était fusionné dans la TVA', () => {
-    const inv: any = { numero: 'FA2604359', date: '2026-09-05', fournisseur: 'NORD DISTRIBUTION', ht0: 0, ht19: 240.53, tva19: 45.7, tva7: 0, fodec: 0, timbre: 0, ttc: 240.53 + 45.7 + 1 };
-    const es = buildBalancedEcritures(inv, '607000', '401010');
+  it('timbre intégré au compte d\'achat (602100), pas sur 437003', () => {
+    const inv: any = { numero: 'FA2604359', date: '2026-09-05', fournisseur: 'NORD DISTRIBUTION', ht0: 0, ht19: 240.53, tva19: 45.7, tva7: 0, fodec: 0, timbre: 1, ttc: 240.53 + 45.7 + 1 };
+    const es = buildBalancedEcritures(inv, '602100', '401202');
+    // Le timbre doit être inclus dans le compte d'achat (602100), pas sur 437003
     const timbreLine = es.find(e => e.compte === '437003');
-    expect(timbreLine).toBeDefined();
-    expect(timbreLine!.montant).toBeCloseTo(1, 3);
+    expect(timbreLine).toBeUndefined();
+    const achatLine = es.find(e => e.compte === '602100');
+    expect(achatLine).toBeDefined();
+    expect(achatLine!.montant).toBeCloseTo(241.53, 2); // 240.53 HT + 1 timbre
     const tvaLine = es.find(e => e.compte === '436660');
     expect(tvaLine!.montant).toBeCloseTo(45.7, 2);
     const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);

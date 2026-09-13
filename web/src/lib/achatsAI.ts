@@ -76,21 +76,30 @@ IMPORTANT: la page peut contenir UNE seule facture OU PLUSIEURS factures collée
 - Aucune facture utilisable → réponds null.
 
 Schéma de chaque facture:
-{"numero":"numero de facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"ttc":0}
+{"numero":"numero de facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","description":"description des biens/services","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"ttc":0}
 
-Règles EXACTES (pour CHAQUE facture séparément):
-- ht19 = somme des montants_ht des lignes à 19%; ht0 = somme des lignes à 0%; ht7 = somme des lignes à 7%
-- tva19 = TVA 19% AFFICHÉE sur la facture (0 si la facture n'affiche AUCUNE ligne TVA; ne la calcule pas toi-même depuis l'HT)
-- tva7 = TVA 7% affichée (0 sinon)
-- fodec = FODEC si mentionné, sinon 0
-- timbre = 1 DT si mentionné, sinon 0
-- ttc = Total "NET A PAYER" / "TOTAL TTC" affiché (pivot de comptabilisation); si absent: ht0+ht19+ht7+tva19+tva7+fodec+timbre
-- numero: UNIQUEMENT le numéro (ex: "FV10-26+107258", "FA-31378") — jamais de texte autour
-- date: format YYYY-MM-DD. Les factures sont de la période août-septembre 2026. Si tu lis "04/09" sur la facture (format JJ/MM français), écris 2026-09-04 (PAS 2026-04-09). Si la case date est VIDE, mets ""
-- fournisseur: le nom EXACT depuis la liste "Fournisseurs connus" si reconnaissable. Ne pas confondre l'adresse de livraison avec le fournisseur (ex: "Jardins de Carthage" peut être un dépôt, pas le fournisseur)
+RÈGLES CRITIQUES (TOUJOURS les respecter):
 
-Fournisseur attendu: ${planText}
-Fournisseurs connus: ${fournText}`;
+1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat, JAMAIS sur un compte 437xxx séparé.
+   Le compte d'achat = HT + timbre. Si TVA présente: 602100 = HT + timbre, TVA sur 436660, Fournisseur = TTC.
+
+2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres ("Arrêtée à..."). Si le montant numérique est ×1000 ou ×100 trop élevé, corrige-le. Un ticket de supérette à 4+ chiffres (ex: 36950) = presque toujours 36,950 DT.
+
+3. COHÉRENCE: Si la somme des lignes ≠ Total imprimé, le montant net à payer (chiffré + toutes lettres) fait foi.
+
+4. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur de la facture. Le fournisseur est en en-tête du document.
+
+5. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
+
+6. DATE: Format YYYY-MM-DD. Période août-septembre 2026. "04/09" = 2026-09-04 (PAS 2026-04-09).
+
+7. NUMÉRO: UNIQUEMENT le numéro (ex: "FV10-26+107258"). S'il n'existe pas: NC-<FOURNISSEUR>-<DATE>-<MONTANT>.
+
+Mapping comptable connu:
+${fournText}
+
+Plan comptable:
+${planText}`;
 }
 
 function getPlanText(plan: PlanComptable): string {
@@ -415,7 +424,15 @@ export async function parseInvoiceWithAI(
 ): Promise<Omit<AchatInvoice, 'id' | 'is_handwritten' | 'raw_text' | 'ocr_confidence'>> {
   const planText = getPlanText(plan);
   const fournText = getFournisseursText(plan);
-  const systemPrompt = `Tu es un expert-comptable tunisien. Tu dois extraire les données d'une facture d'achat à partir d'une image de facture scannée.
+  const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
+
+RÈGLES CRITIQUES À RESPECTER:
+1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat (602100), JAMAIS sur un compte 437xxx séparé. Compte d'achat = HT + timbre.
+2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
+3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
+4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
+5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
+
 Réponds TOUJOURS en JSON valide sans aucun texte avant ou après.`;
 
   const prompt = `## IMAGE DE LA FACTURE D'ACHAT
@@ -521,7 +538,15 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
       const planText = getPlanText(plan);
       const fournText = getFournisseursText(plan);
       const prompt = buildExtractionPrompt(plan, planText, fournText);
-      const systemPrompt = `Tu es un expert-comptable tunisien. Tu dois extraire les données d'une facture d'achat à partir d'une image de facture scannée.
+      const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
+
+RÈGLES CRITIQUES À RESPECTER:
+1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat (602100), JAMAIS sur un compte 437xxx séparé. Compte d'achat = HT + timbre.
+2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
+3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
+4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
+5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
+
 Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne contient pas de facture, réponds exactement: null`;
 
       for (let i = 0; i < pages.length; i++) {
@@ -645,7 +670,7 @@ ${getAchatComptesText(plan)}
   "compte_fournisseur": "compte 401xxx EXACT depuis FOURNISSEURS CONNUS, sinon 401999"
 }
 Réponds UNIQUEMENT ce JSON.`,
-      'Tu es un expert-comptable tunisien. Réponds uniquement avec le JSON demandé.'
+      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre inclus dans 602100, pas de 437xxx pour timbre, TVA jamais inventée.'
     );
     const data = extractJSON(response);
     if (data) {
@@ -764,7 +789,8 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
         timbre = 1;
       }
     }
-    achat = round3(ttc - tva - fodec - timbre);
+    // Règle 2: Le timbre est INTÉGRÉ au montant d'achat (602100), jamais sur 437xxx
+    achat = round3(ht + timbre);
   } else if (ttc > 0 && ht <= 0 && tvaModel === 0) {
     achat = round3(ttc - fodec - timbre);
   }
@@ -780,7 +806,7 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   if (c19 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436660', libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: c19 });
   if (c7 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436663', libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: c7 });
   if (fodec > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436680', libelle: 'FODEC', sens: 'D', montant: fodec });
-  if (timbre > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '437003', libelle: 'TIMBRE FISCAL', sens: 'D', montant: timbre });
+  // Règle 2: Le timbre est déjà inclus dans le compte d'achat (602100), pas de ligne 437xxx
 
   const totalD = round3(entries.reduce((s, e) => s + e.montant, 0));
   if (totalD > 0.005) {
@@ -821,7 +847,7 @@ Identifie uniquement les PROBLÈMES QUANTITATIFS suivants (sinon réponds {"warn
     {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Montant suspect", "detail": "explication"}
   ]
 }`,
-      'Tu es un expert-comptable tunisien. Réponds uniquement avec le JSON demandé.'
+      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre inclus dans 602100, pas de 437xxx pour timbre, TVA jamais inventée.'
     );
     const data = extractJSON(response);
     const warns = data && Array.isArray(data.warnings) ? data.warnings : [];
@@ -972,6 +998,11 @@ export function verifyEcrituresLocally(
     if (e.montant === 0) {
       checks.push({ name: `Montant nul ${e.compte}`, status: 'warning', detail: `Écriture ${e.numero_doc || '?'} d'un montant de 0.000` });
       warnings++;
+    }
+    // Règle 2: Le timbre doit être inclus dans le compte d'achat (602100), jamais sur 437xxx
+    if (e.compte.startsWith('437') && e.compte !== '436680') {
+      checks.push({ name: `Timbre sur ${e.compte}`, status: 'error', detail: `Le timbre fiscal doit être intégré au compte d'achat (602100), pas sur ${e.compte}. Corriger: achat = HT + timbre` });
+      errors++;
     }
   }
 
