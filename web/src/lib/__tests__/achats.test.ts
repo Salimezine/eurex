@@ -93,4 +93,114 @@ describe('ACHATS rules', () => {
     const inv = normalizeInvoiceData(raw);
     expect(inv.arith_note).toBeUndefined();
   });
+
+  // === TESTS DE RÉGRESSION — Audit PROYASH METROPOLI ===
+  // Vérifie que totalD = totalC = ttc (TOTAL écrit fait foi)
+
+  it('BEN YAGHLANE FV10-26+107300: total = 58.500', () => {
+    const inv: any = { numero: 'FV10-26+107300', date: '2026-09-05', fournisseur: 'BEN YAGHLANE', ht0: 0, ht19: 58.5, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 58.5 };
+    const es = buildBalancedEcritures(inv, '602100', '401065');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(58.5, 3);
+    expect(totalC).toBeCloseTo(58.5, 3);
+  });
+
+  it('BEN YAGHLANE FV10-26+107210: total = 124.740', () => {
+    const inv: any = { numero: 'FV10-26+107210', date: '2026-09-04', fournisseur: 'BEN YAGHLANE', ht0: 0, ht19: 124.74, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 124.74 };
+    const es = buildBalancedEcritures(inv, '602100', '401065');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(124.74, 3);
+    expect(totalC).toBeCloseTo(124.74, 3);
+  });
+
+  it('BEN YAGHLANE FV10-26+107270: total = 183.803', () => {
+    const inv: any = { numero: 'FV10-26+107270', date: '2026-09-05', fournisseur: 'BEN YAGHLANE', ht0: 0, ht19: 183.803, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 183.803 };
+    const es = buildBalancedEcritures(inv, '602100', '401065');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(183.803, 3);
+    expect(totalC).toBeCloseTo(183.803, 3);
+  });
+
+  it('BEN YAGHLANE FV10-26+107070: total = 134.602', () => {
+    const inv: any = { numero: 'FV10-26+107070', date: '2026-08-31', fournisseur: 'BEN YAGHLANE', ht0: 0, ht19: 134.602, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 134.602 };
+    const es = buildBalancedEcritures(inv, '602100', '401065');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(134.602, 3);
+    expect(totalC).toBeCloseTo(134.602, 3);
+  });
+
+  it('EJEM FA-31378: total = 620.574 (achat HT 520.650 + TVA 98.924 + timbre inclus)', () => {
+    const inv: any = { numero: 'FA-31378', date: '2026-09-01', fournisseur: 'EJEM', ht0: 0, ht19: 520.65, tva19: 98.924, tva7: 0, fodec: 0, timbre: 1, ttc: 620.574 };
+    const es = buildBalancedEcritures(inv, '606600', '401063');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(620.574, 3);
+    expect(totalC).toBeCloseTo(620.574, 3);
+    const achatLine = es.find(e => e.compte === '606600');
+    expect(achatLine!.montant).toBeCloseTo(521.65, 2); // 520.65 HT + 1 timbre
+  });
+
+  it('NC-METAYSHIL: total = 46.500', () => {
+    const inv: any = { numero: 'NC-METAYSHIL-24-08-26', date: '2026-08-24', fournisseur: 'METAYSHIL', ht0: 0, ht19: 46.5, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 46.5 };
+    const es = buildBalancedEcritures(inv, '602100', '401999');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(46.5, 3);
+    expect(totalC).toBeCloseTo(46.5, 3);
+  });
+
+  it('NC-Metropolik: total = 60.000', () => {
+    const inv: any = { numero: 'NC-Metropolik-2024-09-01', date: '2026-09-01', fournisseur: 'METROPOLIK', ht0: 0, ht19: 60, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 60 };
+    const es = buildBalancedEcritures(inv, '602100', '401999');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(60, 3);
+    expect(totalC).toBeCloseTo(60, 3);
+  });
+
+  it('SAVEURS DE CARTHAGE 2026-09-03: total = 730.879', () => {
+    const inv: any = { numero: 'NC-SAVEURS-2026-09-03', date: '2026-09-03', fournisseur: 'SAVEUR DE CARTHAGE', ht0: 0, ht19: 730.879, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 730.879 };
+    const es = buildBalancedEcritures(inv, '602100', '401097');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(730.879, 3);
+    expect(totalC).toBeCloseTo(730.879, 3);
+  });
+
+  it('SAVEURS DE CARTHAGE 2026-09-04: total = 261.100', () => {
+    const inv: any = { numero: 'NC-SAVEURS-2026-09-04', date: '2026-09-04', fournisseur: 'SAVEUR DE CARTHAGE', ht0: 0, ht19: 261.1, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 261.1 };
+    const es = buildBalancedEcritures(inv, '602100', '401097');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(261.1, 3);
+    expect(totalC).toBeCloseTo(261.1, 3);
+  });
+
+  it('MONOPRIX NC-2026-08-31-21.100: total = 22.100 (pas 2101)', () => {
+    // Bug: ht=2101 (sous-total OCR) vs ttc=22.100 (TOTAL écrit)
+    const inv: any = { numero: 'NC-MONOPRIX-2026-08-31-21.100', date: '2026-08-31', fournisseur: 'MONOPRIX', ht0: 0, ht19: 2101, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 22.1 };
+    const es = buildBalancedEcritures(inv, '602100', '401066');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    // Le TOTAL écrit (22.100) fait foi, PAS le sous-total (2101)
+    expect(totalD).toBeCloseTo(22.1, 3);
+    expect(totalC).toBeCloseTo(22.1, 3);
+    const achatLine = es.find(e => e.compte === '602100');
+    expect(achatLine!.montant).toBeCloseTo(22.1, 3);
+  });
+
+  it('TVA disproportionnée détectée: achat + TVA ≤ ttc', () => {
+    // Si tva >> ht (ex: achat=57.5 / TVA=563.074), c'est un bug d'échelle
+    const inv: any = { numero: 'TEST-TVA', date: '2026-09-01', fournisseur: 'TEST', ht0: 0, ht19: 57.5, tva19: 563.074, tva7: 0, fodec: 0, timbre: 0, ttc: 620.574 };
+    const es = buildBalancedEcritures(inv, '602100', '401999');
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    // ttc fait foi: totalD = totalC = 620.574
+    expect(totalD).toBeCloseTo(620.574, 3);
+    expect(totalC).toBeCloseTo(620.574, 3);
+  });
 });

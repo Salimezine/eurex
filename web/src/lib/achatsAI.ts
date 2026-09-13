@@ -770,6 +770,8 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
 
   // Règle 4: la TVA déductible n'est créée que si le document l'affiche (modèle > 0).
   // Sinon tout le TTC reste en achat — on ne scinde jamais un montant de TVA imaginaire.
+  // CRITIQUE: ttc est TOUJOURS la valeur de référence (TOTAL écrit fait foi).
+  // Le sous-total (ht) n'est qu'un calcul de vérification, jamais une valeur à booker.
   let tva = 0;
   let achat = ht;
   if (ttc > 0 && ht > 0) {
@@ -789,10 +791,12 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
         timbre = 1;
       }
     }
-    // Règle 2: Le timbre est INTÉGRÉ au montant d'achat (602100), jamais sur 437xxx
-    achat = round3(ht + timbre);
+    // CORRECTION: ttc = référence officielle (TOTAL écrit fait foi)
+    // achat = ttc - tva - fodec (le timbre reste inclus dans achat)
+    // Ceci garantit: totalD = achat + tva + fodec = ttc ✓
+    achat = round3(ttc - tva - fodec);
   } else if (ttc > 0 && ht <= 0 && tvaModel === 0) {
-    achat = round3(ttc - fodec - timbre);
+    achat = round3(ttc - fodec);
   }
   if (achat < 0) {
     achat = 0;
