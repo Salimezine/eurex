@@ -56,6 +56,12 @@ export default function App() {
           <Route path="/achats/dossier/:id" element={<AchatsDossierPage />} />
         </Routes>
       </main>
+      <footer className="border-t border-gray-200 mt-10">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between text-xs text-gray-400">
+          <span>EUREX — Générateur d'Écritures Comptables IA</span>
+          <span>Created by Med Salim Ezzine</span>
+        </div>
+      </footer>
     </div>
   );
 }
