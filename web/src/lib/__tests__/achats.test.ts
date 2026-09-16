@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections } from '../achatsAI';
 
 describe('ACHATS rules', () => {
   it('fixDate rejette une année trop éloignée du lot (2018 → 2026)', () => {
@@ -202,5 +202,120 @@ describe('ACHATS rules', () => {
     // ttc fait foi: totalD = totalC = 620.574
     expect(totalD).toBeCloseTo(620.574, 3);
     expect(totalC).toBeCloseTo(620.574, 3);
+  });
+
+  // === TESTS VÉRIFICATION TVA AUTOMATIQUE ===
+
+  it('TVA 19% cohérente → status OK', () => {
+    const r = verifyAndFixTVA({
+      numero: 'F001', fournisseur: 'KAM TRADE',
+      ht0: 0, ht19: 100, ht7: 0, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119,
+    });
+    expect(r.status).toBe('OK');
+    expect(r.tva_corrigee).toBeUndefined();
+  });
+
+  it('TVA 19% légèrement faible → auto-correction', () => {
+    // 100 * 0.19 = 19.000, mais OCR lit 18.500
+    const r = verifyAndFixTVA({
+      numero: 'F002', fournisseur: 'KAM TRADE',
+      ht0: 0, ht19: 100, ht7: 0, tva19: 18.5, tva7: 0, fodec: 0, timbre: 0, ttc: 118.5,
+    });
+    expect(r.status).toBe('CORRIGÉ');
+    expect(r.tva19_corrigee).toBeCloseTo(19, 3);
+  });
+
+  it('TVA 19% très écartée → erreur', () => {
+    // 100 * 0.19 = 19, mais OCR lit 25
+    const r = verifyAndFixTVA({
+      numero: 'F003', fournisseur: 'KAM TRADE',
+      ht0: 0, ht19: 100, ht7: 0, tva19: 25, tva7: 0, fodec: 0, timbre: 0, ttc: 125,
+    });
+    expect(r.status).toBe('ERREUR');
+    expect(r.message).toContain('incohérente');
+  });
+
+  it('TVA disproportionnée → erreur (> 25% de HT)', () => {
+    const r = verifyAndFixTVA({
+      numero: 'F004', fournisseur: 'TEST',
+      ht0: 0, ht19: 57.5, ht7: 0, tva19: 563, tva7: 0, fodec: 0, timbre: 0, ttc: 620,
+    });
+    expect(r.status).toBe('ERREUR');
+    expect(r.message).toContain('disproportionnée');
+  });
+
+  it('BEN YAGHLANE sans TVA → OK', () => {
+    const r = verifyAndFixTVA({
+      numero: 'FV10-26+107300', fournisseur: 'BEN YAGHLANE',
+      ht0: 0, ht19: 58.5, ht7: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 58.5,
+    });
+    expect(r.status).toBe('OK');
+  });
+
+  it('BEN YAGHLANE avec TVA → avertissement', () => {
+    const r = verifyAndFixTVA({
+      numero: 'FV10-26+107300', fournisseur: 'BEN YAGHLANE',
+      ht0: 0, ht19: 58.5, ht7: 0, tva19: 11.115, tva7: 0, fodec: 0, timbre: 0, ttc: 69.615,
+    });
+    expect(r.status).toBe('AVERTISSEMENT');
+    expect(r.message).toContain('devrait être sans TVA');
+  });
+
+  it('KAM TRADE sans TVA → avertissement', () => {
+    const r = verifyAndFixTVA({
+      numero: 'F005', fournisseur: 'KAM TRADE',
+      ht0: 0, ht19: 100, ht7: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 100,
+    });
+    expect(r.status).toBe('AVERTISSEMENT');
+    expect(r.message).toContain('devrait avoir TVA');
+  });
+
+  it('applyTVACorrections applique la correction', () => {
+    const inv = { numero: 'F006', fournisseur: 'TEST', ht0: 0, ht19: 100, ht7: 0, tva19: 18.5, tva7: 0, fodec: 0, timbre: 0, ttc: 118.5 };
+    const v = verifyAndFixTVA(inv);
+    const corrected = applyTVACorrections(inv, v);
+    expect(corrected.tva19).toBeCloseTo(19, 3);
+    expect(corrected.ttc).toBeCloseTo(119, 3);
+  });
+
+  it('Timbre inhabituel → avertissement', () => {
+    const r = verifyAndFixTVA({
+      numero: 'F007', fournisseur: 'TEST',
+      ht0: 0, ht19: 100, ht7: 0, tva19: 19, tva7: 0, fodec: 0, timbre: 5, ttc: 124,
+    });
+    expect(r.status).toBe('AVERTISSEMENT');
+    expect(r.message).toContain('Timbre inhabituel');
+  });
+
+  // === TEST FODEC INTÉGRÉ AU COMPTE D'ACHAT ===
+
+  it('FODEC intégré au compte d\'achat, pas sur 436680', () => {
+    const inv: any = { numero: 'F-FODEC', date: '2026-08-10', fournisseur: 'TEST FODEC', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 1, timbre: 0, ttc: 120 };
+    const es = buildBalancedEcritures(inv, '602100', '401999');
+    // FODEC ne doit JAMAIS être sur 436680
+    expect(es.find(e => e.compte === '436680')).toBeUndefined();
+    // Le FODEC est inclus dans le compte d'achat
+    const achatLine = es.find(e => e.compte === '602100');
+    expect(achatLine).toBeDefined();
+    expect(achatLine!.montant).toBeCloseTo(101, 2); // 100 HT + 1 FODEC
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(totalC, 2);
+    expect(totalC).toBeCloseTo(120, 2); // TTC
+  });
+
+  it('FODEC + timbre + TVA tous inclus dans 602100', () => {
+    const inv: any = { numero: 'F-FULL', date: '2026-08-10', fournisseur: 'KAM TRADE', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 1, timbre: 1, ttc: 121 };
+    const es = buildBalancedEcritures(inv, '602100', '401801');
+    expect(es.find(e => e.compte === '436680')).toBeUndefined();
+    expect(es.find(e => e.compte === '437003')).toBeUndefined();
+    const achatLine = es.find(e => e.compte === '602100');
+    expect(achatLine!.montant).toBeCloseTo(102, 2); // 100 HT + 1 FODEC + 1 timbre
+    const tvaLine = es.find(e => e.compte === '436660');
+    expect(tvaLine!.montant).toBeCloseTo(19, 2);
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(totalC, 2);
+    expect(totalC).toBeCloseTo(121, 2); // TTC
   });
 });

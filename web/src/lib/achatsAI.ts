@@ -80,8 +80,8 @@ Schéma de chaque facture:
 
 RÈGLES CRITIQUES (TOUJOURS les respecter):
 
-1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat, JAMAIS sur un compte 437xxx séparé.
-   Le compte d'achat = HT + timbre. Si TVA présente: 602100 = HT + timbre, TVA sur 436660, Fournisseur = TTC.
+1. TIMBRE FISCAL + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat, JAMAIS sur un compte séparé (437xxx ou 436680).
+   Le compte d'achat = HT + timbre + FODEC. TVA sur 436660, Fournisseur = TTC.
 
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres ("Arrêtée à..."). Si le montant numérique est ×1000 ou ×100 trop élevé, corrige-le. Un ticket de supérette à 4+ chiffres (ex: 36950) = presque toujours 36,950 DT.
 
@@ -427,7 +427,7 @@ export async function parseInvoiceWithAI(
   const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
 
 RÈGLES CRITIQUES À RESPECTER:
-1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat (602100), JAMAIS sur un compte 437xxx séparé. Compte d'achat = HT + timbre.
+1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
 3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
@@ -541,7 +541,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
       const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
 
 RÈGLES CRITIQUES À RESPECTER:
-1. TIMBRE FISCAL: Le timbre (1 DT) est INTÉGRÉ au montant d'achat (602100), JAMAIS sur un compte 437xxx séparé. Compte d'achat = HT + timbre.
+1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
 3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
@@ -670,7 +670,7 @@ ${getAchatComptesText(plan)}
   "compte_fournisseur": "compte 401xxx EXACT depuis FOURNISSEURS CONNUS, sinon 401999"
 }
 Réponds UNIQUEMENT ce JSON.`,
-      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre inclus dans 602100, pas de 437xxx pour timbre, TVA jamais inventée.'
+      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre+fodec inclus dans 602100, jamais sur 437xxx ou 436680, TVA jamais inventée.'
     );
     const data = extractJSON(response);
     if (data) {
@@ -792,11 +792,11 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
       }
     }
     // CORRECTION: ttc = référence officielle (TOTAL écrit fait foi)
-    // achat = ttc - tva - fodec (le timbre reste inclus dans achat)
-    // Ceci garantit: totalD = achat + tva + fodec = ttc ✓
-    achat = round3(ttc - tva - fodec);
+    // achat = ttc - tva (timbre + fodec inclus dans achat)
+    // Ceci garantit: totalD = achat + tva = ttc ✓
+    achat = round3(ttc - tva);
   } else if (ttc > 0 && ht <= 0 && tvaModel === 0) {
-    achat = round3(ttc - fodec);
+    achat = round3(ttc);
   }
   if (achat < 0) {
     achat = 0;
@@ -809,8 +809,8 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   const { c7, c19 } = splitTVA(tva, invoice.tva7, invoice.tva19);
   if (c19 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436660', libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: c19 });
   if (c7 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436663', libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: c7 });
-  if (fodec > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436680', libelle: 'FODEC', sens: 'D', montant: fodec });
-  // Règle 2: Le timbre est déjà inclus dans le compte d'achat (602100), pas de ligne 437xxx
+  // FODEC: intégré au compte d'achat (602100), comme le timbre — jamais sur 436680
+  // Règle 2+3: Le timbre ET le fodec sont inclus dans le compte d'achat
 
   const totalD = round3(entries.reduce((s, e) => s + e.montant, 0));
   if (totalD > 0.005) {
@@ -851,7 +851,7 @@ Identifie uniquement les PROBLÈMES QUANTITATIFS suivants (sinon réponds {"warn
     {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Montant suspect", "detail": "explication"}
   ]
 }`,
-      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre inclus dans 602100, pas de 437xxx pour timbre, TVA jamais inventée.'
+      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre+fodec inclus dans 602100, jamais sur 437xxx ou 436680, TVA jamais inventée.'
     );
     const data = extractJSON(response);
     const warns = data && Array.isArray(data.warnings) ? data.warnings : [];
@@ -1003,9 +1003,9 @@ export function verifyEcrituresLocally(
       checks.push({ name: `Montant nul ${e.compte}`, status: 'warning', detail: `Écriture ${e.numero_doc || '?'} d'un montant de 0.000` });
       warnings++;
     }
-    // Règle 2: Le timbre doit être inclus dans le compte d'achat (602100), jamais sur 437xxx
-    if (e.compte.startsWith('437') && e.compte !== '436680') {
-      checks.push({ name: `Timbre sur ${e.compte}`, status: 'error', detail: `Le timbre fiscal doit être intégré au compte d'achat (602100), pas sur ${e.compte}. Corriger: achat = HT + timbre` });
+    // Règle 2+3: Le timbre ET le fodec doivent être inclus dans le compte d'achat, jamais isolés
+    if (e.compte.startsWith('437') || e.compte === '436680') {
+      checks.push({ name: `Timbre/FODEC sur ${e.compte}`, status: 'error', detail: `Le timbre et le FODEC doivent être intégrés au compte d'achat (602100), pas sur ${e.compte}. Corriger: achat = HT + timbre + FODEC` });
       errors++;
     }
   }
@@ -1029,4 +1029,188 @@ export function verifyEcrituresLocally(
         ? `Journal équilibré au niveau comptable (${Math.max(0, 100 - errors * 20 - (warnings > 0 ? 10 : 0))}/100) — alertes qualité à vérifier manuellement`
         : 'Toutes les vérifications passent: journal équilibré, comptes valides',
   };
+}
+
+// === VÉRIFICATION TVA AUTOMATIQUE ===
+
+export interface TVAVerification {
+  numero: string;
+  fournisseur: string;
+  ht: number;
+  tva19: number;
+  tva7: number;
+  tva_totale: number;
+  taux_effectif: number;
+  status: 'OK' | 'CORRIGÉ' | 'ERREUR' | 'AVERTISSEMENT';
+  message: string;
+  tva_corrigee?: number;
+  tva19_corrigee?: number;
+  tva7_corrigee?: number;
+}
+
+// Taux TVA officiels Tunisie 2026
+const TAUX_TVA_STANDARD = 0.19;
+const TAUX_TVA_REDUIT = 0.07;
+const TOLERANCE_TVA = 0.02; // 2% de tolérance sur le calcul
+
+// Fournisseurs avec TVA attendue (TOUJOURS sans TVA)
+const FRS_SANS_TVA = [
+  'BEN YAGHLANE', 'SAVEUR DE CARTHAGE', 'KCHOUK MARIEM',
+  'AHMED OMAR MLIK', 'STE BO HOUSE', 'SIMA HYGIENE',
+  'STE CHAMAR DE COMMERCE', 'ZIG ZAG DELIVERY',
+  'ABDESSATAR BEN LASSOUED',
+];
+
+// Fournisseurs avec TVA attendue (TOUJOURS avec TVA)
+const FRS_AVEC_TVA = [
+  'KAM TRADE', 'AMEN DISTRIBUTION', 'FERID KHEMAKHEM',
+  'INTER MAGHREB DISTRIBUTION', 'IMD', 'NORD DISTRIBUTION',
+  'HORCHANI DISTRIBUTION', 'HDPM', 'EJEM', 'STEG',
+  'COMPTOIR DU PAPIER SANITAIRE', 'CPS', 'PRET A MANGER',
+  'ABCO CONSERVERIE', 'LH TEX',
+];
+
+function getFournisseurKey(fournisseur: string): string {
+  return fournisseur.toUpperCase()
+    .replace(/^(STE|SOCIETE|SARL|SA|SAS)\s+/i, '')
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 20);
+}
+
+function isFrsSansTVA(fournisseur: string): boolean {
+  const key = getFournisseurKey(fournisseur);
+  return FRS_SANS_TVA.some(frs => key.includes(getFournisseurKey(frs)));
+}
+
+function isFrsAvecTVA(fournisseur: string): boolean {
+  const key = getFournisseurKey(fournisseur);
+  return FRS_AVEC_TVA.some(frs => key.includes(getFournisseurKey(frs)));
+}
+
+export function verifyAndFixTVA(invoice: {
+  numero: string;
+  fournisseur: string;
+  ht0: number;
+  ht19: number;
+  ht7: number;
+  tva19: number;
+  tva7: number;
+  fodec: number;
+  timbre: number;
+  ttc: number;
+}): TVAVerification {
+  const ht = invoice.ht0 + invoice.ht19 + invoice.ht7;
+  const tva_totale = invoice.tva19 + invoice.tva7;
+  const taux_effectif = ht > 0 ? tva_totale / ht : 0;
+
+  const result: TVAVerification = {
+    numero: invoice.numero,
+    fournisseur: invoice.fournisseur,
+    ht,
+    tva19: invoice.tva19,
+    tva7: invoice.tva7,
+    tva_totale,
+    taux_effectif,
+    status: 'OK',
+    message: '',
+  };
+
+  // Règle 1: TVA disproportionnée (> 25% de HT)
+  if (tva_totale > 0 && ht > 0 && tva_totale / ht > 0.25) {
+    result.status = 'ERREUR';
+    result.message = `TVA disproportionnée: ${tva_totale.toFixed(3)} DT sur HT ${ht.toFixed(3)} DT (${(taux_effectif * 100).toFixed(1)}%). Vérifier l'échelle (×1000?).`;
+    return result;
+  }
+
+  // Règle 2: TVA absente mais fournisseur devrait avoir TVA
+  if (tva_totale === 0 && ht > 0 && isFrsAvecTVA(invoice.fournisseur)) {
+    result.status = 'AVERTISSEMENT';
+    result.message = `Fournisseur "${invoice.fournisseur}" devrait avoir TVA (19%). Vérifier si la facture affiche bien la TVA.`;
+    return result;
+  }
+
+  // Règle 3: TVA présente mais fournisseur devrait être sans TVA
+  if (tva_totale > 0 && isFrsSansTVA(invoice.fournisseur)) {
+    result.status = 'AVERTISSEMENT';
+    result.message = `Fournisseur "${invoice.fournisseur}" devrait être sans TVA. TVA=${tva_totale.toFixed(3)} DT affichée — vérifier le scan.`;
+    return result;
+  }
+
+  // Règle 4: Calcul TVA 19% — auto-correction si écart mineur
+  if (invoice.ht19 > 0 && invoice.tva19 > 0) {
+    const expected19 = invoice.ht19 * TAUX_TVA_STANDARD;
+    const ecart19 = Math.abs(invoice.tva19 - expected19);
+    if (ecart19 > TOLERANCE_TVA && ecart19 < expected19 * 0.1) {
+      // Écart entre 2% et 10% → corriger automatiquement
+      result.tva19_corrigee = Math.round(expected19 * 1000) / 1000;
+      result.status = 'CORRIGÉ';
+      result.message = `TVA 19% corrigée: ${invoice.tva19.toFixed(3)} → ${result.tva19_corrigee.toFixed(3)} (attendu: ${expected19.toFixed(3)})`;
+    } else if (ecart19 >= expected19 * 0.1) {
+      // Écart > 10% → erreur
+      result.status = 'ERREUR';
+      result.message = `TVA 19% incohérente: ${invoice.tva19.toFixed(3)} DT attendu ${expected19.toFixed(3)} DT (HT19=${invoice.ht19.toFixed(3)})`;
+      return result;
+    }
+  }
+
+  // Règle 5: Calcul TVA 7% — auto-correction si écart mineur
+  if (invoice.ht7 > 0 && invoice.tva7 > 0) {
+    const expected7 = invoice.ht7 * TAUX_TVA_REDUIT;
+    const ecart7 = Math.abs(invoice.tva7 - expected7);
+    if (ecart7 > TOLERANCE_TVA && ecart7 < expected7 * 0.1) {
+      result.tva7_corrigee = Math.round(expected7 * 1000) / 1000;
+      result.status = 'CORRIGÉ';
+      result.message += (result.message ? ' | ' : '') + `TVA 7% corrigée: ${invoice.tva7.toFixed(3)} → ${result.tva7_corrigee.toFixed(3)}`;
+    } else if (ecart7 >= expected7 * 0.1) {
+      result.status = 'ERREUR';
+      result.message = `TVA 7% incohérente: ${invoice.tva7.toFixed(3)} DT attendu ${expected7.toFixed(3)} DT (HT7=${invoice.ht7.toFixed(3)})`;
+      return result;
+    }
+  }
+
+  // Règle 6: FODEC incohérent (devrait être 1% de HT)
+  if (invoice.fodec > 0 && ht > 0) {
+    const expectedFodec = ht * 0.01;
+    if (Math.abs(invoice.fodec - expectedFodec) > 0.05) {
+      result.status = 'AVERTISSEMENT';
+      result.message += (result.message ? ' | ' : '') + `FODEC suspect: ${invoice.fodec.toFixed(3)} DT (attendu ~${expectedFodec.toFixed(3)} DT = 1% de HT)`;
+    }
+  }
+
+  // Règle 7: Timbre incohérent (devrait être 1 DT)
+  if (invoice.timbre > 0 && invoice.timbre !== 1 && invoice.timbre !== 0.6 && invoice.timbre !== 0.1) {
+    result.status = 'AVERTISSEMENT';
+    result.message += (result.message ? ' | ' : '') + `Timbre inhabituel: ${invoice.timbre.toFixed(3)} DT (normalement 1.000 DT)`;
+  }
+
+  if (result.status === 'OK') {
+    result.message = 'TVA cohérente';
+  }
+
+  return result;
+}
+
+export function applyTVACorrections(
+  invoice: any,
+  verification: TVAVerification
+): any {
+  if (verification.status !== 'CORRIGÉ') return invoice;
+
+  const corrected = { ...invoice };
+
+  if (verification.tva19_corrigee !== undefined) {
+    corrected.tva19 = verification.tva19_corrigee;
+  }
+  if (verification.tva7_corrigee !== undefined) {
+    corrected.tva7 = verification.tva7_corrigee;
+  }
+
+  // Recalculer le TTC avec les nouvelles valeurs
+  const newTva = (corrected.tva19 || 0) + (corrected.tva7 || 0);
+  corrected.ttc = round3(
+    (invoice.ht0 || 0) + (invoice.ht19 || 0) + (invoice.ht7 || 0) +
+    newTva + (invoice.fodec || 0) + (invoice.timbre || 0)
+  );
+
+  return corrected;
 }
