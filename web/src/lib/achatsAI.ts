@@ -76,7 +76,7 @@ IMPORTANT: la page peut contenir UNE seule facture OU PLUSIEURS factures collée
 - Aucune facture utilisable → réponds null.
 
 Schéma de chaque facture:
-{"numero":"numero de facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","description":"description des biens/services","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"ttc":0}
+{"numero":"numero de facture","date":"YYYY-MM-DD","fournisseur":"nom du fournisseur","description":"description des biens/services","lignes":[{"designation":"","quantite":0,"prix_unitaire":0,"montant_ht":0,"taux_tva":0}],"ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"remise":0,"ttc":0}
 
 RÈGLES CRITIQUES (TOUJOURS les respecter):
 
@@ -94,6 +94,8 @@ RÈGLES CRITIQUES (TOUJOURS les respecter):
 6. DATE: Format YYYY-MM-DD. Période août-septembre 2026. "04/09" = 2026-09-04 (PAS 2026-04-09).
 
 7. NUMÉRO: UNIQUEMENT le numéro (ex: "FV10-26+107258"). S'il n'existe pas: NC-<FOURNISSEUR>-<DATE>-<MONTANT>.
+
+8. REMISE: Si une remise commerciale est imprimée (sur une ligne, en % ou en DT), extrais sa valeur en DT dans "remise" (>0 uniquement, sinon 0). Le TTC reste TOUJOURS le montant écrit sur le document.
 
 Mapping comptable connu:
 ${fournText}
@@ -367,6 +369,7 @@ export function normalizeInvoiceData(data: any): any {
   let tva7 = parseNum(data.tva7);
   let fodec = parseNum(data.fodec);
   let timbre = parseNum(data.timbre);
+  let remise = parseNum(data.remise);
   let ttc = parseNum(data.ttc);
 
   if (lignes.length > 0) {
@@ -404,17 +407,19 @@ export function normalizeInvoiceData(data: any): any {
   // Règle 9: contrôle arithmétique ligne par ligne vs TOTAL écrit sur le document.
   // On reprend TOUJOURS le TOTAL réellement écrit (ttc) comme valeur de référence,
   // et on signale l'écart au lieu de corriger silencieusement.
+  // La remise commerciale s'applique en DIMINUTION du sous-total HT + TVA.
   let arith_note: string | undefined;
   if (lignes.length > 0 && ttc > 0) {
     const linesHt = Math.round((ht0 + ht19 + ht7) * 1000) / 1000;
-    const recomputed = Math.round((linesHt + tva19 + tva7 + fodec + timbre) * 1000) / 1000;
+    const remiseOk = remise > 0 && remise <= linesHt + 0.001;
+    const recomputed = Math.round((linesHt + tva19 + tva7 + fodec + timbre - (remiseOk ? remise : 0)) * 1000) / 1000;
     const diff = Math.round((recomputed - ttc) * 1000) / 1000;
     if (Math.abs(diff) > 0.02) {
       arith_note = `Écart de calcul: sous-totaux (${recomputed.toFixed(3)}) ≠ TOTAL écrit (${ttc.toFixed(3)}) — le TOTAL écrit fait foi`;
     }
   }
 
-  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, ttc, arith_note };
+  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, remise, ttc, arith_note };
 }
 
 export async function parseInvoiceWithAI(
@@ -432,6 +437,7 @@ RÈGLES CRITIQUES À RESPECTER:
 3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
+6. REMISE: Si une remise est imprimée (DT ou %), extrais-la dans "remise" (0 si absente).
 
 Réponds TOUJOURS en JSON valide sans aucun texte avant ou après.`;
 
@@ -455,6 +461,7 @@ ${fournText}
   "tva7": montant TVA 7% (nombre),
   "fodec": montant FODEC (nombre),
   "timbre": montant timbre fiscal (nombre),
+  "remise": montant de la remise commerciale en DT, 0 si aucune (nombre),
   "ttc": montant total TTC (nombre)
 }
 
@@ -493,14 +500,14 @@ Règles:
         fournisseur: data.fournisseur,
         description: data.description,
         ht0: data.ht0, ht19: data.ht19, tva19: data.tva19, tva7: data.tva7,
-        fodec: data.fodec, timbre: data.timbre, ttc: data.ttc,
+        fodec: data.fodec, timbre: data.timbre, remise: data.remise, ttc: data.ttc,
       };
     }
   }
 
   return {
     numero: '', date: '', fournisseur: '', description: '',
-    ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, ttc: 0,
+    ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, remise: 0, ttc: 0,
   };
 }
 
@@ -575,7 +582,7 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
                 numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
                 description: inv.description, ht0: inv.ht0, ht19: inv.ht19,
                 tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
-                timbre: inv.timbre, ttc: inv.ttc,
+                timbre: inv.timbre, remise: inv.remise, ttc: inv.ttc,
                 is_handwritten: true, raw_text: '', ocr_confidence: confidence,
                 page: i + 1, arith_note: inv.arith_note,
               });
@@ -601,7 +608,7 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
       if (text.replace(/\s/g, '').length > 50) {
         const planText = getPlanText(plan);
         const fournText = getFournisseursText(plan);
-        const prompt = `## TEXTE OCR DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
+        const prompt = `## TEXTE OCR DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"remise":0,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
         const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
         const aiResponse = await callAI(prompt, systemPrompt);
         if (aiResponse) {
@@ -612,8 +619,9 @@ Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne
 id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
               description: String(data.description || ''), ht0: parseNum(data.ht0), ht19: parseNum(data.ht19),
               tva19: parseNum(data.tva19), tva7: parseNum(data.tva7), fodec: parseNum(data.fodec),
-              timbre: typeof data.timbre !== 'undefined' ? parseNum(data.timbre) : 0, ttc: parseNum(data.ttc),
-              is_handwritten: true, raw_text: text.substring(0, 500), ocr_confidence: confidence,
+timbre: typeof data.timbre !== 'undefined' ? parseNum(data.timbre) : 0, ttc: parseNum(data.ttc),
+			  remise: typeof data.remise !== 'undefined' ? parseNum(data.remise) : 0,
+			  is_handwritten: true, raw_text: text.substring(0, 500), ocr_confidence: confidence,
             });
           }
         }
@@ -756,16 +764,18 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   const pageRef = invoice.page ? ` (p.${invoice.page})` : '';
   const checkTag = needCheck ? ` [À VÉRIFIER MANUELLEMENT${pageRef}]` : '';
   const arithTag = invoice.arith_note ? ` [${invoice.arith_note}]` : '';
-  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}${checkTag}${arithTag}`;
+  const remiseTag = invoice.remise > 0.005 ? ` [REMISE ${round3(invoice.remise).toFixed(3)}]` : '';
+  const lib = `ACHAT ${invoice.fournisseur || invoice.numero || 'DIVERS'}${checkTag}${arithTag}${remiseTag}`;
 
   const ht = round3(invoice.ht0 + invoice.ht19);
   const tvaModel = round3(invoice.tva19 + invoice.tva7);
   const fodec = round3(invoice.fodec);
   let timbre = round3(invoice.timbre);
+  const remise = round3(invoice.remise);
 
   let ttc = round3(invoice.ttc);
   if (ttc <= 0 && (ht > 0 || tvaModel > 0 || fodec > 0 || timbre > 0)) {
-    ttc = round3(ht + tvaModel + fodec + timbre);
+    ttc = Math.max(0, round3(ht + tvaModel + fodec + timbre - remise));
   }
 
   // Règle 4: la TVA déductible n'est créée que si le document l'affiche (modèle > 0).
@@ -775,7 +785,8 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   let tva = 0;
   let achat = ht;
   if (ttc > 0 && ht > 0) {
-    const implied = round3(ttc - ht - fodec - timbre);
+    const htNet = Math.max(0, round3(ht - remise));
+    const implied = round3(ttc - htNet - fodec - timbre);
     if (Math.abs(implied) < 0.011) {
       tva = 0;
     } else if (tvaModel > 0) {
@@ -785,7 +796,7 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
     }
     // Séparer le timbre si le modèle l'a fusionné dans la TVA
     if (tva > 0 && timbre === 0) {
-      const expectedTva = round3((invoice.ht19 || 0) * 0.19);
+      const expectedTva = round3(Math.max(0, (invoice.ht19 || 0) - remise) * 0.19);
       if (Math.abs(tva - expectedTva - 1) < 0.03 && expectedTva > 0) {
         tva = expectedTva;
         timbre = 1;
@@ -820,51 +831,144 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   return entries;
 }
 
+export function checkRemiseConsistency(
+  ecritures: EcritureAchat[],
+  invoices: AchatInvoice[]
+): VerificationResult['checks'] {
+  const checks: VerificationResult['checks'] = [];
+  const byInvoice = new Set(invoices.filter(i => i.numero).map(i => i.numero));
+
+  for (const inv of invoices) {
+    if (!inv.numero) continue;
+    const remise = round3(inv.remise || 0);
+    const ht = round3(inv.ht0 + inv.ht19);
+    const tva = round3(inv.tva19 + inv.tva7);
+    const others = round3(inv.fodec + inv.timbre);
+    const ttc = round3(inv.ttc);
+
+    // Facture relue mais absente des écritures générées
+    if (!ecritures.some(e => e.numero_doc === inv.numero)) {
+      if (ht > 0 || ttc > 0) {
+        checks.push({ name: `Facture non comptabilisée (${inv.numero})`, status: 'warning', detail: 'La facture existe dans l\'import mais aucune écriture ne porte son numéro.' });
+      }
+      continue;
+    }
+
+    if (remise <= 0) {
+      continue;
+    }
+
+    // Règle remise: la remise doit être < HT (sinon remise = rabais total → erreur)
+    if (ht > 0 && remise >= ht - 0.001) {
+      checks.push({ name: `Remise incohérente (${inv.numero})`, status: 'error', detail: `Remise ${remise.toFixed(3)} ≥ HT ${ht.toFixed(3)} : remise supérieure ou égale au montant HT, à vérifier sur le scan.` });
+      continue;
+    }
+
+    // Cohérence: TTC ≈ HT + TVA + fodec + timbre − remise
+    if (ttc > 0 && ht > 0) {
+      const expected = round3(ht + tva + others - remise);
+      if (Math.abs(expected - ttc) > 0.03) {
+        checks.push({ name: `Remise / TTC incohérent (${inv.numero})`, status: 'warning', detail: `HT ${ht.toFixed(3)} + TVA ${tva.toFixed(3)} + timbre/fodec ${others.toFixed(3)} − remise ${remise.toFixed(3)} = ${expected.toFixed(3)} ≠ TOTAL écrit ${ttc.toFixed(3)}. À vérifier sur le scan.` });
+        continue;
+      }
+    }
+
+    // La remise doit être reflétée dans l'achat (libellé [REMISE…] ou montant net)
+    const entries = ecritures.filter(e => e.numero_doc === inv.numero);
+    const achatEntry = entries.find(e => e.sens === 'D' && /^(60[127]|607)/.test(e.compte)) || entries.find(e => e.sens === 'D');
+    if (achatEntry && !achatEntry.libelle.includes('REMISE')) {
+      const achatExpected = round3(Math.max(0, ttc > 0 ? ttc - tva : ht - remise + others));
+      if (Math.abs(achatEntry.montant - achatExpected) > 0.03 && byInvoice.has(inv.numero)) {
+        checks.push({ name: `Remise non appliquée (${inv.numero})`, status: 'warning', detail: `Une remise de ${remise.toFixed(3)} DT a été lue mais le libellé ne la mentionne pas (achat ${achatEntry.montant.toFixed(3)} vs attendu ${achatExpected.toFixed(3)}).` });
+      }
+    }
+  }
+
+  return checks;
+}
+
 export async function verifyEcrituresWithAI(
   ecritures: EcritureAchat[],
-  plan: PlanComptable
+  plan: PlanComptable,
+  invoices: AchatInvoice[] = []
 ): Promise<VerificationResult> {
   const local = verifyEcrituresLocally(ecritures, plan);
+  const remiseChecks = checkRemiseConsistency(ecritures, invoices);
+  let checks = [...local.checks, ...remiseChecks];
+  let extraErrors = remiseChecks.filter(c => c.status === 'error').length;
+  let extraWarnings = remiseChecks.filter(c => c.status === 'warning').length;
 
-  if (local.verdict !== 'OK') {
-    return local;
+  if (local.verdict !== 'OK' || extraErrors > 0) {
+    return {
+      verdict: extraErrors > 0 ? 'ERREUR' : local.verdict,
+      score: Math.max(0, local.score - extraErrors * 20 - extraWarnings * 5),
+      checks,
+      summary: `${remiseChecks.length} contrôle(s) remise: ${extraErrors} erreur(s), ${extraWarnings} avertissement(s)`,
+    };
   }
 
   // Tout passe en local: on demande UNIQUEMENT des alerts qualitatives à l'IA
   try {
-    const ecrituresText = ecritures.map(e =>
+    // Relecture facture: on donne à l'IA le texte du scan + les écritures générées
+    const scanned = invoices
+      .filter(i => i.numero && (i.raw_text || '') && i.raw_text.trim().length > 20)
+      .slice(0, 6);
+    const rereadPrompt = scanned.length > 0
+      ? `## RELECTURE DES FACTURES SCANNEES
+Compare chaque facture scannée (texte brut) avec ses écritures générées. Signale UNIQUEMENT:
+- une TVA portée en déductible absente du document / un taux erroné
+- une REMISE imprimée sur le document que l'écriture d'achat ignore (libellé sans [REMISE])
+- un montant HT/TVA/TTC qui ne correspond PAS à ce qui est écrit
+
+${scanned.map(i => `### FACTURE ${i.numero} (${i.fournisseur || '?'})
+TEXTE SCANNE:
+${i.raw_text.substring(0, 800)}
+
+ÉCRITURES GÉNÉRÉES (${i.numero}):
+${ecritures.filter(e => e.numero_doc === i.numero).map(e => `${e.compte} ${e.libelle} ${e.sens}=${e.montant}`).join('\n') || 'AUCUNE'}`).join('\n\n')}
+
+## RÉPONSE JSON
+{
+  "warnings": [
+    {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Remise ignorée | Montant suspect | Montant erroné", "detail": "explication"}
+  ]
+}`
+      : null;
+
+    const basePrompt = `## ÉCRITURES DU JOURNAL AC (déjà équilibrées et validées)
+${ecritures.map(e =>
       `${e.numero_doc} | ${e.date_operation} | ${e.compte} | ${e.libelle} | ${e.sens}=${e.montant}`
-    ).join('\n');
-    const response = await callAI(
-      `## ÉCRITURES DU JOURNAL AC (déjà équilibrées et validées)
-${ecrituresText}
+    ).join('\n')}
 
 ## VÉRIFICATION MAX 3 MINUTES
 Identifie uniquement les PROBLÈMES QUANTITATIFS suivants (sinon réponds {"warnings":[]}):
 1. "TVA non déductible" : facture dont la TVA affichée ne devrait pas être portée en déductible (TVA au taux forfaitaire, restaurateur, non assujetti), listée par numéro de facture
 2. "TVA douteuse" : facture où D(TVA 436660/436663) s'écarte nettement de 19%/7% du débit achat
 3. "Montant suspect" : montants > 2 000 DT sans rapport avec les autres lignes
+4. "Remise ignorée" : remise imprimée sur le scan non déduite du compte d'achat
 
 ## RÉPONSE JSON
 {
   "warnings": [
-    {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Montant suspect", "detail": "explication"}
+    {"facture": "numéro", "type": "TVA non déductible | TVA douteuse | Remise ignorée | Montant suspect | Montant erroné", "detail": "explication"}
   ]
-}`,
-      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre+fodec inclus dans 602100, jamais sur 437xxx ou 436680, TVA jamais inventée.'
+}`;
+
+    const response = await callAI(rereadPrompt ? `${rereadPrompt}\n\n---\n\n${basePrompt}` : basePrompt,
+      'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre+fodec inclus dans 602100, jamais sur 437xxx ou 436680, TVA jamais inventée, remise déduite de l\'achat (libellé [REMISE]).'
     );
     const data = extractJSON(response);
     const warns = data && Array.isArray(data.warnings) ? data.warnings : [];
-    const checks = [...local.checks];
+    checks = [...checks];
     warns.slice(0, 8).forEach((w: any) => {
       checks.push({ name: w.type || 'Warning', status: 'warning', detail: `${w.facture || ''} — ${w.detail || ''}` });
     });
-    if (warns.length > 0) {
+    if (warns.length > 0 || extraWarnings > 0) {
       return {
         verdict: 'ATTENTION',
-        score: Math.max(0, local.score - warns.length * 5),
+        score: Math.max(0, local.score - (warns.length + extraWarnings) * 5 - extraErrors * 20),
         checks,
-        summary: `Comptablement 100% équilibré, ${warns.length} alerte(s) qualité à vérifier`,
+        summary: `Comptablement 100% équilibré, ${warns.length} alerte(s) IA + ${extraWarnings} avertissement(s) remise à vérifier`,
       };
     }
   } catch {

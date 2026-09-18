@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency } from '../achatsAI';
 
 describe('ACHATS rules', () => {
   it('fixDate rejette une année trop éloignée du lot (2018 → 2026)', () => {
@@ -92,6 +92,28 @@ describe('ACHATS rules', () => {
     };
     const inv = normalizeInvoiceData(raw);
     expect(inv.arith_note).toBeUndefined();
+  });
+
+  it('remise lue et déduite du compte d\'achat, TTC constant', () => {
+    const raw = {
+      numero: 'BL-125', date: '2026-09-05', fournisseur: 'FOURNI',
+      lignes: [
+        { designation: 'A', taux_tva: 19, montant_ht: 100.0 },
+        { designation: 'B', taux_tva: 19, montant_ht: 40.0 },
+      ],
+      tva19: 26.6, tva7: 0, fodec: 0, timbre: 0, remise: 10.0, ttc: 156.6,
+    };
+    const inv = normalizeInvoiceData(raw);
+    expect(inv.remise).toBeCloseTo(10, 3);
+    expect(inv.arith_note).toBeUndefined(); // HT 140 + TVA 26.6 − remise 10 = 156.6 = TTC
+    const es = buildBalancedEcritures({ id: 'x', ...inv, is_handwritten: false, raw_text: '', ocr_confidence: 100 }, '607000', '401001');
+    const achat = es.find(e => e.compte === '607000')!;
+    expect(achat.montant).toBeCloseTo(156.6 - 26.6, 3); // achat = TTC − TVA
+    expect(achat.libelle).toContain('REMISE 10.000');
+    const tvaLine = es.find(e => e.compte === '436660')!;
+    expect(tvaLine.montant).toBeCloseTo(26.6, 3);
+    const frs = es.find(e => e.sens === 'C')!;
+    expect(frs.montant).toBeCloseTo(156.6, 3);
   });
 
   // === TESTS DE RÉGRESSION — Audit PROYASH METROPOLI ===
@@ -317,5 +339,37 @@ describe('ACHATS rules', () => {
     const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
     expect(totalD).toBeCloseTo(totalC, 2);
     expect(totalC).toBeCloseTo(121, 2); // TTC
+  });
+
+  // === TEST VÉRIFICATION REMISE (checkRemiseConsistency) ===
+
+  const makeEntry = (num: string, compte: string, montant: number, libelle = ''): any => ({
+    id: 'e1', numero_doc: num, date_operation: '2026-09-05', journal_code: 'AC',
+    compte, libelle: libelle || 'ACHAT TEST', sens: 'D', montant,
+  });
+
+  it('remise saine (remise < HT, TTC cohérent)', () => {
+    const inv: any = { numero: 'R100', date: '2026-09-05', fournisseur: 'FOURNI', ht0: 0, ht19: 140, tva19: 26.6, tva7: 0, fodec: 0, timbre: 0, remise: 10, ttc: 156.6 };
+    const checks = checkRemiseConsistency([makeEntry('R100', '607000', 130, 'ACHAT TEST [REMISE 10.000]')], [inv]);
+    expect(checks.some(c => c.status === 'error')).toBe(false);
+    expect(checks.some(c => c.name.includes('Remise / TTC'))).toBe(false);
+  });
+
+  it('remise ≥ HT → erreur', () => {
+    const inv: any = { numero: 'R101', date: '2026-09-05', fournisseur: 'FOURNI', ht0: 0, ht19: 100, tva19: 0, tva7: 0, fodec: 0, timbre: 0, remise: 120, ttc: 0 };
+    const checks = checkRemiseConsistency([makeEntry('R101', '607000', 1)], [inv]);
+    expect(checks.some(c => c.status === 'error' && c.name.includes('Remise incohérente'))).toBe(true);
+  });
+
+  it('remise lue mais libellé sans [REMISE] → avertissement', () => {
+    const inv: any = { numero: 'R102', date: '2026-09-05', fournisseur: 'FOURNI', ht0: 0, ht19: 140, tva19: 26.6, tva7: 0, fodec: 0, timbre: 0, remise: 10, ttc: 156.6 };
+    const checks = checkRemiseConsistency([makeEntry('R102', '607000', 156.6, 'ACHAT TEST')], [inv]);
+    expect(checks.some(c => c.status === 'warning' && c.name.includes('Remise non appliquée'))).toBe(true);
+  });
+
+  it('facture importée mais non comptabilisée → avertissement', () => {
+    const inv: any = { numero: 'R103', date: '2026-09-05', fournisseur: 'FOURNI', ht0: 0, ht19: 50, tva19: 9.5, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 59.5 };
+    const checks = checkRemiseConsistency([makeEntry('R999', '607000', 100)], [inv]);
+    expect(checks.some(c => c.status === 'warning' && c.name.includes('non comptabilisée'))).toBe(true);
   });
 });

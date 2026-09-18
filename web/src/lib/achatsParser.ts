@@ -13,6 +13,7 @@ export interface AchatInvoice {
   tva7: number;
   fodec: number;
   timbre: number;
+  remise: number;
   ttc: number;
   is_handwritten: boolean;
   raw_text: string;
@@ -138,7 +139,7 @@ export function parseInvoiceText(text: string, isHandwritten: boolean = false): 
     ttc = ht0 + ht19 + tva19 + tva7 + fodec + timbre;
   }
 
-  return { numero, date, fournisseur, description, ht0, ht19, tva19, tva7, fodec, timbre, ttc };
+  return { numero, date, fournisseur, description, ht0, ht19, tva19, tva7, fodec, timbre, remise: 0, ttc };
 }
 
 export async function extractFromPDF(file: File): Promise<{ text: string; isHandwritten: boolean }> {
@@ -177,7 +178,7 @@ export async function processAchatFile(file: File): Promise<AchatInvoice> {
 
   let parsed;
   if (isHandwritten && file.type === 'application/pdf') {
-    parsed = { numero: '', date: '', fournisseur: '', description: '', ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, ttc: 0 };
+    parsed = { numero: '', date: '', fournisseur: '', description: '', ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, remise: 0, ttc: 0 };
   } else {
     parsed = parseInvoiceText(text, isHandwritten);
   }

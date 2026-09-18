@@ -146,7 +146,7 @@ export default function AchatsDossierPage() {
     if (ecritures.length === 0 || !plan) return;
     setVerifying(true);
     try {
-      const result = await verifyEcrituresWithAI(ecritures, plan);
+      const result = await verifyEcrituresWithAI(ecritures, plan, factures);
       setVerifyResult(result);
     } catch {
       setVerifyResult(verifyEcrituresLocally(ecritures, plan));
@@ -226,7 +226,7 @@ export default function AchatsDossierPage() {
       id: Math.random().toString(36).substring(2, 10),
       numero: '', date: dossier ? `${dossier.annee}-${String(dossier.mois).padStart(2, '0')}-01` : new Date().toISOString().split('T')[0],
       fournisseur: '', description: '',
-      ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, ttc: 0,
+      ht0: 0, ht19: 0, tva19: 0, tva7: 0, fodec: 0, timbre: 1, remise: 0, ttc: 0,
       is_handwritten: false, raw_text: '', ocr_confidence: 100,
     };
     setFactures(prev => [...prev, newF]);
@@ -339,6 +339,7 @@ export default function AchatsDossierPage() {
                   <th className="px-3 py-2 text-right">HT 19%</th>
                   <th className="px-3 py-2 text-right">TVA</th>
                   <th className="px-3 py-2 text-right">Timbre</th>
+                  <th className="px-3 py-2 text-right">Remise</th>
                   <th className="px-3 py-2 text-right">TTC</th>
                   <th className="px-3 py-2 text-center">OCR</th>
                   <th className="px-3 py-2"></th>
@@ -355,6 +356,7 @@ export default function AchatsDossierPage() {
                     <td className="px-2 py-1"><input type="number" step="0.001" value={f.ht19} onChange={e => updateFacture(f.id, 'ht19', parseFloat(e.target.value) || 0)} className="w-20 text-xs border rounded px-1 py-0.5 text-right" /></td>
                     <td className="px-2 py-1"><input type="number" step="0.001" value={f.tva19} onChange={e => updateFacture(f.id, 'tva19', parseFloat(e.target.value) || 0)} className="w-20 text-xs border rounded px-1 py-0.5 text-right" /></td>
                     <td className="px-2 py-1"><input type="number" step="0.001" value={f.timbre} onChange={e => updateFacture(f.id, 'timbre', parseFloat(e.target.value) || 0)} className="w-16 text-xs border rounded px-1 py-0.5 text-right" /></td>
+                    <td className="px-2 py-1"><input type="number" step="0.001" value={f.remise} onChange={e => updateFacture(f.id, 'remise', parseFloat(e.target.value) || 0)} className="w-16 text-xs border rounded px-1 py-0.5 text-right" /></td>
                     <td className="px-2 py-1 font-mono text-xs font-semibold text-right">{f.ttc.toFixed(3)}</td>
                     <td className="px-2 py-1 text-center">
                       {f.is_handwritten ? <span className="text-amber-600 text-xs" title={f.raw_text}>OCR</span> : <span className="text-green-600 text-xs">TXT</span>}
@@ -362,7 +364,7 @@ export default function AchatsDossierPage() {
                     <td className="px-1"><button onClick={() => deleteFacture(f.id)} className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button></td>
                   </tr>
                 ))}
-                {factures.length === 0 && <tr><td colSpan={11} className="text-center text-gray-400 py-6">Aucune facture. Importez des PDF(s) dans l'onglet Import.</td></tr>}
+                {factures.length === 0 && <tr><td colSpan={12} className="text-center text-gray-400 py-6">Aucune facture. Importez des PDF(s) dans l'onglet Import.</td></tr>}
               </tbody>
             </table>
           </div>
