@@ -1675,7 +1675,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (!valid) return null;
           const payload = JSON.parse(data);
           if (payload.exp < Date.now()) return null;
-          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, is_active FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
+          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
           if (!user || !user.is_active) return null;
           return user;
         } catch { return null; }
@@ -1707,7 +1707,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
-        return json({ ...user, organization_name: org?.name });
+        return json({ ...user, organization: org?.name || '' });
       }
 
       // --- ORG: CHANGE PASSWORD ---
@@ -1902,6 +1902,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!content?.trim()) return json({ error: 'Contenu requis' }, 400);
         const noteId = genId();
         await env.DB.prepare('INSERT INTO org_notes (id, dossier_id, user_id, user_name, content) VALUES (?, ?, ?, ?, ?)').bind(noteId, orgNoteMatch[1], user.id, user.full_name, content.trim()).run();
+        // Also log to audit for timeline
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'note_added', 'note', noteId, JSON.stringify({ dossier_id: orgNoteMatch[1], preview: content.trim().slice(0, 100) })).run();
         return json({ id: noteId }, 201);
       }
 
