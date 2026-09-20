@@ -16,6 +16,8 @@ export default function OrgDashboardComptable() {
   const [selectedClient, setSelectedClient] = useState('');
   const [newExercice, setNewExercice] = useState(new Date().getFullYear());
   const [creating, setCreating] = useState(false);
+  const [newClientName, setNewClientName] = useState('');
+  const [newClientMF, setNewClientMF] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -25,12 +27,20 @@ export default function OrgDashboardComptable() {
   useEffect(() => { load(); }, []);
 
   const createDossier = async () => {
-    if (!selectedClient) return;
     setCreating(true);
     try {
-      await orgApi.createDossier(selectedClient, newExercice);
+      let clientId = selectedClient;
+      if (selectedClient === '__new__') {
+        if (!newClientName.trim()) { alert('Nom du client requis'); setCreating(false); return; }
+        const newClient = await orgApi.createClient({ name: newClientName.trim(), matricule_fiscal: newClientMF.trim() || undefined });
+        clientId = newClient.id;
+      }
+      if (!clientId) return;
+      await orgApi.createDossier(clientId, newExercice);
       setShowNewDossier(false);
       setSelectedClient('');
+      setNewClientName('');
+      setNewClientMF('');
       setNewExercice(new Date().getFullYear());
       load();
     } catch (err: any) {
@@ -191,13 +201,13 @@ export default function OrgDashboardComptable() {
       {/* Modal: Nouveau dossier */}
       {showNewDossier && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                 <Plus size={20} className="text-purple-600" />
                 Nouveau dossier
               </h3>
-              <button onClick={() => setShowNewDossier(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+              <button onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
                 <X size={18} className="text-gray-500" />
               </button>
             </div>
@@ -205,16 +215,44 @@ export default function OrgDashboardComptable() {
             <div className="space-y-3">
               <div>
                 <label className="text-sm font-medium text-gray-700 mb-1 block">Client</label>
-                <select
-                  value={selectedClient}
-                  onChange={e => setSelectedClient(e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
-                >
-                  <option value="">— Sélectionner un client —</option>
-                  {clients.map(c => (
-                    <option key={c.id} value={c.id}>{c.name} {c.matricule_fiscal ? `(${c.matricule_fiscal})` : ''}</option>
-                  ))}
-                </select>
+                <div className="space-y-2">
+                  <select
+                    value={selectedClient === '__new__' ? '__new__' : selectedClient}
+                    onChange={e => {
+                      if (e.target.value === '__new__') {
+                        setSelectedClient('__new__');
+                      } else {
+                        setSelectedClient(e.target.value);
+                        setNewClientName('');
+                      }
+                    }}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
+                  >
+                    <option value="">— Sélectionner un client existant —</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} {c.matricule_fiscal ? `(${c.matricule_fiscal})` : ''}</option>
+                    ))}
+                    <option value="__new__">✨ Nouveau client...</option>
+                  </select>
+
+                  {selectedClient === '__new__' && (
+                    <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-2">
+                      <input
+                        autoFocus
+                        value={newClientName}
+                        onChange={e => setNewClientName(e.target.value)}
+                        placeholder="Nom du client *"
+                        className="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
+                      />
+                      <input
+                        value={newClientMF}
+                        onChange={e => setNewClientMF(e.target.value)}
+                        placeholder="Matricule fiscal (optionnel)"
+                        className="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -245,13 +283,13 @@ export default function OrgDashboardComptable() {
             <div className="flex gap-3 pt-2">
               <button
                 onClick={createDossier}
-                disabled={!selectedClient || creating}
+                disabled={(!selectedClient && !newClientName.trim()) || creating}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
               >
                 {creating ? 'Création...' : 'Créer le dossier'}
               </button>
               <button
-                onClick={() => { setShowNewDossier(false); setSelectedClient(''); }}
+                onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); }}
                 className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
               >
                 Annuler

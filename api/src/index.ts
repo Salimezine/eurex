@@ -1759,12 +1759,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
       if (path === '/api/org/clients' && method === 'POST') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
         const { name, matricule_fiscal, assigned_comptable_id, contact_email, contact_phone } = await request.json() as any;
         if (!name) return json({ error: 'Nom requis' }, 400);
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, assigned_comptable_id || null, name, matricule_fiscal || null, contact_email || null, contact_phone || null).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_created\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ name })).run();
+        // Expert assigns to anyone; comptable auto-assigns to self
+        const comptableId = user.role === 'expert' ? (assigned_comptable_id || null) : user.id;
+        await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, comptableId, name, matricule_fiscal || null, contact_email || null, contact_phone || null).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name })).run();
         return json({ id, name }, 201);
       }
 
