@@ -61,6 +61,9 @@ export interface OrgTask {
   requires_document: number;
   order_index: number;
   updated_at: string;
+  total_time_seconds: number;
+  timer_started_at: string | null;
+  timer_user_id: string | null;
 }
 
 export interface OrgDocument {
@@ -135,6 +138,14 @@ export const orgApi = {
   // Notes
   addNote: (dossierId: string, content: string) =>
     req<any>(`/org/dossiers/${dossierId}/notes`, { method: 'POST', body: JSON.stringify({ content }) }),
+
+  // Timer
+  startTimer: (dossierId: string, taskId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/start`, { method: 'POST' }),
+  stopTimer: (dossierId: string, taskId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/stop`, { method: 'POST' }),
+  getTimers: (dossierId: string) =>
+    req<{ entries: any[]; tasks: any[] }>(`/org/dossiers/${dossierId}/timers`),
 
   // Timeline
   getTimeline: (dossierId: string) => req<TimelineEvent[]>(`/org/dossiers/${dossierId}/timeline`),

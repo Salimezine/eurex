@@ -70,6 +70,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'timeline.all': { fr: 'Tout', ar: 'الكل' },
   'timeline.blockages': { fr: 'Blocages uniquement', ar: 'الحجوب فقط' },
   'timeline.documents': { fr: 'Documents uniquement', ar: 'المستندات فقط' },
+  'timeline.time': { fr: 'Chrono', ar: 'التوقيت' },
 
   // Client portal
   'portal.title': { fr: 'Espace Client', ar: 'مساحة العميل' },

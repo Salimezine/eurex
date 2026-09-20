@@ -6,7 +6,17 @@ interface TimelineProps {
   events: TimelineEvent[];
 }
 
-type Filter = 'all' | 'blockages' | 'documents';
+type Filter = 'all' | 'blockages' | 'documents' | 'time';
+
+const formatDuration = (seconds: number) => {
+  if (!seconds || seconds <= 0) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}min`;
+  if (m > 0) return `${m}min${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+};
 
 export default function Timeline({ events }: TimelineProps) {
   const [filter, setFilter] = useState<Filter>('all');
@@ -14,6 +24,7 @@ export default function Timeline({ events }: TimelineProps) {
   const filtered = events.filter(e => {
     if (filter === 'blockages') return e.type === 'task_status_changed' && e.details?.new_status === 'bloque_client';
     if (filter === 'documents') return e.type === 'document_received' || e.type === 'document_unreceived';
+    if (filter === 'time') return e.type === 'timer_started' || e.type === 'timer_stopped';
     return true;
   });
 
@@ -35,7 +46,7 @@ export default function Timeline({ events }: TimelineProps) {
     <div>
       {/* Filter bar */}
       <div className="flex gap-2 mb-4">
-        {(['all', 'blockages', 'documents'] as Filter[]).map(f => (
+        {(['all', 'blockages', 'documents', 'time'] as Filter[]).map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -62,6 +73,12 @@ export default function Timeline({ events }: TimelineProps) {
                 <span className="absolute -left-[14px] top-0.5 text-sm">{event.icon}</span>
                 <div className="bg-white border border-gray-100 rounded-lg p-2.5 shadow-sm">
                   <p className="text-sm text-gray-800">{event.label}</p>
+                  {event.details?.duration_seconds != null && (
+                    <p className="text-xs font-mono font-semibold text-purple-600 mt-0.5">
+                      ⏱ {formatDuration(event.details.duration_seconds)}
+                      {event.details.total_seconds ? ` (total: ${formatDuration(event.details.total_seconds)})` : ''}
+                    </p>
+                  )}
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-[11px] text-gray-400">
                       {event.date?.split('T')[1]?.slice(0, 5) || ''}

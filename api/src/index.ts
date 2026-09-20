@@ -1861,6 +1861,71 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true });
       }
 
+      // --- ORG: TIMER START ---
+      const orgTimerStartMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/timer\/start$/);
+      if (orgTimerStartMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTimerStartMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const [dossierId, taskId] = [orgTimerStartMatch[1], orgTimerStartMatch[2]];
+        // Check task exists
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        // Check no active timer on this task
+        if (task.timer_started_at) return json({ error: 'Timer déjà en cours', active: true, started_at: task.timer_started_at, user_id: task.timer_user_id });
+        // Stop any other active timer for this user
+        const { results: activeTimers } = await env.DB.prepare('SELECT id, task_id, started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(user.id).all();
+        for (const at of activeTimers as any[]) {
+          const elapsed = Math.floor((Date.now() - new Date(at.started_at + 'Z').getTime()) / 1000);
+          await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, at.id).run();
+          await env.DB.prepare("UPDATE org_tasks SET timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(at.task_id).run();
+        }
+        // Create time entry
+        const entryId = genId();
+        await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at) VALUES (?, ?, ?, ?, datetime('now'))").bind(entryId, dossierId, taskId, user.id).run();
+        // Update task
+        await env.DB.prepare("UPDATE org_tasks SET timer_started_at = datetime('now'), timer_user_id = ? WHERE id = ?").bind(user.id, taskId).run();
+        // Audit log
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'timer_started', 'task', taskId, JSON.stringify({ dossier_id: dossierId })).run();
+        return json({ ok: true, entry_id: entryId, started_at: new Date().toISOString() });
+      }
+
+      // --- ORG: TIMER STOP ---
+      const orgTimerStopMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/timer\/stop$/);
+      if (orgTimerStopMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTimerStopMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const [dossierId, taskId] = [orgTimerStopMatch[1], orgTimerStopMatch[2]];
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        if (!task.timer_started_at) return json({ error: 'Aucun timer actif' }, 400);
+        // Find the active entry
+        const entry = await env.DB.prepare('SELECT * FROM org_time_entries WHERE task_id = ? AND user_id = ? AND stopped_at IS NULL ORDER BY started_at DESC LIMIT 1').bind(taskId, user.id).first() as any;
+        if (!entry) return json({ error: 'Entrée timer non trouvée' }, 404);
+        const elapsed = Math.floor((Date.now() - new Date(entry.started_at + 'Z').getTime()) / 1000);
+        // Stop entry
+        await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, entry.id).run();
+        // Update task total
+        const newTotal = (task.total_time_seconds || 0) + elapsed;
+        await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ?, timer_started_at = NULL, timer_user_id = NULL WHERE id = ?').bind(newTotal, taskId).run();
+        // Audit log
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'timer_stopped', 'task', taskId, JSON.stringify({ dossier_id: dossierId, duration_seconds: elapsed, total_seconds: newTotal })).run();
+        return json({ ok: true, duration_seconds: elapsed, total_seconds: newTotal });
+      }
+
+      // --- ORG: GET TIMERS FOR DOSSIER ---
+      const orgTimerListMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/timers$/);
+      if (orgTimerListMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTimerListMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { results: entries } = await env.DB.prepare('SELECT te.*, t.label as task_label, u.full_name as user_name FROM org_time_entries te JOIN org_tasks t ON te.task_id = t.id JOIN org_users u ON te.user_id = u.id WHERE te.dossier_id = ? ORDER BY te.started_at DESC').bind(orgTimerListMatch[1]).all();
+        // Also get task timer states
+        const { results: tasks } = await env.DB.prepare('SELECT id, total_time_seconds, timer_started_at, timer_user_id FROM org_tasks WHERE dossier_id = ?').bind(orgTimerListMatch[1]).all();
+        return json({ entries, tasks });
+      }
+
       // --- ORG: UPDATE TASK ---
       const orgTaskMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)$/);
       if (orgTaskMatch && method === 'PATCH') {
@@ -1913,7 +1978,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTimelineMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const { results } = await env.DB.prepare(`SELECT * FROM org_audit_log WHERE target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_expected_documents WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_notes WHERE dossier_id = ?) OR (target_type = 'dossier' AND target_id = ?) ORDER BY created_at DESC LIMIT 100`).bind(orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1]).all();
+        function formatDur(sec: number): string { if (!sec) return ''; const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60); const s = sec % 60; if (h > 0) return `${h}h${String(m).padStart(2,'0')}min`; if (m > 0) return `${m}min${String(s).padStart(2,'0')}s`; return `${s}s`; }
+        const { results } = await env.DB.prepare(`SELECT * FROM org_audit_log WHERE target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_expected_documents WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_notes WHERE dossier_id = ?) OR (target_type = 'dossier' AND target_id = ?) OR (target_type = 'task' AND action LIKE 'timer%' AND target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?)) ORDER BY created_at DESC LIMIT 100`).bind(orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1]).all();
         const timeline = results.map((r: any) => {
           let icon = '📋', label = r.action;
           const details = r.details ? JSON.parse(r.details) : null;
@@ -1923,6 +1989,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           else if (r.action === 'dossier_closed') { icon = '🔒'; label = 'Clôture exercice'; }
           else if (r.action === 'dossier_created') { icon = '🆕'; label = 'Nouvel exercice'; }
           else if (r.action === 'note_added') { icon = '💬'; label = 'Note interne'; }
+          else if (r.action === 'timer_started') { icon = '▶️'; label = 'Chrono démarré'; }
+          else if (r.action === 'timer_stopped') { icon = '⏹️'; label = `Chrono arrêté — ${details ? formatDur(details.duration_seconds) : ''}`; }
           else if (r.action === 'client_reassigned') { icon = '👤'; label = 'Client réassigné'; }
           return { date: r.created_at, type: r.action, icon, label, actor: r.user_name || 'Système', details };
         });
@@ -1985,10 +2053,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
         const { results } = await env.DB.prepare('SELECT d.*, c.name as client_name, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(user.organization_id).all();
         const enriched = await Promise.all(results.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt, COALESCE(SUM(total_time_seconds), 0) as total_time FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
-          for (const t of tasks as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
-          return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0 };
+          let totalTime = 0;
+          for (const t of tasks as any[]) { s.total += t.cnt; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
         }));
         return json(enriched);
       }
