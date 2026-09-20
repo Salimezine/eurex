@@ -222,7 +222,7 @@ export default function OrgDossierPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={64} />
+          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={80} />
           <div className="text-right">
             <span className="text-2xl font-bold text-gray-800">{dossier.progress}%</span>
             <p className="text-xs text-gray-500">avancement</p>

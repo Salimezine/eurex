@@ -144,7 +144,7 @@ export default function OrgComptableDetail() {
             {dossiers.length === 0 && <p className="text-xs text-gray-400">Aucun dossier assigné</p>}
             {dossiers.map((d: any) => (
               <div key={d.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer" onClick={() => navigate(`/cabinet/dossier/${d.id}`)}>
-                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={40} />
+                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={72} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-800 truncate">{d.client_name}</p>
                   <p className="text-[11px] text-gray-400">Exercice {d.exercice} • {d.progress}%</p>

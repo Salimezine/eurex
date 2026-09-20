@@ -101,28 +101,38 @@ export default function OrgDashboardExpert() {
 
       {/* Tab: Comptables */}
       {tab === 'comptables' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {comptables.map(c => (
-            <div key={c.id} onClick={() => navigate(`/cabinet/comptable/${c.id}`)} className={`bg-white border rounded-xl p-5 cursor-pointer hover:shadow-md transition-all ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
-              <div className="flex items-start gap-4">
-                <ProgressDonut
-                  fait={c.task_stats.fait}
-                  enCours={c.task_stats.en_cours}
-                  bloqueClient={c.task_stats.bloque_client}
-                  size={72}
-                />
-                <div className="flex-1">
-                  <h3 className="font-semibold text-gray-800">{c.full_name}</h3>
-                  <p className="text-xs text-gray-500">{c.email}</p>
-                  <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
-                    <span>{c.client_count} client{c.client_count > 1 ? 's' : ''}</span>
-                    <span>•</span>
-                    <span>{t('expert.avg_progress')} : {c.avg_progress}%</span>
+            <div
+              key={c.id}
+              onClick={() => navigate(`/cabinet/comptable/${c.id}`)}
+              className={`group bg-white border rounded-2xl p-6 cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-purple-100/50 hover:border-purple-300 hover:-translate-y-1 ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}
+            >
+              <div className="flex items-start gap-5">
+                <div className="relative">
+                  <ProgressDonut
+                    fait={c.task_stats.fait}
+                    enCours={c.task_stats.en_cours}
+                    bloqueClient={c.task_stats.bloque_client}
+                    size={96}
+                  />
+                  {/* Pulse ring on hover */}
+                  <div className="absolute inset-0 rounded-full border-2 border-purple-400 opacity-0 group-hover:opacity-30 group-hover:animate-ping" style={{ margin: -8 }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-lg font-bold text-gray-800 group-hover:text-purple-700 transition-colors">{c.full_name}</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">{c.email}</p>
+                  <div className="flex items-center gap-3 mt-3 text-xs">
+                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-lg font-medium">
+                      {c.client_count} client{c.client_count > 1 ? 's' : ''}
+                    </span>
+                    <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg font-medium">
+                      {c.avg_progress}%
+                    </span>
                     {c.task_stats.bloque_client > 0 && (
-                      <>
-                        <span>•</span>
-                        <span className="text-red-600 font-medium">{c.task_stats.bloque_client} bloqué{c.task_stats.bloque_client > 1 ? 's' : ''}</span>
-                      </>
+                      <span className="bg-red-50 text-red-600 px-2 py-1 rounded-lg font-medium animate-pulse">
+                        🔴 {c.task_stats.bloque_client} bloqué{c.task_stats.bloque_client > 1 ? 's' : ''}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -131,7 +141,7 @@ export default function OrgDashboardExpert() {
                 fait={c.task_stats.fait}
                 enCours={c.task_stats.en_cours}
                 bloqueClient={c.task_stats.bloque_client}
-                className="mt-3 pt-3 border-t border-gray-100"
+                className="mt-4 pt-4 border-t border-gray-100"
               />
             </div>
           ))}
@@ -166,52 +176,53 @@ export default function OrgDashboardExpert() {
           </div>
 
           {/* Dossier list */}
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-100">
-                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Client</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Exercice</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-600">Comptable</th>
-                  <th className="text-center px-4 py-3 font-semibold text-gray-600">Avancement</th>
-                  <th className="text-center px-4 py-3 font-semibold text-gray-600">Statut</th>
-                  <th className="text-center px-4 py-3 font-semibold text-gray-600">Bloqué</th>
+                <tr className="border-b border-gray-100 bg-gray-50/50">
+                  <th className="text-left px-5 py-3.5 font-semibold text-gray-600">Client</th>
+                  <th className="text-left px-5 py-3.5 font-semibold text-gray-600">Exercice</th>
+                  <th className="text-left px-5 py-3.5 font-semibold text-gray-600">Comptable</th>
+                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Avancement</th>
+                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Statut</th>
+                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Bloqué</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredDossiers.map(d => (
-                  <tr key={d.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3">
-                      <Link to={`/cabinet/dossier/${d.id}`} className="font-medium text-purple-700 hover:underline">
+                  <tr key={d.id} className="border-b border-gray-50 hover:bg-purple-50/30 transition-all duration-200">
+                    <td className="px-5 py-4">
+                      <Link to={`/cabinet/dossier/${d.id}`} className="font-semibold text-purple-700 hover:text-purple-900 hover:underline transition-colors">
                         {d.client_name}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{d.exercice}</td>
-                    <td className="px-4 py-3 text-gray-500">{d.comptable_name || '—'}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2 justify-center">
-                        <div className="w-20 bg-gray-200 rounded-full h-2">
+                    <td className="px-5 py-4 text-gray-500 font-mono">{d.exercice}</td>
+                    <td className="px-5 py-4 text-gray-600">{d.comptable_name || '—'}</td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-3 justify-center">
+                        <div className="w-24 bg-gray-100 rounded-full h-2.5 overflow-hidden">
                           <div
-                            className="h-2 rounded-full transition-all"
+                            className="h-2.5 rounded-full transition-all duration-1000 ease-out"
                             style={{
                               width: `${d.progress || 0}%`,
-                              background: d.progress >= 80 ? '#10b981' : d.progress >= 40 ? '#3b82f6' : '#f59e0b',
+                              background: d.progress >= 80 ? 'linear-gradient(90deg, #10b981, #34d399)' : d.progress >= 40 ? 'linear-gradient(90deg, #3b82f6, #60a5fa)' : 'linear-gradient(90deg, #f59e0b, #fbbf24)',
+                              boxShadow: d.progress >= 80 ? '0 0 8px #10b98140' : d.progress >= 40 ? '0 0 8px #3b82f640' : '0 0 8px #f59e0b40',
                             }}
                           />
                         </div>
-                        <span className="text-xs font-medium text-gray-600">{d.progress || 0}%</span>
+                        <span className="text-xs font-bold text-gray-700 w-10 text-right">{d.progress || 0}%</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                    <td className="px-5 py-4 text-center">
+                      <span className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
                         d.status === 'cloture' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
                       }`}>
                         {t(`status.${d.status}`)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-5 py-4 text-center">
                       {d.task_stats?.bloque_client > 0 && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[11px] font-semibold">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-100 text-red-700 text-[11px] font-semibold animate-pulse">
                           <AlertTriangle size={11} />
                           {d.task_stats.bloque_client}
                         </span>

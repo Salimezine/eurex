@@ -76,7 +76,7 @@ export default function OrgDashboardComptable() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {filtered.map(client => {
           const hasBlocked = client.task_stats.bloque_client > 0;
           const hasMissingDocs = client.doc_stats.total > client.doc_stats.received;
@@ -86,50 +86,52 @@ export default function OrgDashboardComptable() {
             <Link
               key={client.id}
               to={`/cabinet/dossier/${d?.id || ''}`}
-              className={`bg-white border rounded-xl p-4 transition-all hover:shadow-md group relative ${
-                hasBlocked ? 'border-red-200 bg-red-50/30' : 'border-gray-200'
+              className={`group bg-white border rounded-2xl p-5 transition-all duration-300 hover:shadow-xl hover:shadow-purple-100/50 hover:-translate-y-1 relative overflow-hidden ${
+                hasBlocked ? 'border-red-200 bg-red-50/30 hover:border-red-300' : 'border-gray-200 hover:border-purple-300'
               }`}
             >
               {/* Badges */}
               {hasBlocked && (
-                <span className="absolute top-3 right-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[11px] font-semibold">
+                <span className="absolute top-3 right-3 flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-100 text-red-700 text-[11px] font-semibold animate-pulse">
                   <AlertTriangle size={12} />
                   {t('dash.blocked')}
                 </span>
               )}
               {hasMissingDocs && !hasBlocked && (
-                <span className="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-orange-400" title="Documents manquants" />
+                <span className="absolute top-3 right-3 flex items-center gap-1 px-2.5 py-1 rounded-full bg-orange-100 text-orange-600 text-[11px] font-medium">
+                  📄 Manquant
+                </span>
               )}
 
               {/* Header */}
-              <div className="flex items-start gap-3 mb-3">
+              <div className="flex items-start gap-4 mb-4">
                 <ProgressDonut
                   fait={client.task_stats.fait}
                   enCours={client.task_stats.en_cours}
                   bloqueClient={client.task_stats.bloque_client}
-                  size={56}
+                  size={72}
                 />
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-semibold text-gray-800 text-sm truncate">{client.name}</h3>
+                  <h3 className="font-bold text-gray-800 text-base group-hover:text-purple-700 transition-colors truncate">{client.name}</h3>
                   {client.matricule_fiscal && (
-                    <p className="text-[11px] text-gray-400">{client.matricule_fiscal}</p>
+                    <p className="text-[11px] text-gray-400 font-mono">{client.matricule_fiscal}</p>
                   )}
                   {d && (
-                    <p className="text-[11px] text-gray-500 mt-0.5">
-                      Exercice {d.exercice} — {t(`status.${d.status}`)}
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Exercice {d.exercice} — <span className="font-medium">{t(`status.${d.status}`)}</span>
                     </p>
                   )}
                 </div>
               </div>
 
               {/* Stats */}
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <span>
+              <div className="flex items-center justify-between text-xs mb-3">
+                <span className="bg-gray-100 text-gray-600 px-2.5 py-1 rounded-lg font-medium">
                   {client.task_stats.total - client.task_stats.fait} {t('dash.tasks_remaining')}
                 </span>
                 {client.task_stats.bloque_client > 0 && (
-                  <span className="text-red-600 font-medium">
-                    {client.task_stats.bloque_client} bloqué{client.task_stats.bloque_client > 1 ? 's' : ''}
+                  <span className="bg-red-100 text-red-600 px-2.5 py-1 rounded-lg font-semibold">
+                    🔴 {client.task_stats.bloque_client} bloqué{client.task_stats.bloque_client > 1 ? 's' : ''}
                   </span>
                 )}
               </div>
@@ -139,7 +141,7 @@ export default function OrgDashboardComptable() {
                 fait={client.task_stats.fait}
                 enCours={client.task_stats.en_cours}
                 bloqueClient={client.task_stats.bloque_client}
-                className="mt-2"
+                className="pt-3 border-t border-gray-100"
               />
 
               {/* Last activity indicator */}
