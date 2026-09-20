@@ -34,8 +34,7 @@ export default function OrgDashboardExpert() {
   const avgProgress = totalDossiers > 0
     ? Math.round(allDossiers.reduce((s, d) => s + (d.progress || 0), 0) / totalDossiers * 10) / 10
     : 0;
-  const blockedCount = allDossiers.filter(d => d.task_stats?.bloque_client > 0).length;
-  const blocked7j = blockedCount; // simplified — would need task dates in real impl
+  const blockedCount = allDossiers.filter(d => d.task_stats?.bloque_client > 0).length; // used for table badge
 
   const filteredDossiers = allDossiers
     .filter(d => filterComptable === 'all' || d.comptable_id === filterComptable)
@@ -54,7 +53,7 @@ export default function OrgDashboardExpert() {
         {[
           { label: 'Dossiers actifs', value: activeDossiers, icon: '📁', color: 'blue' },
           { label: 'Avancement moyen', value: `${avgProgress}%`, icon: '📊', color: 'emerald' },
-          { label: 'Bloqués', value: blockedCount, icon: '🔴', color: 'red' },
+          { label: 'En cours', value: activeDossiers, icon: '🔴', color: 'red' },
           { label: 'Comptables', value: comptables.length, icon: '👥', color: 'purple' },
         ].map((kpi, i) => (
           <div key={i} className="bg-white border border-gray-200 rounded-xl p-4">
