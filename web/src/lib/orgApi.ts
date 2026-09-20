@@ -162,6 +162,7 @@ export const orgApi = {
 
   // Expert-only
   getComptables: () => req<OrgComptable[]>('/org/comptables'),
+  getComptableDetail: (id: string) => req<any>(`/org/comptables/${id}/detail`),
   createComptable: (d: any) => req<any>('/org/comptables', { method: 'POST', body: JSON.stringify(d) }),
   toggleComptable: (id: string, isActive: boolean) =>
     req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify({ is_active: isActive }) }),

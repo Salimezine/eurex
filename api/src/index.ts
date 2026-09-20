@@ -2108,6 +2108,63 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true });
       }
 
+      // --- ORG: EXPERT — COMPTABLE DETAIL ---
+      if (path.match(/^\/api\/org\/comptables\/([^/]+)\/detail$/) && method === 'GET') {
+        const compId = path.match(/^\/api\/org\/comptables\/([^/]+)\/detail$/)![1];
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        // Comptable info
+        const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
+        if (!comptable) return json({ error: 'Comptable non trouvé' }, 404);
+        // All dossiers assigned to this comptable
+        const { results: dossiers } = await env.DB.prepare('SELECT d.*, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(compId, user.organization_id).all();
+        // Enrich dossiers with task stats
+        const enrichedDossiers = await Promise.all(dossiers.map(async (d: any) => {
+          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt, COALESCE(SUM(total_time_seconds), 0) as total_time FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          let totalTime = 0;
+          for (const t of tasks as any[]) { s.total += t.cnt; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
+        }));
+        // All tasks modified by this comptable
+        const { results: myTasks } = await env.DB.prepare('SELECT t.*, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE t.updated_by = ? ORDER BY t.updated_at DESC LIMIT 50').bind(compId).all();
+        // All notes written by this comptable
+        const { results: myNotes } = await env.DB.prepare('SELECT n.*, d.exercice, c.name as client_name FROM org_notes n JOIN org_dossiers d ON n.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 50').bind(compId).all();
+        // Time entries breakdown
+        const { results: timeEntries } = await env.DB.prepare('SELECT te.*, t.label as task_label, d.exercice, c.name as client_name FROM org_time_entries te JOIN org_tasks t ON te.task_id = t.id JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE te.user_id = ? ORDER BY te.started_at DESC').bind(compId).all();
+        const totalTimeEntries = timeEntries.reduce((sum: number, te: any) => sum + (te.duration_seconds || 0), 0);
+        // Time by dossier
+        const timeByDossier: Record<string, { client_name: string; exercice: number; seconds: number }> = {};
+        for (const te of timeEntries as any[]) {
+          const key = te.dossier_id;
+          if (!timeByDossier[key]) timeByDossier[key] = { client_name: te.client_name, exercice: te.exercice, seconds: 0 };
+          timeByDossier[key].seconds += te.duration_seconds || 0;
+        }
+        // Audit log (last 50 actions)
+        const { results: auditLog } = await env.DB.prepare('SELECT * FROM org_audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(compId).all();
+        // Active timer
+        const activeTimer = timeEntries.find((te: any) => !te.stopped_at);
+        // KPIs
+        const totalDossiers = enrichedDossiers.length;
+        const enCoursDossiers = enrichedDossiers.filter(d => d.status === 'en_cours').length;
+        const avgProgress = totalDossiers > 0 ? Math.round(enrichedDossiers.reduce((s, d) => s + (d.progress || 0), 0) / totalDossiers * 10) / 10 : 0;
+        const tasksDone = myTasks.filter(t => t.status === 'fait').length;
+        const totalNotes = myNotes.length;
+        const blockedTasks = enrichedDossiers.reduce((s, d) => s + (d.task_stats?.bloque_client || 0), 0);
+        return json({
+          comptable,
+          dossiers: enrichedDossiers,
+          recent_tasks: myTasks,
+          recent_notes: myNotes,
+          time_entries: timeEntries,
+          time_by_dossier: Object.values(timeByDossier),
+          total_time_seconds: totalTimeEntries,
+          audit_log: auditLog,
+          active_timer: activeTimer || null,
+          kpis: { total_dossiers: totalDossiers, en_cours: enCoursDossiers, avg_progress: avgProgress, tasks_done: tasksDone, total_notes: totalNotes, blocked_tasks: blockedTasks },
+        });
+      }
+
       // --- ORG: EXPERT — ALL DOSSIERS ---
       if (path === '/api/org/dossiers' && method === 'GET') {
         const user = await verifyOrgToken(request);

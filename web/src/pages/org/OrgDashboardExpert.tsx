@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { orgApi, OrgComptable, OrgDossier, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
@@ -8,6 +8,7 @@ import { Users, BarChart3, AlertTriangle, Search, Filter } from 'lucide-react';
 type Tab = 'comptables' | 'global';
 
 export default function OrgDashboardExpert() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('comptables');
   const [comptables, setComptables] = useState<OrgComptable[]>([]);
   const [allDossiers, setAllDossiers] = useState<any[]>([]);
@@ -102,7 +103,7 @@ export default function OrgDashboardExpert() {
       {tab === 'comptables' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {comptables.map(c => (
-            <div key={c.id} className={`bg-white border rounded-xl p-5 ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
+            <div key={c.id} onClick={() => navigate(`/cabinet/comptable/${c.id}`)} className={`bg-white border rounded-xl p-5 cursor-pointer hover:shadow-md transition-all ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
               <div className="flex items-start gap-4">
                 <ProgressDonut
                   fait={c.task_stats.fait}

@@ -71,6 +71,16 @@ const translations: Record<string, Record<Lang, string>> = {
   'timeline.blockages': { fr: 'Blocages uniquement', ar: 'الحجوب فقط' },
   'timeline.documents': { fr: 'Documents uniquement', ar: 'المستندات فقط' },
   'timeline.time': { fr: 'Chrono', ar: 'التوقيت' },
+  // Comptable detail
+  'comp.tasks_done': { fr: 'Tâches terminées', ar: 'المهام المنجزة' },
+  'comp.notes_written': { fr: 'Notes rédigées', ar: 'الملاحظات المكتوبة' },
+  'comp.total_time': { fr: 'Temps total', ar: 'الوقت الكلي' },
+  'comp.time_by_dossier': { fr: 'Temps par dossier', ar: 'الوقت حسب الملف' },
+  'comp.recent_tasks': { fr: 'Tâches récentes', ar: 'المهام الأخيرة' },
+  'comp.recent_notes': { fr: 'Notes récentes', ar: 'الملاحظات الأخيرة' },
+  'comp.audit_log': { fr: 'Journal d\'activité', ar: 'سجل النشاط' },
+  'comp.all_dossiers': { fr: 'Tous les dossiers', ar: 'جميع الملفات' },
+  'comp.overview': { fr: 'Vue d\'ensemble', ar: 'نظرة عامة' },
 
   // Client portal
   'portal.title': { fr: 'Espace Client', ar: 'مساحة العميل' },

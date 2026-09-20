@@ -7,6 +7,7 @@ import OrgDashboardComptable from './OrgDashboardComptable';
 import OrgDashboardExpert from './OrgDashboardExpert';
 import OrgDossierPage from './OrgDossierPage';
 import OrgSettings from './OrgSettings';
+import OrgComptableDetail from './OrgComptableDetail';
 import { Building2, LayoutDashboard, Users, Settings, LogOut, Globe } from 'lucide-react';
 
 initLang();
@@ -106,6 +107,7 @@ function OrgInner() {
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
           <Route path="/dossier/:id" element={<OrgDossierPage />} />
           <Route path="/settings" element={isExpert ? <OrgSettings /> : <Navigate to="/cabinet" />} />
+          <Route path="/comptable/:id" element={isExpert ? <OrgComptableDetail /> : <Navigate to="/cabinet" />} />
           <Route path="*" element={<Navigate to="/cabinet" />} />
         </Routes>
       </main>
