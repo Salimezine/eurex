@@ -1,0 +1,457 @@
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { orgApi, OrgDossier, OrgTask, OrgDocument } from '../../lib/orgApi';
+import { useOrgAuth } from '../../lib/orgAuth';
+import { t } from '../../lib/orgI18n';
+import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
+import Timeline from '../../components/Timeline';
+import {
+  ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
+  Send, FileText, MessageSquare, Clock, ChevronDown, ChevronUp,
+  ExternalLink, Eye,
+} from 'lucide-react';
+
+type Tab = 'checklist' | 'documents' | 'notes' | 'timeline';
+
+const STATUS_ICONS: Record<string, any> = {
+  a_faire: Circle,
+  en_cours: Clock,
+  fait: CheckCircle2,
+  bloque_client: AlertTriangle,
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  a_faire: 'text-gray-400 bg-gray-50',
+  en_cours: 'text-blue-600 bg-blue-50',
+  fait: 'text-emerald-600 bg-emerald-50',
+  bloque_client: 'text-red-600 bg-red-50',
+};
+
+export default function OrgDossierPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { state } = useOrgAuth();
+  const [dossier, setDossier] = useState<OrgDossier | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>('checklist');
+  const [timeline, setTimeline] = useState<any[]>([]);
+  const [noteText, setNoteText] = useState('');
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
+  const [closeJustification, setCloseJustification] = useState('');
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showNewDossierModal, setShowNewDossierModal] = useState(false);
+  const [newExercice, setNewExercice] = useState(new Date().getFullYear());
+
+  const load = () => {
+    if (!id) return;
+    orgApi.getDossier(id).then(setDossier).catch(console.error).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [id]);
+
+  const loadTimeline = async () => {
+    if (!id) return;
+    try {
+      const t = await orgApi.getTimeline(id);
+      setTimeline(t);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (tab === 'timeline' && id) loadTimeline();
+  }, [tab, id]);
+
+  const updateTaskStatus = async (taskId: string, newStatus: string, reason?: string) => {
+    if (!dossier) return;
+    try {
+      await orgApi.updateTask(dossier.id, taskId, newStatus, reason);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const toggleDocument = async (docId: string, received: boolean, note?: string) => {
+    if (!dossier) return;
+    try {
+      await orgApi.updateDocument(dossier.id, docId, received, note);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const addNote = async () => {
+    if (!dossier || !noteText.trim()) return;
+    try {
+      await orgApi.addNote(dossier.id, noteText.trim());
+      setNoteText('');
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const closeDossier = async (force = false) => {
+    if (!dossier) return;
+    try {
+      await orgApi.closeDossier(dossier.id, force, force ? closeJustification : undefined);
+      setShowCloseModal(false);
+      setCloseJustification('');
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const openNextExercice = async () => {
+    if (!dossier) return;
+    try {
+      await orgApi.createDossier(dossier.client_id, newExercice);
+      setShowNewDossierModal(false);
+      navigate('/cabinet');
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  if (loading) return (
+    <div className="flex justify-center py-12">
+      <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
+    </div>
+  );
+
+  if (!dossier) return (
+    <div className="text-center py-12 text-gray-400">Dossier non trouvé</div>
+  );
+
+  const ts = dossier.task_stats;
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <button onClick={() => navigate('/cabinet')} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+          <ArrowLeft size={20} className="text-gray-600" />
+        </button>
+        <div className="flex-1">
+          <h2 className="text-xl font-bold text-gray-800">{dossier.client_name}</h2>
+          <p className="text-sm text-gray-500">
+            Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={64} />
+          <div className="text-right">
+            <span className="text-2xl font-bold text-gray-800">{dossier.progress}%</span>
+            <p className="text-xs text-gray-500">avancement</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center gap-2">
+        {dossier.status === 'en_cours' && (
+          <>
+            <button
+              onClick={() => setShowCloseModal(true)}
+              disabled={!dossier.can_close && !dossier.can_force_close}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                dossier.can_close
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              <Lock size={14} />
+              {t('dossier.close')}
+            </button>
+            {!dossier.can_close && dossier.can_force_close && (
+              <button
+                onClick={() => setShowCloseModal(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-orange-100 text-orange-700 hover:bg-orange-200 transition-all"
+              >
+                <Unlock size={14} />
+                Clôture forcée
+              </button>
+            )}
+          </>
+        )}
+        {dossier.status === 'cloture' && (
+          <button
+            onClick={() => setShowNewDossierModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 transition-all"
+          >
+            {t('dossier.open_next')}
+          </button>
+        )}
+
+        {/* Link to EUREX invoicing */}
+        {dossier.status === 'en_cours' && (
+          <a
+            href={`/eurex/achats`}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-orange-50 text-orange-700 hover:bg-orange-100 transition-all"
+          >
+            <ExternalLink size={14} />
+            Générer les écritures
+          </a>
+        )}
+      </div>
+
+      {/* Legend */}
+      <DonutLegend fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} />
+
+      {/* Tabs */}
+      <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+        {([
+          { key: 'checklist' as Tab, label: t('dossier.checklist'), count: ts.total },
+          { key: 'documents' as Tab, label: t('dossier.documents'), count: dossier.documents.length },
+          { key: 'notes' as Tab, label: t('dossier.notes'), count: dossier.notes.length },
+          { key: 'timeline' as Tab, label: t('dossier.timeline') },
+        ]).map(t2 => (
+          <button
+            key={t2.key}
+            onClick={() => setTab(t2.key)}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t2.label}
+            {t2.count !== undefined && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-gray-200 text-[10px] text-gray-600">{t2.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab: Checklist */}
+      {tab === 'checklist' && (
+        <div className="space-y-2">
+          {(dossier.tasks || []).map(task => {
+            const Icon = STATUS_ICONS[task.status] || Circle;
+            const isExpanded = expandedTask === task.id;
+            const isBlocked = task.status === 'bloque_client';
+
+            return (
+              <div key={task.id} className={`bg-white border rounded-xl overflow-hidden transition-all ${isBlocked ? 'border-red-200' : 'border-gray-200'}`}>
+                <div
+                  className="flex items-center gap-3 p-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                  onClick={() => setExpandedTask(isExpanded ? null : task.id)}
+                >
+                  <Icon size={18} className={STATUS_COLORS[task.status]?.split(' ')[0] || 'text-gray-400'} />
+                  <span className={`flex-1 text-sm font-medium ${task.status === 'fait' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                    {task.label}
+                  </span>
+                  {isBlocked && (
+                    <span className="text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full font-medium">
+                      {task.blocked_reason || t('status.bloque_client')}
+                    </span>
+                  )}
+                  {isExpanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+                </div>
+
+                {isExpanded && (
+                  <div className="px-3 pb-3 pt-1 border-t border-gray-100">
+                    <div className="flex flex-wrap gap-2">
+                      {task.status !== 'a_faire' && task.status !== 'fait' && (
+                        <button onClick={() => updateTaskStatus(task.id, 'a_faire')} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 text-gray-600 hover:bg-gray-200">
+                          {t('status.a_faire')}
+                        </button>
+                      )}
+                      {task.status !== 'en_cours' && task.status !== 'fait' && (
+                        <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-3 py-1.5 rounded-lg text-xs bg-blue-100 text-blue-700 hover:bg-blue-200">
+                          {t('status.en_cours_task')}
+                        </button>
+                      )}
+                      {task.status !== 'fait' && (
+                        <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-3 py-1.5 rounded-lg text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200">
+                          {t('status.fait')}
+                        </button>
+                      )}
+                      {task.status !== 'bloque_client' && task.status !== 'fait' && (
+                        <button
+                          onClick={() => {
+                            const reason = prompt('Raison du blocage :');
+                            if (reason) updateTaskStatus(task.id, 'bloque_client', reason);
+                          }}
+                          className="px-3 py-1.5 rounded-lg text-xs bg-red-100 text-red-700 hover:bg-red-200"
+                        >
+                          {t('status.bloque_client')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Tab: Documents */}
+      {tab === 'documents' && (
+        <div className="space-y-2">
+          {dossier.documents.length === 0 && (
+            <p className="text-sm text-gray-400 text-center py-8">Aucun document attendu</p>
+          )}
+          {dossier.documents.map(doc => (
+            <div key={doc.id} className={`bg-white border rounded-xl p-3 flex items-center gap-3 ${
+              doc.received ? 'border-emerald-200 bg-emerald-50/30' : 'border-gray-200'
+            }`}>
+              <FileText size={18} className={doc.received ? 'text-emerald-500' : 'text-gray-400'} />
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm font-medium ${doc.received ? 'text-gray-500' : 'text-gray-800'}`}>
+                  {doc.label}
+                </p>
+                {doc.received_at && (
+                  <p className="text-[11px] text-gray-400">
+                    Reçu le {new Date(doc.received_at).toLocaleDateString('fr-FR')}
+                    {doc.received_note && ` — ${doc.received_note}`}
+                  </p>
+                )}
+              </div>
+              {doc.received ? (
+                <button
+                  onClick={() => toggleDocument(doc.id, false)}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 text-gray-500 hover:bg-gray-200"
+                >
+                  Annuler
+                </button>
+              ) : (
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => toggleDocument(doc.id, true)}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                  >
+                    {t('dossier.mark_received')}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const note = prompt(t('dossier.manual_received'));
+                      if (note !== null) toggleDocument(doc.id, true, note || undefined);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-blue-100 text-blue-700 hover:bg-blue-200"
+                    title="Reçu par WhatsApp/email"
+                  >
+                    📱
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tab: Notes */}
+      {tab === 'notes' && (
+        <div className="space-y-3">
+          {/* Add note */}
+          <div className="bg-white border border-gray-200 rounded-xl p-3">
+            <textarea
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              placeholder={t('dossier.add_note')}
+              rows={2}
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm resize-none focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+            />
+            <div className="flex justify-end mt-2">
+              <button
+                onClick={addNote}
+                disabled={!noteText.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-all"
+              >
+                <Send size={12} />
+                Envoyer
+              </button>
+            </div>
+          </div>
+
+          {/* Notes list */}
+          {dossier.notes.map(note => (
+            <div key={note.id} className="bg-white border border-gray-200 rounded-xl p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <MessageSquare size={14} className="text-purple-500" />
+                <span className="text-xs font-semibold text-gray-700">{note.user_name}</span>
+                <span className="text-[11px] text-gray-400">
+                  {new Date(note.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <p className="text-sm text-gray-700 whitespace-pre-wrap">{note.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tab: Timeline */}
+      {tab === 'timeline' && (
+        <Timeline events={timeline} />
+      )}
+
+      {/* Close Modal */}
+      {showCloseModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="font-bold text-gray-800 mb-3">
+              {dossier.can_close ? t('dossier.close') : 'Clôture forcée'}
+            </h3>
+            {!dossier.can_close && (
+              <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                <p className="text-sm text-orange-700 font-medium mb-1">Tâches non terminées :</p>
+                <ul className="text-xs text-orange-600 space-y-0.5">
+                  {dossier.block_reasons.map((r, i) => <li key={i}>• {r}</li>)}
+                </ul>
+              </div>
+            )}
+            {(!dossier.can_close || dossier.can_force_close) && (
+              <div className="mb-4">
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Justification (obligatoire pour clôture forcée)</label>
+                <textarea
+                  value={closeJustification}
+                  onChange={e => setCloseJustification(e.target.value)}
+                  rows={3}
+                  className="w-full border border-gray-200 rounded-lg p-2.5 text-sm resize-none focus:ring-2 focus:ring-purple-500 outline-none"
+                  placeholder="Expliquez la raison de la clôture..."
+                />
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => { setShowCloseModal(false); setCloseJustification(''); }} className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+                Annuler
+              </button>
+              <button
+                onClick={() => closeDossier(!dossier.can_close)}
+                disabled={!dossier.can_close && !closeJustification.trim()}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Dossier Modal */}
+      {showNewDossierModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 className="font-bold text-gray-800 mb-3">{t('dossier.open_next')}</h3>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Exercice</label>
+            <input
+              type="number"
+              value={newExercice}
+              onChange={e => setNewExercice(parseInt(e.target.value) || new Date().getFullYear())}
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+            />
+            <div className="flex gap-2 justify-end mt-4">
+              <button onClick={() => setShowNewDossierModal(false)} className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">
+                Annuler
+              </button>
+              <button onClick={openNextExercice} className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700">
+                Créer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

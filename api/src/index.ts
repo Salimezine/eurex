@@ -39,7 +39,7 @@ async function callFallbackWorkers(body: unknown, env: Env): Promise<string | nu
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' },
   });
 }
 
@@ -49,7 +49,7 @@ function cors(): Response {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     },
   });
 }
@@ -1631,6 +1631,468 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
 
         return json({ ok: true, fixed, ecrituresFixed: ecrBatch.length });
+      }
+
+      // ============================================================
+      // ORGANIZATION MODULE — Cabinet d'Expertise Comptable
+      // ============================================================
+
+      // --- ORG: AUTH ---
+      if (path === '/api/org/auth/login' && method === 'POST') {
+        const { email, password } = await request.json() as any;
+        if (!email || !password) return json({ error: 'Email et mot de passe requis' }, 400);
+        const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, password_hash, role, must_change_password, is_active FROM org_users WHERE email = ?').bind(email).first() as any;
+        if (!user) return json({ error: 'Identifiants incorrects' }, 401);
+        if (!user.is_active) return json({ error: 'Compte désactivé' }, 403);
+        // Verify password (SHA-256 with salt)
+        const [salt, expectedHash] = user.password_hash.split(':');
+        if (!salt || !expectedHash) return json({ error: 'Identifiants incorrects' }, 401);
+        const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + password));
+        const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        if (hashHex !== expectedHash) return json({ error: 'Identifiants incorrects' }, 401);
+        const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
+        // Create token
+        const tokenPayload = JSON.stringify({ user_id: user.id, organization_id: user.organization_id, role: user.role, exp: Date.now() + 86400000 });
+        const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('eurex_org_secret_2026'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(tokenPayload));
+        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+        const token = btoa(tokenPayload).replace(/=/g, '') + '.' + sigHex;
+        return json({ token, user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role, must_change_password: user.must_change_password, organization: org?.name || '' } });
+      }
+
+      // --- ORG: Verify token helper (inline) ---
+      async function verifyOrgToken(request: Request): Promise<any> {
+        const auth = request.headers.get('Authorization');
+        if (!auth?.startsWith('Bearer ')) return null;
+        const token = auth.slice(7);
+        try {
+          const [dataB64, sigHex] = token.split('.');
+          if (!dataB64 || !sigHex) return null;
+          const data = atob(dataB64);
+          const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('eurex_org_secret_2026'), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+          const sigBytes = new Uint8Array(sigHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
+          const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
+          if (!valid) return null;
+          const payload = JSON.parse(data);
+          if (payload.exp < Date.now()) return null;
+          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, is_active FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
+          if (!user || !user.is_active) return null;
+          return user;
+        } catch { return null; }
+      }
+
+      async function orgCanAccessDossier(user: any, dossierId: string): Promise<boolean> {
+        if (user.role === 'expert') return true;
+        const d = await env.DB.prepare(`SELECT c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?`).bind(dossierId, user.organization_id).first() as any;
+        return d?.assigned_comptable_id === user.id;
+      }
+
+      async function orgCanAccessClient(user: any, clientId: string): Promise<boolean> {
+        if (user.role === 'expert') return true;
+        const c = await env.DB.prepare('SELECT assigned_comptable_id FROM org_clients WHERE id = ? AND organization_id = ?').bind(clientId, user.organization_id).first() as any;
+        return c?.assigned_comptable_id === user.id;
+      }
+
+      async function orgRecalcProgress(dossierId: string) {
+        const { results } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(dossierId).all();
+        let total = 0, fait = 0;
+        for (const t of results as any[]) { total += t.cnt; if (t.status === 'fait') fait += t.cnt; }
+        const progress = total > 0 ? Math.round(fait / total * 1000) / 10 : 0;
+        await env.DB.prepare('UPDATE org_dossiers SET cached_progress = ? WHERE id = ?').bind(progress, dossierId).run();
+        return progress;
+      }
+
+      // --- ORG: ME ---
+      if (path === '/api/org/auth/me' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
+        return json({ ...user, organization_name: org?.name });
+      }
+
+      // --- ORG: CHANGE PASSWORD ---
+      if (path === '/api/org/auth/change-password' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const { current_password, new_password } = await request.json() as any;
+        if (!current_password || !new_password) return json({ error: 'Mots de passe requis' }, 400);
+        if (new_password.length < 12) return json({ error: 'Le mot de passe doit faire au moins 12 caractères' }, 400);
+        const stored = await env.DB.prepare('SELECT password_hash FROM org_users WHERE id = ?').bind(user.id).first() as any;
+        const [salt] = stored.password_hash.split(':');
+        const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + current_password));
+        const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        if (hashHex !== stored.password_hash.split(':')[1]) return json({ error: 'Mot de passe actuel incorrect' }, 401);
+        const newSalt = crypto.randomUUID().slice(0, 16);
+        const newHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(newSalt + ':' + new_password));
+        const newHashHex = Array.from(new Uint8Array(newHashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        await env.DB.prepare('UPDATE org_users SET password_hash = ?, must_change_password = 0 WHERE id = ?').bind(newSalt + ':' + newHashHex, user.id).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: CLIENTS ---
+      if (path === '/api/org/clients' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        let clients;
+        if (user.role === 'expert') {
+          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY c.name').bind(user.organization_id).all();
+          clients = r.results;
+        } else {
+          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? ORDER BY c.name').bind(user.organization_id, user.id).all();
+          clients = r.results;
+        }
+        // Enrich with dossier + progress
+        const enriched = await Promise.all(clients.map(async (c: any) => {
+          const d = await env.DB.prepare("SELECT * FROM org_dossiers WHERE client_id = ? AND status = 'en_cours' ORDER BY exercice DESC LIMIT 1").bind(c.id).first() as any;
+          let taskStats = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          let docStats = { total: 0, received: 0 };
+          if (d) {
+            const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+            for (const t of tasks as any[]) { taskStats.total += t.cnt; if (t.status === 'fait') taskStats.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') taskStats.en_cours += t.cnt; else if (t.status === 'bloque_client') taskStats.bloque_client += t.cnt; }
+            const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
+            if (ds) { docStats.total = ds.total || 0; docStats.received = ds.received || 0; }
+          }
+          return { ...c, dossier_actuel: d || null, task_stats: taskStats, doc_stats: docStats, progress: taskStats.total > 0 ? Math.round(taskStats.fait / taskStats.total * 100 * 10) / 10 : 0 };
+        }));
+        return json(enriched);
+      }
+
+      if (path === '/api/org/clients' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { name, matricule_fiscal, assigned_comptable_id, contact_email, contact_phone } = await request.json() as any;
+        if (!name) return json({ error: 'Nom requis' }, 400);
+        const id = genId();
+        await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, assigned_comptable_id || null, name, matricule_fiscal || null, contact_email || null, contact_phone || null).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_created\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ name })).run();
+        return json({ id, name }, 201);
+      }
+
+      const orgClientReassignMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/reassign$/);
+      if (orgClientReassignMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { assigned_comptable_id } = await request.json() as any;
+        if (!assigned_comptable_id) return json({ error: 'assigned_comptable_id requis' }, 400);
+        const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientReassignMatch[1], user.organization_id).first() as any;
+        if (!client) return json({ error: 'Client non trouvé' }, 404);
+        await env.DB.prepare('UPDATE org_clients SET assigned_comptable_id = ? WHERE id = ?').bind(assigned_comptable_id, orgClientReassignMatch[1]).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_reassigned\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgClientReassignMatch[1], JSON.stringify({ old: client.assigned_comptable_id, new: assigned_comptable_id })).run();
+        return json({ ok: true });
+      }
+
+      const orgClientDossiersMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/dossiers$/);
+      if (orgClientDossiersMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessClient(user, orgClientDossiersMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { results } = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC').bind(orgClientDossiersMatch[1]).all();
+        const enriched = await Promise.all(results.map(async (d: any) => {
+          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          for (const t of tasks as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0 };
+        }));
+        return json(enriched);
+      }
+
+      if (orgClientDossiersMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessClient(user, orgClientDossiersMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { exercice } = await request.json() as any;
+        if (!exercice) return json({ error: 'Exercice requis' }, 400);
+        const prev = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC LIMIT 1').bind(orgClientDossiersMatch[1]).first() as any;
+        if (prev && prev.status !== 'cloture') return json({ error: 'Le dossier précédent doit être clôturé' }, 400);
+        const existing = await env.DB.prepare('SELECT id FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(orgClientDossiersMatch[1], exercice).first();
+        if (existing) return json({ error: 'Un dossier existe déjà pour cet exercice' }, 409);
+        const dossierId = genId();
+        await env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(dossierId, orgClientDossiersMatch[1], exercice).run();
+        // Apply template
+        const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
+        for (const tmpl of templates as any[]) {
+          const taskId = genId();
+          await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index) VALUES (?, ?, ?, \'a_faire\', ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index).run();
+          if (tmpl.requires_document) {
+            await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, tmpl.label).run();
+          }
+        }
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_created\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, dossierId, JSON.stringify({ exercice, client_id: orgClientDossiersMatch[1] })).run();
+        return json({ id: dossierId, exercice, status: 'en_cours' }, 201);
+      }
+
+      // --- ORG: DOSSIER DETAIL ---
+      const orgDossierGetMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)$/);
+      if (orgDossierGetMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        const { results: tasks } = await env.DB.prepare('SELECT * FROM org_tasks WHERE dossier_id = ? ORDER BY order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
+        const { results: notes } = await env.DB.prepare('SELECT n.*, u.full_name as author_name FROM org_notes n LEFT JOIN org_users u ON n.user_id = u.id WHERE n.dossier_id = ? ORDER BY n.created_at DESC').bind(orgDossierGetMatch[1]).all();
+        const stats = { total: tasks.length, fait: 0, en_cours: 0, bloque_client: 0 };
+        for (const t of tasks as any[]) { if (t.status === 'fait') stats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') stats.en_cours++; else if (t.status === 'bloque_client') stats.bloque_client++; }
+        const docStats = { total: documents.length, received: documents.filter((d: any) => d.received).length };
+        const canClose = stats.bloque_client === 0 && stats.en_cours === 0;
+        const blockReasons = (tasks as any[]).filter(t => t.status !== 'fait').map(t => t.label);
+        return json({ ...dossier, tasks, documents, notes, task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: user.role === 'expert', block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
+      }
+
+      // --- ORG: CLOSE DOSSIER ---
+      const orgDossierCloseMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/close$/);
+      if (orgDossierCloseMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgDossierCloseMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const dossier = await env.DB.prepare('SELECT * FROM org_dossiers WHERE id = ?').bind(orgDossierCloseMatch[1]).first() as any;
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        if (dossier.status === 'cloture') return json({ error: 'Dossier déjà clôturé' }, 400);
+        const { results: blockedTasks } = await env.DB.prepare('SELECT label FROM org_tasks WHERE dossier_id = ? AND status != \'fait\'').bind(orgDossierCloseMatch[1]).all();
+        const { force, justification } = await request.json() as any;
+        if (blockedTasks.length > 0 && !force) return json({ error: `Clôture impossible — tâches restantes : ${blockedTasks.map((t: any) => t.label).join(', ')}` }, 400);
+        if (blockedTasks.length > 0 && force && user.role !== 'expert') return json({ error: 'Seul un expert peut forcer la clôture' }, 403);
+        await env.DB.prepare("UPDATE org_dossiers SET status = 'cloture', closed_at = datetime('now'), closed_by = ? WHERE id = ?").bind(user.id, orgDossierCloseMatch[1]).run();
+        const details: any = { forced: !!force };
+        if (justification) details.justification = justification;
+        if (blockedTasks.length > 0) details.blocked_tasks = blockedTasks.map((t: any) => t.label);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_closed\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgDossierCloseMatch[1], JSON.stringify(details)).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: UPDATE TASK ---
+      const orgTaskMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)$/);
+      if (orgTaskMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { status, blocked_reason } = await request.json() as any;
+        if (!status || !['a_faire', 'en_cours', 'fait', 'bloque_client'].includes(status)) return json({ error: 'Status invalide' }, 400);
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        const oldStatus = task.status;
+        await env.DB.prepare("UPDATE org_tasks SET status = ?, blocked_reason = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(status, blocked_reason || null, user.id, orgTaskMatch[2]).run();
+        const progress = await orgRecalcProgress(orgTaskMatch[1]);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: status, blocked_reason })).run();
+        return json({ ok: true, progress });
+      }
+
+      // --- ORG: UPDATE DOCUMENT ---
+      const orgDocMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/documents\/([^/]+)$/);
+      if (orgDocMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgDocMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ? AND dossier_id = ?').bind(orgDocMatch[2], orgDocMatch[1]).first() as any;
+        if (!doc) return json({ error: 'Document non trouvé' }, 404);
+        const { received, received_note } = await request.json() as any;
+        await env.DB.prepare("UPDATE org_expected_documents SET received = ?, received_at = datetime('now'), received_note = ?, updated_by = ? WHERE id = ?").bind(received ? 1 : 0, received_note || null, user.id, orgDocMatch[2]).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, received ? 'document_received' : 'document_unreceived', orgDocMatch[2], JSON.stringify({ label: doc.label, received, received_note })).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: ADD NOTE ---
+      const orgNoteMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/notes$/);
+      if (orgNoteMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgNoteMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { content } = await request.json() as any;
+        if (!content?.trim()) return json({ error: 'Contenu requis' }, 400);
+        const noteId = genId();
+        await env.DB.prepare('INSERT INTO org_notes (id, dossier_id, user_id, user_name, content) VALUES (?, ?, ?, ?, ?)').bind(noteId, orgNoteMatch[1], user.id, user.full_name, content.trim()).run();
+        return json({ id: noteId }, 201);
+      }
+
+      // --- ORG: TIMELINE ---
+      const orgTimelineMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/timeline$/);
+      if (orgTimelineMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTimelineMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { results } = await env.DB.prepare(`SELECT * FROM org_audit_log WHERE target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_expected_documents WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_notes WHERE dossier_id = ?) OR (target_type = 'dossier' AND target_id = ?) ORDER BY created_at DESC LIMIT 100`).bind(orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1], orgTimelineMatch[1]).all();
+        const timeline = results.map((r: any) => {
+          let icon = '📋', label = r.action;
+          const details = r.details ? JSON.parse(r.details) : null;
+          if (r.action === 'task_status_changed') { if (details?.new_status === 'fait') { icon = '🟢'; label = 'Tâche terminée'; } else if (details?.new_status === 'bloque_client') { icon = '🔴'; label = `Tâche bloquée — ${details.blocked_reason || ''}`; } else { icon = '🔵'; label = `Statut → ${details?.new_status}`; } }
+          else if (r.action === 'document_received') { icon = '📎'; label = 'Document reçu'; }
+          else if (r.action === 'document_unreceived') { icon = '📄'; label = 'Document non reçu'; }
+          else if (r.action === 'dossier_closed') { icon = '🔒'; label = 'Clôture exercice'; }
+          else if (r.action === 'dossier_created') { icon = '🆕'; label = 'Nouvel exercice'; }
+          else if (r.action === 'note_added') { icon = '💬'; label = 'Note interne'; }
+          else if (r.action === 'client_reassigned') { icon = '👤'; label = 'Client réassigné'; }
+          return { date: r.created_at, type: r.action, icon, label, actor: r.user_name || 'Système', details };
+        });
+        return json(timeline);
+      }
+
+      // --- ORG: AUDIT LOG ---
+      const orgAuditMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/audit$/);
+      if (orgAuditMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgAuditMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { results } = await env.DB.prepare('SELECT * FROM org_audit_log WHERE target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_expected_documents WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_notes WHERE dossier_id = ?) OR (target_type = \'dossier\' AND target_id = ?) ORDER BY created_at DESC LIMIT 200').bind(orgAuditMatch[1], orgAuditMatch[1], orgAuditMatch[1], orgAuditMatch[1]).all();
+        return json(results);
+      }
+
+      // --- ORG: EXPERT — COMPTABLES ---
+      if (path === '/api/org/comptables' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
+        const enriched = await Promise.all(results.map(async (c: any) => {
+          const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
+          const { results: taskStats } = await env.DB.prepare('SELECT t.status, COUNT(*) as cnt FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\' GROUP BY t.status').bind(c.id, user.organization_id).all();
+          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          for (const t of taskStats as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s };
+        }));
+        return json(enriched);
+      }
+
+      if (path === '/api/org/comptables' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { full_name, email, password } = await request.json() as any;
+        if (!full_name || !email || !password) return json({ error: 'Nom, email et mot de passe requis' }, 400);
+        if (password.length < 12) return json({ error: 'Le mot de passe doit faire au moins 12 caractères' }, 400);
+        const existing = await env.DB.prepare('SELECT id FROM org_users WHERE email = ?').bind(email).first();
+        if (existing) return json({ error: 'Cet email est déjà utilisé' }, 409);
+        const id = genId();
+        const salt = crypto.randomUUID().slice(0, 16);
+        const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + password));
+        const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        await env.DB.prepare("INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, must_change_password) VALUES (?, ?, ?, ?, ?, 'comptable', 1)").bind(id, user.organization_id, full_name, email, salt + ':' + hashHex).run();
+        return json({ id, full_name, email, role: 'comptable' }, 201);
+      }
+
+      const orgCompToggleMatch = path.match(/^\/api\/org\/comptables\/([^/]+)$/);
+      if (orgCompToggleMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { is_active } = await request.json() as any;
+        await env.DB.prepare('UPDATE org_users SET is_active = ? WHERE id = ? AND organization_id = ?').bind(is_active ? 1 : 0, orgCompToggleMatch[1], user.organization_id).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: EXPERT — ALL DOSSIERS ---
+      if (path === '/api/org/dossiers' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { results } = await env.DB.prepare('SELECT d.*, c.name as client_name, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(user.organization_id).all();
+        const enriched = await Promise.all(results.map(async (d: any) => {
+          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          for (const t of tasks as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0 };
+        }));
+        return json(enriched);
+      }
+
+      // --- ORG: TEMPLATES ---
+      if (path === '/api/org/templates' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const { results } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
+        return json(results);
+      }
+      if (path === '/api/org/templates' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { label, requires_document } = await request.json() as any;
+        if (!label) return json({ error: 'Libellé requis' }, 400);
+        const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
+        const id = genId();
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document) VALUES (?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0).run();
+        return json({ id, label }, 201);
+      }
+      const orgTmplDelMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
+      if (orgTmplDelMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        await env.DB.prepare('DELETE FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplDelMatch[1], user.organization_id).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: SEED DATA ---
+      if (path === '/api/org/seed' && method === 'POST') {
+        // Check if already seeded
+        const existing = await env.DB.prepare('SELECT id FROM organizations LIMIT 1').first();
+        if (existing) return json({ ok: true, msg: 'Already seeded' });
+
+        // Create organization
+        const orgId = 'org_cabinet_001';
+        await env.DB.prepare('INSERT INTO organizations (id, name) VALUES (?, ?)').bind(orgId, 'Cabinet Ezzine & Associates').run();
+
+        // Helper to create password hash
+        const makeHash = async (pwd: string) => {
+          const salt = crypto.randomUUID().slice(0, 16);
+          const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pwd));
+          const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+          return salt + ':' + hashHex;
+        };
+
+        // Users
+        const expertHash = await makeHash('expert1234567');
+        const comp1Hash = await makeHash('comptable1234567');
+        const comp2Hash = await makeHash('comptable1234567');
+
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'Med Salim Ezzine', 'expert@eurex.tn', expertHash, 'expert').run();
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
+
+        // Task templates
+        const templates = [
+          ['Réception relevés bancaires', 1, 1],
+          ['Saisie achats', 2, 0],
+          ['Saisie ventes', 3, 0],
+          ['Rapprochement bancaire', 4, 0],
+          ['Déclaration TVA mensuelle', 5, 0],
+          ['Déclaration CNSS mensuelle', 6, 0],
+          ['Révision balance', 7, 0],
+          ['Établissement états financiers', 8, 0],
+          ['Liasse fiscale / déclaration IS', 9, 0],
+        ] as const;
+        for (const [label, order, requiresDoc] of templates) {
+          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document) VALUES (?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc).run();
+        }
+
+        // Clients
+        const clients = [
+          ['client_001', 'ANIMAL CITY', '1234567/H', 'user_comp_001', 'contact@animalcity.tn'],
+          ['client_002', 'PROYASH METROPOLI', '2345678/A', 'user_comp_001', 'proyash@metropoli.tn'],
+          ['client_003', 'TECH SOLUTIONS SARL', '3456789/B', 'user_comp_001', 'tech@solutions.tn'],
+          ['client_004', 'CONSTRUCTION DELTA', '4567890/C', 'user_comp_002', 'delta@construction.tn'],
+          ['client_005', 'RESTAURANT LE PALAIS', '5678901/D', 'user_comp_002', 'palais@restaurant.tn'],
+        ] as const;
+        for (const [id, name, mf, compId, email] of clients) {
+          await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email) VALUES (?, ?, ?, ?, ?, ?)').bind(id, orgId, compId, name, mf, email).run();
+        }
+
+        // Dossiers + tasks
+        const dossierData = [
+          { id: 'doss_001', clientId: 'client_001', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','en_cours','a_faire','a_faire','a_faire'] },
+          { id: 'doss_002', clientId: 'client_002', status: 'en_cours', tasks: ['fait','fait','fait','bloque_client','a_faire','a_faire','a_faire','a_faire','a_faire'], blocked: [3] },
+          { id: 'doss_003', clientId: 'client_003', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','fait','fait','en_cours','a_faire'] },
+          { id: 'doss_004', clientId: 'client_004', status: 'en_cours', tasks: ['fait','bloque_client','bloque_client','a_faire','a_faire','a_faire','a_faire','a_faire','a_faire'], blocked: [1,2] },
+          { id: 'doss_005', clientId: 'client_005', status: 'en_cours', tasks: ['fait','fait','fait','fait','en_cours','a_faire','a_faire','a_faire','a_faire'] },
+        ];
+        for (const dd of dossierData) {
+          await env.DB.prepare('INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, 2026, ?)').bind(dd.id, dd.clientId, dd.status).run();
+          for (let i = 0; i < dd.tasks.length; i++) {
+            const status = dd.tasks[i];
+            const reason = (dd.blocked && dd.blocked.includes(i)) ? 'Document manquant — en attente client' : null;
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+          }
+        }
+        // Update cached progress
+        for (const dd of dossierData) {
+          await orgRecalcProgress(dd.id);
+        }
+
+        return json({ ok: true, msg: 'Seeded', credentials: { expert: 'expert@eurex.tn / expert1234567', comptable1: 'ahmed@eurex.tn / comptable1234567', comptable2: 'fatma@eurex.tn / comptable1234567' } });
       }
 
       return json({ error: 'Not found: ' + path }, 404);

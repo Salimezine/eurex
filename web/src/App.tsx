@@ -9,7 +9,9 @@ import ScanDossierPage from './pages/scanflash/ScanDossierPage';
 import EtatsFinanciers from './pages/ef/EtatsFinanciers';
 import AchatsSocietes from './pages/achats/AchatsSocietes';
 import AchatsDossierPage from './pages/achats/AchatsDossierPage';
+import OrgLayout from './pages/org/OrgLayout';
 import QuotaIndicator from './components/QuotaIndicator';
+import { Building2 } from 'lucide-react';
 
 export default function App() {
   const loc = useLocation();
@@ -38,12 +40,20 @@ export default function App() {
             <Link to="/scanflash" className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${path.startsWith('/scanflash') ? 'bg-emerald-50 text-emerald-700' : 'text-gray-600 hover:bg-gray-50'}`}>
               SCANFLASH
             </Link>
+            <Link to="/cabinet" className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1 ${path.startsWith('/cabinet') ? 'bg-purple-50 text-purple-700' : 'text-gray-600 hover:bg-gray-50'}`}>
+              <Building2 size={14} />
+              CABINET
+            </Link>
           </div>
           <QuotaIndicator />
         </div>
       </nav>
       <main className="max-w-7xl mx-auto px-4 py-6">
         <Routes>
+          {/* Organization module — has its own layout with auth */}
+          <Route path="/cabinet/*" element={<OrgLayout />} />
+
+          {/* Existing routes */}
           <Route path="/" element={<Home />} />
           <Route path="/dossier/:id" element={<DossierPage />} />
           <Route path="/baud/societes" element={<BaudSocietes />} />
