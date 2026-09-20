@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { orgApi, OrgComptable, OrgDossier, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
-import { Users, BarChart3, AlertTriangle, Search, Filter } from 'lucide-react';
+import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
 
@@ -16,6 +16,11 @@ export default function OrgDashboardExpert() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterComptable, setFilterComptable] = useState<string>('all');
+  // New dossier modal
+  const [showNewDossier, setShowNewDossier] = useState(false);
+  const [selectedClient, setSelectedClient] = useState('');
+  const [newExercice, setNewExercice] = useState(new Date().getFullYear());
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -28,6 +33,36 @@ export default function OrgDashboardExpert() {
       setAllClients(cl);
     }).catch(console.error).finally(() => setLoading(false));
   }, []);
+
+  // Create dossier
+  const load = () => {
+    setLoading(true);
+    Promise.all([
+      orgApi.getComptables(),
+      orgApi.getAllDossiers(),
+      orgApi.getClients(),
+    ]).then(([c, d, cl]) => {
+      setComptables(c);
+      setAllDossiers(d);
+      setAllClients(cl);
+    }).catch(console.error).finally(() => setLoading(false));
+  };
+
+  const createDossier = async () => {
+    if (!selectedClient) return;
+    setCreating(true);
+    try {
+      await orgApi.createDossier(selectedClient, newExercice);
+      setShowNewDossier(false);
+      setSelectedClient('');
+      setNewExercice(new Date().getFullYear());
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la création');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // KPIs
   const totalDossiers = allDossiers.length;
@@ -81,22 +116,31 @@ export default function OrgDashboardExpert() {
         })}
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
-        {([
-          { key: 'comptables' as Tab, label: t('dash.by_comptable'), icon: <Users size={14} /> },
-          { key: 'global' as Tab, label: t('dash.global_view'), icon: <BarChart3 size={14} /> },
-        ]).map(t2 => (
-          <button
-            key={t2.key}
-            onClick={() => setTab(t2.key)}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            {t2.icon} {t2.label}
+      {/* Tabs + New dossier button */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+          {([
+            { key: 'comptables' as Tab, label: t('dash.by_comptable'), icon: <Users size={14} /> },
+            { key: 'global' as Tab, label: t('dash.global_view'), icon: <BarChart3 size={14} /> },
+          ]).map(t2 => (
+            <button
+              key={t2.key}
+              onClick={() => setTab(t2.key)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {t2.icon} {t2.label}
           </button>
         ))}
+        </div>
+        <button
+          onClick={() => setShowNewDossier(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
+        >
+          <Plus size={16} />
+          Nouveau dossier
+        </button>
       </div>
 
       {/* Tab: Comptables */}
@@ -232,6 +276,79 @@ export default function OrgDashboardExpert() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Nouveau dossier */}
+      {showNewDossier && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <Plus size={20} className="text-purple-600" />
+                Nouveau dossier
+              </h3>
+              <button onClick={() => setShowNewDossier(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">Client</label>
+                <select
+                  value={selectedClient}
+                  onChange={e => setSelectedClient(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
+                >
+                  <option value="">— Sélectionner un client —</option>
+                  {allClients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name} {c.matricule_fiscal ? `(${c.matricule_fiscal})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">Exercice</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setNewExercice(y => y - 1)}
+                    className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold transition-colors"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    value={newExercice}
+                    onChange={e => setNewExercice(Number(e.target.value))}
+                    className="flex-1 text-center border border-gray-200 rounded-xl px-4 py-2.5 text-lg font-bold text-gray-800 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                  />
+                  <button
+                    onClick={() => setNewExercice(y => y + 1)}
+                    className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold transition-colors"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={createDossier}
+                disabled={!selectedClient || creating}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
+              >
+                {creating ? 'Création...' : 'Créer le dossier'}
+              </button>
+              <button
+                onClick={() => { setShowNewDossier(false); setSelectedClient(''); }}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+              >
+                Annuler
+              </button>
+            </div>
           </div>
         </div>
       )}
