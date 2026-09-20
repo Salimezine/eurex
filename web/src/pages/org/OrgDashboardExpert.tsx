@@ -55,15 +55,29 @@ export default function OrgDashboardExpert() {
           { label: 'Avancement moyen', value: `${avgProgress}%`, icon: '📊', color: 'emerald' },
           { label: 'En cours', value: activeDossiers, icon: '🔴', color: 'red' },
           { label: 'Comptables', value: comptables.length, icon: '👥', color: 'purple' },
-        ].map((kpi, i) => (
-          <div key={i} className="bg-white border border-gray-200 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-lg">{kpi.icon}</span>
-              <span className="text-xs text-gray-500">{kpi.label}</span>
+        ].map((kpi, i) => {
+          const bgMap: Record<string, string> = {
+            blue: 'bg-blue-50 border-blue-200',
+            emerald: 'bg-emerald-50 border-emerald-200',
+            red: 'bg-red-50 border-red-200',
+            purple: 'bg-purple-50 border-purple-200',
+          };
+          const valMap: Record<string, string> = {
+            blue: 'text-blue-700',
+            emerald: 'text-emerald-700',
+            red: 'text-red-700',
+            purple: 'text-purple-700',
+          };
+          return (
+            <div key={i} className={`${bgMap[kpi.color] || 'bg-white border-gray-200'} border rounded-xl p-4`}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-lg">{kpi.icon}</span>
+                <span className="text-xs text-gray-500">{kpi.label}</span>
+              </div>
+              <p className={`text-2xl font-bold ${valMap[kpi.color] || 'text-gray-800'}`}>{kpi.value}</p>
             </div>
-            <p className="text-2xl font-bold text-gray-800">{kpi.value}</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Tabs */}
