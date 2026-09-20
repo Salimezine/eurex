@@ -50,6 +50,8 @@ export interface OrgDossier {
   can_force_close: boolean;
   block_reasons: string[];
   progress: number;
+  time_entries: any[];
+  time_by_user: { user_name: string; seconds: number }[];
 }
 
 export interface OrgTask {
@@ -64,6 +66,7 @@ export interface OrgTask {
   total_time_seconds: number;
   timer_started_at: string | null;
   timer_user_id: string | null;
+  updated_by_name: string | null;
 }
 
 export interface OrgDocument {

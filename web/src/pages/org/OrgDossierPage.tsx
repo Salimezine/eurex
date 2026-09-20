@@ -8,7 +8,7 @@ import Timeline from '../../components/Timeline';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, FileText, MessageSquare, Clock, ChevronDown, ChevronUp,
-  ExternalLink, Eye,
+  ExternalLink, Eye, Users,
 } from 'lucide-react';
 
 type Tab = 'checklist' | 'documents' | 'notes' | 'timeline';
@@ -31,6 +31,7 @@ export default function OrgDossierPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { state } = useOrgAuth();
+  const isExpert = state.user?.role === 'expert';
   const [dossier, setDossier] = useState<OrgDossier | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('checklist');
@@ -280,6 +281,30 @@ export default function OrgDossierPage() {
         )}
       </div>
 
+      {/* Expert: Time by user + details */}
+      {isExpert && (
+        <div className="bg-white border border-purple-100 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <Users size={14} className="text-purple-600" />
+            Vue expert — Détails par comptable
+          </h3>
+          {/* Time breakdown */}
+          {dossier.time_by_user && dossier.time_by_user.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {dossier.time_by_user.map((u: any, i: number) => (
+                <div key={i} className="bg-gray-50 rounded-lg p-2.5">
+                  <p className="text-[11px] text-gray-500">{u.user_name}</p>
+                  <p className="text-sm font-bold font-mono text-gray-800">{formatTime(u.seconds)}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {dossier.time_by_user?.length === 0 && (
+            <p className="text-xs text-gray-400">Aucun temps enregistré</p>
+          )}
+        </div>
+      )}
+
       {/* Legend */}
       <DonutLegend fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} />
 
@@ -339,6 +364,11 @@ export default function OrgDossierPage() {
                   {task.total_time_seconds > 0 && (
                     <span className="text-[11px] text-gray-400 font-mono">
                       {formatTime(task.total_time_seconds)}
+                    </span>
+                  )}
+                  {isExpert && task.updated_by_name && (
+                    <span className="text-[10px] text-purple-500 bg-purple-50 px-1.5 py-0.5 rounded-full">
+                      {task.updated_by_name}
                     </span>
                   )}
                   {isBlocked && (

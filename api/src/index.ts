@@ -1829,15 +1829,22 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: tasks } = await env.DB.prepare('SELECT * FROM org_tasks WHERE dossier_id = ? ORDER BY order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id WHERE t.dossier_id = ? ORDER BY t.order_index').bind(orgDossierGetMatch[1]).all();
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
         const { results: notes } = await env.DB.prepare('SELECT n.*, u.full_name as author_name FROM org_notes n LEFT JOIN org_users u ON n.user_id = u.id WHERE n.dossier_id = ? ORDER BY n.created_at DESC').bind(orgDossierGetMatch[1]).all();
+        // Time entries breakdown
+        const { results: timeEntries } = await env.DB.prepare('SELECT te.*, t.label as task_label, u.full_name as user_name FROM org_time_entries te JOIN org_tasks t ON te.task_id = t.id JOIN org_users u ON te.user_id = u.id WHERE te.dossier_id = ? ORDER BY te.started_at DESC').bind(orgDossierGetMatch[1]).all();
+        const timeByUser: Record<string, { user_name: string; seconds: number }> = {};
+        for (const te of timeEntries as any[]) {
+          if (!timeByUser[te.user_id]) timeByUser[te.user_id] = { user_name: te.user_name, seconds: 0 };
+          timeByUser[te.user_id].seconds += te.duration_seconds || 0;
+        }
         const stats = { total: tasks.length, fait: 0, en_cours: 0, bloque_client: 0 };
         for (const t of tasks as any[]) { if (t.status === 'fait') stats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') stats.en_cours++; else if (t.status === 'bloque_client') stats.bloque_client++; }
         const docStats = { total: documents.length, received: documents.filter((d: any) => d.received).length };
         const canClose = stats.bloque_client === 0 && stats.en_cours === 0;
         const blockReasons = (tasks as any[]).filter(t => t.status !== 'fait').map(t => t.label);
-        return json({ ...dossier, tasks, documents, notes, task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: user.role === 'expert', block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
+        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: user.role === 'expert', block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
       }
 
       // --- ORG: CLOSE DOSSIER ---
