@@ -105,7 +105,7 @@ describe('Organization: Closure Eligibility', () => {
   });
 
   it('comptable cannot force close', () => {
-    const role = 'comptable';
+    const role: string = 'comptable';
     const tasks = [
       { status: 'fait' },
       { status: 'bloque_client' },
@@ -119,7 +119,7 @@ describe('Organization: Closure Eligibility', () => {
 // --- Scoping rules ---
 describe('Organization: Data Scoping', () => {
   function canAccessDossier(
-    userRole: string,
+    userRole: 'expert' | 'comptable',
     userId: string,
     assignedComptableId: string | null,
   ): boolean {
@@ -128,21 +128,21 @@ describe('Organization: Data Scoping', () => {
   }
 
   it('expert can access any dossier', () => {
-    expect(canAccessDossier('expert', 'u1', 'u2')).toBe(true);
-    expect(canAccessDossier('expert', 'u1', 'u3')).toBe(true);
-    expect(canAccessDossier('expert', 'u1', null)).toBe(true);
+    expect(canAccessDossier('expert' as 'expert' | 'comptable', 'u1', 'u2')).toBe(true);
+    expect(canAccessDossier('expert' as 'expert' | 'comptable', 'u1', 'u3')).toBe(true);
+    expect(canAccessDossier('expert' as 'expert' | 'comptable', 'u1', null)).toBe(true);
   });
 
   it('comptable can access own dossier', () => {
-    expect(canAccessDossier('comptable', 'u1', 'u1')).toBe(true);
+    expect(canAccessDossier('comptable' as 'expert' | 'comptable', 'u1', 'u1')).toBe(true);
   });
 
   it('comptable cannot access other comptable dossier', () => {
-    expect(canAccessDossier('comptable', 'u1', 'u2')).toBe(false);
+    expect(canAccessDossier('comptable' as 'expert' | 'comptable', 'u1', 'u2')).toBe(false);
   });
 
   it('comptable cannot access unassigned dossier', () => {
-    expect(canAccessDossier('comptable', 'u1', null)).toBe(false);
+    expect(canAccessDossier('comptable' as 'expert' | 'comptable', 'u1', null)).toBe(false);
   });
 });
 
@@ -302,7 +302,7 @@ describe('Organization: New Exercice Rules', () => {
 // --- Document received tracking ---
 describe('Organization: Document Tracking', () => {
   it('marks document as received with timestamp', () => {
-    const doc = { id: 'd1', received: 0, received_at: null };
+    const doc: { id: string; received: number; received_at: string | null } = { id: 'd1', received: 0, received_at: null };
     doc.received = 1;
     doc.received_at = new Date().toISOString();
     expect(doc.received).toBe(1);
@@ -310,14 +310,14 @@ describe('Organization: Document Tracking', () => {
   });
 
   it('allows manual receive with note (WhatsApp/email)', () => {
-    const doc = { id: 'd1', received: 0, received_note: null };
+    const doc: { id: string; received: number; received_note: string | null } = { id: 'd1', received: 0, received_note: null };
     doc.received = 1;
     doc.received_note = 'Reçu par WhatsApp le 15/09';
     expect(doc.received_note).toContain('WhatsApp');
   });
 
   it('can unmark received document', () => {
-    const doc = { id: 'd1', received: 1, received_at: '2026-09-15' };
+    const doc: { id: string; received: number; received_at: string | null } = { id: 'd1', received: 1, received_at: '2026-09-15' };
     doc.received = 0;
     doc.received_at = null;
     expect(doc.received).toBe(0);
@@ -434,36 +434,43 @@ describe('Organization: Exercice Validation', () => {
 // --- Role-based access control ---
 describe('Organization: Role-Based Access', () => {
   it('expert can reassign clients', () => {
-    expect('expert' === 'expert').toBe(true);
+    const role: string = 'expert';
+    expect(role === 'expert').toBe(true);
   });
 
   it('comptable cannot reassign clients', () => {
-    expect('comptable' === 'expert').toBe(false);
+    const role: string = 'comptable';
+    expect(role === 'expert').toBe(false);
   });
 
   it('expert can force close', () => {
-    expect('expert' === 'expert').toBe(true);
+    const role: string = 'expert';
+    expect(role === 'expert').toBe(true);
   });
 
   it('comptable cannot force close', () => {
-    expect('comptable' === 'expert').toBe(false);
+    const role: string = 'comptable';
+    expect(role === 'expert').toBe(false);
   });
 
   it('expert can create comptable accounts', () => {
-    expect('expert' === 'expert').toBe(true);
+    const role: string = 'expert';
+    expect(role === 'expert').toBe(true);
   });
 
   it('comptable cannot create comptable accounts', () => {
-    expect('comptable' === 'expert').toBe(false);
+    const role: string = 'comptable';
+    expect(role === 'expert').toBe(false);
   });
 
   it('expert sees all comptables', () => {
-    expect('expert' === 'expert').toBe(true);
+    const role: string = 'expert';
+    expect(role === 'expert').toBe(true);
   });
 
   it('comptable does not see settings', () => {
     const path = '/cabinet/settings';
-    const role = 'comptable';
+    const role: string = 'comptable';
     const allowed = role === 'expert';
     expect(allowed).toBe(false);
   });
