@@ -42,6 +42,10 @@ export default function OrgDossierPage() {
   const [showNewDossierModal, setShowNewDossierModal] = useState(false);
   const [newExercice, setNewExercice] = useState(new Date().getFullYear());
   const [timerNow, setTimerNow] = useState(Date.now());
+  const [newTaskLabel, setNewTaskLabel] = useState('');
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editTaskLabel, setEditTaskLabel] = useState('');
 
   const load = () => {
     if (!id) return;
@@ -155,6 +159,40 @@ export default function OrgDossierPage() {
   const getLiveElapsed = (startedAt: string) => {
     const start = new Date(startedAt + 'Z').getTime();
     return Math.floor((timerNow - start) / 1000);
+  };
+
+  const addTask = async () => {
+    if (!dossier || !newTaskLabel.trim()) return;
+    try {
+      await orgApi.addTask(dossier.id, newTaskLabel.trim());
+      setNewTaskLabel('');
+      setShowAddTask(false);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const renameTask = async (taskId: string) => {
+    if (!dossier || !editTaskLabel.trim()) return;
+    try {
+      await orgApi.renameTask(dossier.id, taskId, editTaskLabel.trim());
+      setEditingTaskId(null);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const deleteTask = async (taskId: string, label: string) => {
+    if (!dossier) return;
+    if (!confirm(`Supprimer la tâche "${label}" ? Cette action est irréversible.`)) return;
+    try {
+      await orgApi.deleteTask(dossier.id, taskId);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
   };
 
   if (loading) return (
@@ -279,13 +317,25 @@ export default function OrgDossierPage() {
             return (
               <div key={task.id} className={`bg-white border rounded-xl overflow-hidden transition-all ${isBlocked ? 'border-red-200' : 'border-gray-200'}`}>
                 <div
-                  className="flex items-center gap-3 p-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                  className="flex items-center gap-3 p-3 cursor-pointer hover:bg-gray-50 transition-colors group/task"
                   onClick={() => setExpandedTask(isExpanded ? null : task.id)}
                 >
                   <Icon size={18} className={STATUS_COLORS[task.status]?.split(' ')[0] || 'text-gray-400'} />
-                  <span className={`flex-1 text-sm font-medium ${task.status === 'fait' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
-                    {task.label}
-                  </span>
+                  {editingTaskId === task.id ? (
+                    <input
+                      autoFocus
+                      value={editTaskLabel}
+                      onChange={e => setEditTaskLabel(e.target.value)}
+                      onBlur={() => renameTask(task.id)}
+                      onKeyDown={e => { if (e.key === 'Enter') renameTask(task.id); if (e.key === 'Escape') setEditingTaskId(null); }}
+                      onClick={e => e.stopPropagation()}
+                      className="flex-1 text-sm font-medium border border-purple-300 rounded px-2 py-0.5 outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  ) : (
+                    <span className={`flex-1 text-sm font-medium ${task.status === 'fait' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                      {task.label}
+                    </span>
+                  )}
                   {task.total_time_seconds > 0 && (
                     <span className="text-[11px] text-gray-400 font-mono">
                       {formatTime(task.total_time_seconds)}
@@ -340,6 +390,23 @@ export default function OrgDossierPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
+                      {/* Edit label button */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setEditingTaskId(task.id); setEditTaskLabel(task.label); }}
+                        className="px-3 py-1.5 rounded-lg text-xs bg-purple-100 text-purple-700 hover:bg-purple-200"
+                      >
+                        ✏️ Renommer
+                      </button>
+                      {/* Delete button */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteTask(task.id, task.label); }}
+                        disabled={!!task.timer_started_at}
+                        className="px-3 py-1.5 rounded-lg text-xs bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
+                      >
+                        🗑️ Supprimer
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2">
                       {task.status !== 'a_faire' && task.status !== 'fait' && (
                         <button onClick={() => updateTaskStatus(task.id, 'a_faire')} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 text-gray-600 hover:bg-gray-200">
                           {t('status.a_faire')}
@@ -372,6 +439,43 @@ export default function OrgDossierPage() {
               </div>
             );
           })}
+          {/* Add task form */}
+          {dossier.status === 'en_cours' && (
+            <div className="mt-2">
+              {showAddTask ? (
+                <div className="bg-white border border-purple-200 rounded-xl p-3 flex items-center gap-2">
+                  <input
+                    autoFocus
+                    value={newTaskLabel}
+                    onChange={e => setNewTaskLabel(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && newTaskLabel.trim()) addTask(); if (e.key === 'Escape') { setShowAddTask(false); setNewTaskLabel(''); } }}
+                    placeholder="Libellé de la nouvelle tâche..."
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                  />
+                  <button
+                    onClick={addTask}
+                    disabled={!newTaskLabel.trim()}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-all"
+                  >
+                    Ajouter
+                  </button>
+                  <button
+                    onClick={() => { setShowAddTask(false); setNewTaskLabel(''); }}
+                    className="px-3 py-2 rounded-lg text-sm bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowAddTask(true)}
+                  className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-purple-400 hover:text-purple-600 transition-all"
+                >
+                  + Ajouter une tâche
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 

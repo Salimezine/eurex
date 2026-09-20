@@ -1932,15 +1932,69 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const { status, blocked_reason } = await request.json() as any;
-        if (!status || !['a_faire', 'en_cours', 'fait', 'bloque_client'].includes(status)) return json({ error: 'Status invalide' }, 400);
+        const body = await request.json() as any;
+        const { status, blocked_reason, label } = body;
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
-        const oldStatus = task.status;
-        await env.DB.prepare("UPDATE org_tasks SET status = ?, blocked_reason = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(status, blocked_reason || null, user.id, orgTaskMatch[2]).run();
+        const updates: string[] = [];
+        const binds: any[] = [];
+        if (status !== undefined) {
+          if (!['a_faire', 'en_cours', 'fait', 'bloque_client'].includes(status)) return json({ error: 'Status invalide' }, 400);
+          updates.push('status = ?'); binds.push(status);
+        }
+        if (blocked_reason !== undefined) { updates.push('blocked_reason = ?'); binds.push(blocked_reason || null); }
+        if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
+        if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
+        updates.push("updated_by = ?", "updated_at = datetime('now')");
+        binds.push(user.id, orgTaskMatch[2]);
+        await env.DB.prepare(`UPDATE org_tasks SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
         const progress = await orgRecalcProgress(orgTaskMatch[1]);
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: status, blocked_reason })).run();
+        const oldStatus = task.status;
+        const newStatus = status || oldStatus;
+        if (status && status !== oldStatus) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: status, blocked_reason })).run();
+        }
+        if (label !== undefined && label.trim() && label.trim() !== task.label) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_renamed', 'task', orgTaskMatch[2], JSON.stringify({ old_label: task.label, new_label: label.trim() })).run();
+        }
         return json({ ok: true, progress });
+      }
+
+      // --- ORG: DELETE TASK ---
+      if (orgTaskMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        if (task.timer_started_at) return json({ error: 'Arrêtez le chrono d\'abord' }, 400);
+        // Delete time entries for this task
+        await env.DB.prepare('DELETE FROM org_time_entries WHERE task_id = ?').bind(orgTaskMatch[2]).run();
+        // Delete task
+        await env.DB.prepare('DELETE FROM org_tasks WHERE id = ?').bind(orgTaskMatch[2]).run();
+        const progress = await orgRecalcProgress(orgTaskMatch[1]);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_deleted', 'task', orgTaskMatch[2], JSON.stringify({ label: task.label, dossier_id: orgTaskMatch[1] })).run();
+        return json({ ok: true, progress });
+      }
+
+      // --- ORG: ADD TASK ---
+      if (path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks$/) && method === 'POST') {
+        const dossierId = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks$/)![1];
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
+        const { label } = await request.json() as any;
+        if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
+        const dossier = await env.DB.prepare('SELECT * FROM org_dossiers WHERE id = ?').bind(dossierId).first() as any;
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        // Get next order_index
+        const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
+        const nextIdx = (last?.max_idx || 0) + 1;
+        const taskId = genId();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index) VALUES (?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx).run();
+        const progress = await orgRecalcProgress(dossierId);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx })).run();
+        return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
       }
 
       // --- ORG: UPDATE DOCUMENT ---

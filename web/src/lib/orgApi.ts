@@ -130,6 +130,12 @@ export const orgApi = {
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status, blocked_reason }) }),
+  renameTask: (dossierId: string, taskId: string, label: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ label }) }),
+  deleteTask: (dossierId: string, taskId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'DELETE' }),
+  addTask: (dossierId: string, label: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks`, { method: 'POST', body: JSON.stringify({ label }) }),
 
   // Documents
   updateDocument: (dossierId: string, docId: string, received: boolean, note?: string) =>
