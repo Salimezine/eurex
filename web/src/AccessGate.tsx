@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 
 const CODE_HASH = 'ca560b598ac2c3e4c8147ef1285731434381873dbc3d7c1e6f3eff64de153b20';
-// Clé publique Cloudflare Turnstile — à renseigner (0x...)
-const TURNSTILE_SITE_KEY = '';
+// Clé publique Cloudflare Turnstile
+const TURNSTILE_SITE_KEY = '0x4AAAAAAE-_usmwigFHwz4j';
 
 const SESSION_FLAG = 'eurex_authorized';
 
