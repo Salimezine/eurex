@@ -90,7 +90,7 @@ function GlobalNav({ path }: { path: string }) {
             </button>
             <div className="text-right">
               <p className="text-xs font-semibold text-gray-700">{cabUser.full_name}</p>
-              <p className="text-[10px] text-gray-400 capitalize">{cabUser.role}</p>
+              <p className="text-[10px] text-gray-400">{cabUser.organization || cabUser.role}</p>
             </div>
             <button
               onClick={logout}
