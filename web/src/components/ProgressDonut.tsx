@@ -13,11 +13,13 @@ interface ProgressDonutProps {
 
 const COLORS = {
   fait: '#10b981',        // emerald-500 — ça marche
+  enCours: '#6ee7b7',     // emerald-300 — en cours (complète le donut)
   bloqueClient: '#ef4444', // red-500 — ne marche pas
 };
 
 const GLOW_COLORS = {
   fait: '#34d399',
+  enCours: '#a7f3d0',
   bloqueClient: '#f87171',
 };
 
@@ -58,9 +60,10 @@ export default function ProgressDonut({
     );
   }
 
-  // Only green + red arcs; enCours stays on the light track (no gray segment)
+  // Full ring: green (fait) + light green (enCours) + red (bloqué) — no gap
   const segments = [
     { value: fait, color: COLORS.fait, glow: GLOW_COLORS.fait },
+    { value: enCours, color: COLORS.enCours, glow: GLOW_COLORS.enCours },
     { value: bloqueClient, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient },
   ].filter(s => s.value > 0);
 
@@ -75,6 +78,7 @@ export default function ProgressDonut({
 
   const trackId = `donut-track-${size}-${Math.round(size)}`;
   const greenGradId = `donut-green-${size}`;
+  const lightGradId = `donut-light-${size}`;
   const redGradId = `donut-red-${size}`;
 
   return (
@@ -88,6 +92,10 @@ export default function ProgressDonut({
           <linearGradient id={greenGradId} x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#34d399" />
             <stop offset="100%" stopColor="#059669" />
+          </linearGradient>
+          <linearGradient id={lightGradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#a7f3d0" />
+            <stop offset="100%" stopColor="#34d399" />
           </linearGradient>
           <linearGradient id={redGradId} x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#f87171" />
@@ -107,7 +115,9 @@ export default function ProgressDonut({
         />
         {/* Green + Red arcs */}
         {arcs.map((arc, i) => {
-          const grad = arc.color === COLORS.fait ? greenGradId : redGradId;
+          const grad = arc.color === COLORS.fait ? greenGradId
+            : arc.color === COLORS.enCours ? lightGradId
+            : redGradId;
           return (
             <g key={i}>
               <circle
@@ -150,13 +160,14 @@ export default function ProgressDonut({
   );
 }
 
-// Legend — only green + red (attente reste sur la piste)
+// Legend — green family + red (pas de trou)
 export function DonutLegend({ fait, enCours, bloqueClient, className = '' }: {
   fait: number; enCours: number; bloqueClient: number; className?: string;
 }) {
   const total = fait + enCours + bloqueClient;
   const items = [
     { count: fait, color: COLORS.fait, label: t('donut.done'), icon: '✓' },
+    ...(enCours > 0 ? [{ count: enCours, color: COLORS.enCours, label: t('donut.in_progress'), icon: '…' }] : []),
     { count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked'), icon: '✕' },
   ];
 
