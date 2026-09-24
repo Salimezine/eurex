@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Trash2, ShoppingCart, FolderOpen, FileSpreadsheet } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import { parsePlanComptable, PlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
+import { PlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
 
 interface Dossier { id: string; societe_id: string; nom: string; mois: number; annee: number; statut: string; nb_factures: number; nb_ecritures: number; }
@@ -27,7 +26,7 @@ function saveDossiers(dossiers: Dossier[]) {
 function loadPlan(): PlanComptable | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_PLAN);
-    if (!raw) return getDefaultPlanComptable();
+    if (!raw) return null;
     const obj = JSON.parse(raw);
     return {
       comptes: new Map(Object.entries(obj.comptes || {})),
@@ -37,7 +36,7 @@ function loadPlan(): PlanComptable | null {
       taxes: obj.taxes || [],
       allByCode: obj.allByCode || {},
     };
-  } catch { return getDefaultPlanComptable(); }
+  } catch { return null; }
 }
 function savePlan(plan: PlanComptable) {
   const obj = {
@@ -102,6 +101,14 @@ export default function AchatsSocietes() {
     const updated = dossiers.filter(d => d.id !== id);
     setDossiers(updated);
     saveDossiers(updated);
+    try {
+      const raw = localStorage.getItem('achats_dossier_data');
+      if (raw) {
+        const all = JSON.parse(raw);
+        delete all[id];
+        localStorage.setItem('achats_dossier_data', JSON.stringify(all));
+      }
+    } catch {}
   };
 
   const planSummary = plan ? getPlanSummary(plan) : null;

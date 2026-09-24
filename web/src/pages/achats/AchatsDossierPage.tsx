@@ -1,16 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AchatInvoice } from '../../lib/achatsParser';
 import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI } from '../../lib/achatsAI';
-import { PlanComptable, CompteComptable, searchComptes, formatPlanComptable, getPlanSummary } from '../../lib/achatsPlanComptable';
+import { PlanComptable, CompteComptable, searchComptes, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
 
 type Tab = 'import' | 'factures' | 'plan' | 'generate' | 'ecritures' | 'export';
 
 const STORAGE_KEY_PLAN = 'achats_plan_comptable';
 const STORAGE_KEY_DOSSIERS = 'achats_dossiers';
+const STORAGE_KEY_DATA = 'achats_dossier_data';
 
 interface Dossier { id: string; societe_id: string; nom: string; mois: number; annee: number; statut: string; nb_factures: number; nb_ecritures: number; }
 
@@ -48,6 +49,25 @@ function updateDossier(id: string, updates: Partial<Dossier>) {
   } catch {}
 }
 
+function loadDossierData(id: string): { factures: AchatInvoice[]; ecritures: EcritureAchat[] } {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DATA);
+    if (!raw) return { factures: [], ecritures: [] };
+    const all = JSON.parse(raw);
+    const entry = all[id];
+    return entry || { factures: [], ecritures: [] };
+  } catch { return { factures: [], ecritures: [] }; }
+}
+
+function saveDossierData(id: string, factures: AchatInvoice[], ecritures: EcritureAchat[]) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DATA);
+    const all = raw ? JSON.parse(raw) : {};
+    all[id] = { factures, ecritures };
+    localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(all));
+  } catch {}
+}
+
 export default function AchatsDossierPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -68,8 +88,15 @@ export default function AchatsDossierPage() {
     if (id) {
       setDossier(loadDossier(id));
       setPlan(loadPlan());
+      const data = loadDossierData(id);
+      setFactures(data.factures);
+      setEcritures(data.ecritures);
     }
   }, [id]);
+
+  useEffect(() => {
+    if (id && dossier) saveDossierData(id, factures, ecritures);
+  }, [id, dossier, factures, ecritures]);
 
   const handleUploadFiles = async (files: FileList) => {
     if (!files.length || !plan) return;
@@ -100,8 +127,7 @@ export default function AchatsDossierPage() {
             const e = await generateEcrituresWithAI(f, plan);
             allEcritures.push(...e);
           } catch {
-            const fallback = await import('../../lib/achatsAI').then(m => m.generateEcrituresWithAI(f, plan));
-            allEcritures.push(...fallback);
+            setMsg('Erreur génération pour facture ' + f.numero);
           }
         }
         setEcritures(allEcritures);
@@ -126,10 +152,7 @@ export default function AchatsDossierPage() {
           const ecritures = await generateEcrituresWithAI(f, plan);
           allEcritures.push(...ecritures);
         } catch {
-          setMsg('Erreur AI pour ' + f.numero + ', fallback local utilisé');
-          const { generateEcrituresWithAI: gen } = await import('../../lib/achatsAI');
-          const fallback = await gen(f, plan);
-          allEcritures.push(...fallback);
+          setMsg('Erreur AI pour ' + f.numero);
         }
       }
       setEcritures(allEcritures);
@@ -210,6 +233,10 @@ export default function AchatsDossierPage() {
   };
 
   const deleteFacture = (id: string) => {
+    const target = factures.find(f => f.id === id);
+    if (target) {
+      setEcritures(prev => prev.filter(e => e.numero_doc !== target.numero));
+    }
     setFactures(prev => prev.filter(f => f.id !== id));
   };
 
@@ -230,17 +257,6 @@ export default function AchatsDossierPage() {
       is_handwritten: false, raw_text: '', ocr_confidence: 100,
     };
     setFactures(prev => [...prev, newF]);
-  };
-
-  const generateForFacture = async (f: AchatInvoice) => {
-    if (!plan) return;
-    try {
-      const e = await generateEcrituresWithAI(f, plan);
-      setEcritures(prev => [...prev, ...e]);
-      setMsg(`${e.length} écriture(s) générée(s) pour ${f.numero || 'facture'}`);
-    } catch {
-      setMsg('Erreur AI pour ' + f.numero);
-    }
   };
 
   const addEcriture = () => {
@@ -415,7 +431,7 @@ export default function AchatsDossierPage() {
           )}
           {!plan && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-700">
-              Aucun plan comptable chargé. Importez le fichier Excel depuis la page sociétés.
+              Aucun plan comptable chargé. Le plan PROYASH METROPOLI est pré-chargé.
             </div>
           )}
         </div>
@@ -436,7 +452,11 @@ export default function AchatsDossierPage() {
                 <Zap size={14} />{generating ? 'Génération AI...' : `Générer (${factures.length} factures)`}
               </button>
             </div>
-            {!plan && <p className="text-xs text-amber-600">⚠ Plan comptable requis. Importez-le d'abord.</p>}
+            {plan ? (
+              <p className="text-xs text-gray-400">Plan comptable chargé.</p>
+            ) : (
+              <p className="text-xs text-amber-600">⚠ Plan comptable requis. Le plan PROYASH METROPOLI est pré-chargé.</p>
+            )}
             {factures.length === 0 && <p className="text-xs text-gray-400">Aucune facture à traiter.</p>}
           </div>
           {ecritures.length > 0 && (
