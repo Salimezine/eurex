@@ -169,7 +169,7 @@ export default function OrgDashboardExpert() {
                     fait={c.task_stats.fait}
                     enCours={c.task_stats.en_cours}
                     bloqueClient={c.task_stats.bloque_client}
-                    size={96}
+                    size={120}
                   />
                   {/* Pulse ring on hover */}
                   <div className="absolute inset-0 rounded-full border-2 border-purple-400 opacity-0 group-hover:opacity-30 group-hover:animate-ping" style={{ margin: -8 }} />

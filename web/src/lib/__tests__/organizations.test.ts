@@ -513,8 +513,8 @@ describe('Organization: I18n', () => {
     'status.a_faire': { fr: 'À faire', ar: 'للقيام' },
     'status.fait': { fr: 'Fait', ar: 'منجز' },
     'status.bloque_client': { fr: 'Bloqué client', ar: 'محجوب — في انتظار العميل' },
-    'donut.done': { fr: 'Terminé', ar: 'منجز' },
-    'donut.blocked': { fr: 'Bloqué client', ar: 'محجوب' },
+    'donut.done': { fr: 'Ça marche', ar: 'يعمل' },
+    'donut.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
   };
 
   it('has FR translation for all statuses', () => {

@@ -21,8 +21,8 @@ const STATUS_ICONS: Record<string, any> = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  a_faire: 'text-gray-400 bg-gray-50',
-  en_cours: 'text-blue-600 bg-blue-50',
+  a_faire: 'text-gray-500 bg-gray-50',
+  en_cours: 'text-gray-600 bg-gray-100',
   fait: 'text-emerald-600 bg-emerald-50',
   bloque_client: 'text-red-600 bg-red-50',
 };
@@ -237,7 +237,7 @@ export default function OrgDossierPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={80} />
+          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={120} />
           <div className="text-right">
             <span className="text-2xl font-bold text-gray-800">{dossier.progress}%</span>
             <p className="text-xs text-gray-500">avancement</p>
@@ -479,7 +479,7 @@ export default function OrgDossierPage() {
                         </button>
                       )}
                       {task.status !== 'en_cours' && task.status !== 'fait' && (
-                        <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-3 py-1.5 rounded-lg text-xs bg-blue-100 text-blue-700 hover:bg-blue-200">
+                        <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-3 py-1.5 rounded-lg text-xs bg-gray-200 text-gray-700 hover:bg-gray-300">
                           {t('status.en_cours_task')}
                         </button>
                       )}

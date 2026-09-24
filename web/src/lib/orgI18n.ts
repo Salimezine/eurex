@@ -56,10 +56,10 @@ const translations: Record<string, Record<Lang, string>> = {
   'expert.avg_progress': { fr: 'Avancement moyen', ar: 'متوسط التقدم' },
   'expert.blocked_dossiers': { fr: 'Dossiers bloqués', ar: 'الملفات المحجوبة' },
 
-  // Donut
-  'donut.done': { fr: 'Terminé', ar: 'منجز' },
-  'donut.in_progress': { fr: 'En cours', ar: 'قيد التنفيذ' },
-  'donut.blocked': { fr: 'Bloqué client', ar: 'محجوب' },
+  // Donut — vert = marche, gris = en attente (fi la7dha), rouge = ne marche pas
+  'donut.done': { fr: 'Ça marche', ar: 'يعمل' },
+  'donut.in_progress': { fr: 'En attente', ar: 'في الانتظار' },
+  'donut.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
 
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },

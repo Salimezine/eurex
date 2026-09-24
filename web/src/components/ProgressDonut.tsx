@@ -12,20 +12,20 @@ interface ProgressDonutProps {
 }
 
 const COLORS = {
-  fait: '#10b981',       // emerald-500
-  enCours: '#3b82f6',    // blue-500
-  bloqueClient: '#ef4444', // red-500
+  fait: '#10b981',       // emerald-500 — ça marche
+  enCours: '#9ca3af',    // gray-400 — en attente (fi la7dha)
+  bloqueClient: '#ef4444', // red-500 — ne marche pas
 };
 
 const GLOW_COLORS = {
   fait: '#34d399',
-  enCours: '#60a5fa',
+  enCours: '#d1d5db',
   bloqueClient: '#f87171',
 };
 
 export default function ProgressDonut({
   fait, enCours, bloqueClient,
-  size = 72, showLabel = true, className = '', animated = true,
+  size = 100, showLabel = true, className = '', animated = true,
 }: ProgressDonutProps) {
   const [animProgress, setAnimProgress] = useState(animated ? 0 : 1);
   const total = fait + enCours + bloqueClient;
@@ -33,7 +33,7 @@ export default function ProgressDonut({
   const radius = (size - 10) / 2;
   const circumference = 2 * Math.PI * radius;
   const center = size / 2;
-  const strokeWidth = Math.max(6, size / 12);
+  const strokeWidth = Math.max(8, size / 10);
   const innerRadius = radius - strokeWidth / 2;
 
   // Animate on mount
@@ -133,8 +133,8 @@ export default function ProgressDonut({
       </svg>
       {/* Center percentage */}
       <span
-        className={`absolute font-bold text-gray-700 ${
-          size >= 100 ? 'text-xl' : size >= 60 ? 'text-sm' : 'text-[10px]'
+        className={`absolute font-bold text-gray-800 ${
+          size >= 100 ? 'text-2xl' : size >= 60 ? 'text-base' : 'text-xs'
         }`}
         style={{
           textShadow: '0 1px 2px rgba(0,0,0,0.05)',
@@ -146,29 +146,29 @@ export default function ProgressDonut({
   );
 }
 
-// Enhanced Legend component
+// Enhanced Legend — always shows the 3 states: marche / en attente / ne marche pas
 export function DonutLegend({ fait, enCours, bloqueClient, className = '' }: {
   fait: number; enCours: number; bloqueClient: number; className?: string;
 }) {
   const total = fait + enCours + bloqueClient;
   const items = [
-    { count: fait, color: COLORS.fait, label: t('donut.done') },
-    { count: enCours, color: COLORS.enCours, label: t('donut.in_progress') },
+    { count: fait, color: COLORS.fait, label: t('donut.done'), hint: '✓' },
+    { count: enCours, color: COLORS.enCours, label: t('donut.in_progress'), hint: '…' },
+    { count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked'), hint: '✕' },
   ];
-  if (bloqueClient > 0) items.push({ count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked') });
 
   return (
-    <div className={`flex flex-wrap gap-4 text-xs ${className}`}>
+    <div className={`flex flex-wrap gap-x-5 gap-y-2 text-sm ${className}`}>
       {items.map((item, i) => {
         const pct = total > 0 ? Math.round(item.count / total * 100) : 0;
         return (
           <span key={i} className="flex items-center gap-2">
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-40" style={{ background: item.color }} />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ background: item.color }} />
+            <span className="relative flex h-3.5 w-3.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-30" style={{ background: item.color }} />
+              <span className="relative inline-flex rounded-full h-3.5 w-3.5" style={{ background: item.color }} />
             </span>
-            <span className="text-gray-600">{item.label}</span>
-            <span className="font-semibold text-gray-800">{item.count}</span>
+            <span className="text-gray-700 font-medium">{item.label}</span>
+            <span className="font-bold text-gray-900 text-base">{item.count}</span>
             <span className="text-gray-400">({pct}%)</span>
           </span>
         );
