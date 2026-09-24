@@ -1,35 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus } from 'lucide-react';
+import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AchatInvoice } from '../../lib/achatsParser';
 import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, getPlanSummary } from '../../lib/achatsPlanComptable';
-import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
+import { loadPlanForDossier, savePlanForDossier, planSourceForDossier, parsePlanFromFile } from '../../lib/achatsPlanStore';
 
 type Tab = 'import' | 'factures' | 'plan' | 'generate' | 'ecritures' | 'export';
 
-const STORAGE_KEY_PLAN = 'achats_plan_comptable';
 const STORAGE_KEY_DOSSIERS = 'achats_dossiers';
 const STORAGE_KEY_DATA = 'achats_dossier_data';
 
 interface Dossier { id: string; societe_id: string; nom: string; mois: number; annee: number; statut: string; nb_factures: number; nb_ecritures: number; }
-
-function loadPlan(): PlanComptable | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_PLAN);
-    if (!raw) return getDefaultPlanComptable();
-    const obj = JSON.parse(raw);
-    return {
-      comptes: new Map(Object.entries(obj.comptes || {})),
-      fournisseurs: new Map(Object.entries(obj.fournisseurs || {})),
-      achats: obj.achats || [],
-      tva: obj.tva || [],
-      taxes: obj.taxes || [],
-      allByCode: obj.allByCode || {},
-    };
-  } catch { return getDefaultPlanComptable(); }
-}
 
 function loadDossier(id: string): Dossier | null {
   try {
@@ -83,11 +66,14 @@ export default function AchatsDossierPage() {
   const [verifyResult, setVerifyResult] = useState<VerificationResult | null>(null);
   const [planSearch, setPlanSearch] = useState('');
   const [planSearchResults, setPlanSearchResults] = useState<CompteComptable[]>([]);
+  const [planSource, setPlanSource] = useState<'dossier' | 'legacy' | 'default'>('default');
+  const [planMsg, setPlanMsg] = useState('');
 
   useEffect(() => {
     if (id) {
       setDossier(loadDossier(id));
-      setPlan(loadPlan());
+      setPlan(loadPlanForDossier(id));
+      setPlanSource(planSourceForDossier(id));
       const data = loadDossierData(id);
       setFactures(data.factures);
       setEcritures(data.ecritures);
@@ -339,7 +325,7 @@ export default function AchatsDossierPage() {
           </div>
           {!plan && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
-              ⚠ Aucun plan comptable chargé. Le plan PROYASH METROPOLI est pré-chargé.
+              ⚠ Aucun plan comptable chargé. Onglet Plan Comptable → Remplacer / défaut PROYASH.
             </div>
           )}
         </div>
@@ -395,6 +381,40 @@ export default function AchatsDossierPage() {
       {/* TAB: PLAN COMPTABLE */}
       {tab === 'plan' && (
         <div className="space-y-4">
+          <div className="bg-white rounded-lg border p-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="font-semibold text-gray-700 text-sm">Plan de ce dossier</h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Source :{' '}
+                  <span className="font-medium text-gray-600">
+                    {planSource === 'dossier' ? 'plan propre du dossier' : planSource === 'legacy' ? 'ancien plan global' : 'défaut PROYASH'}
+                  </span>
+                  {plan && ` — ${getPlanSummary(plan).totalComptes} comptes / ${getPlanSummary(plan).totalFournisseurs} fournisseurs`}
+                </p>
+              </div>
+              <label className="bg-orange-600 text-white px-3 py-1.5 rounded text-xs hover:bg-orange-700 cursor-pointer flex items-center gap-1">
+                <RefreshCw size={13} /> Remplacer le plan (.xlsx)
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={async e => {
+                  const f = e.target.files?.[0];
+                  if (!f || !id) return;
+                  setPlanMsg('');
+                  try {
+                    const p = await parsePlanFromFile(f);
+                    savePlanForDossier(id, p);
+                    setPlan(p);
+                    setPlanSource('dossier');
+                    setPlanMsg(`✓ Plan remplacé (${p.comptes.size} comptes)`);
+                  } catch (err: any) {
+                    setPlanMsg(`⚠ ${err.message || 'import échoué'}`);
+                  }
+                  e.target.value = '';
+                }} />
+              </label>
+            </div>
+            {planMsg && <p className={`text-xs mt-2 ${planMsg.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>{planMsg}</p>}
+          </div>
+
           <div className="bg-white rounded-lg border p-4">
             <h3 className="font-semibold text-gray-700 mb-3 text-sm">Recherche dans le plan comptable</h3>
             <div className="flex gap-2">
@@ -458,9 +478,9 @@ export default function AchatsDossierPage() {
               </button>
             </div>
             {plan ? (
-              <p className="text-xs text-gray-400">Plan comptable chargé.</p>
+              <p className="text-xs text-gray-400">Plan comptable de ce dossier chargé ({planSource === 'dossier' ? 'propre' : planSource === 'legacy' ? 'global' : 'défaut'}).</p>
             ) : (
-              <p className="text-xs text-amber-600">⚠ Plan comptable requis. Le plan PROYASH METROPOLI est pré-chargé.</p>
+              <p className="text-xs text-amber-600">⚠ Plan comptable requis. Onglet Plan Comptable.</p>
             )}
             {factures.length === 0 && <p className="text-xs text-gray-400">Aucune facture à traiter.</p>}
           </div>

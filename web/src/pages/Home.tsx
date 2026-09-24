@@ -40,6 +40,16 @@ export default function Home() {
         const dossiers = JSON.parse(localStorage.getItem('achats_dossiers') || '[]');
         localStorage.setItem('achats_dossiers', JSON.stringify(dossiers.filter((d: any) => d.id !== id)));
       } catch {}
+      try {
+        const plans = JSON.parse(localStorage.getItem('achats_plans') || '{}');
+        delete plans[id];
+        localStorage.setItem('achats_plans', JSON.stringify(plans));
+      } catch {}
+      try {
+        const data = JSON.parse(localStorage.getItem('achats_dossier_data') || '{}');
+        delete data[id];
+        localStorage.setItem('achats_dossier_data', JSON.stringify(data));
+      } catch {}
     } else {
       await api.deleteDossier(id);
     }
