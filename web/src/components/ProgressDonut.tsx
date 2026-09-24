@@ -137,23 +137,15 @@ export default function ProgressDonut({
           );
         })}
       </svg>
-      {/* Inner disc + center % */}
-      <div
-        className="absolute rounded-full bg-white shadow-inner flex items-center justify-center"
-        style={{
-          width: size - strokeWidth * 2 - 6,
-          height: size - strokeWidth * 2 - 6,
-          boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        }}
+      {/* Center % — sans disque blanc */}
+      <span
+        className={`absolute font-extrabold tracking-tight ${
+          pct >= 80 ? 'text-emerald-600' : pct <= 30 && bloqueClient > 0 ? 'text-red-500' : 'text-gray-800'
+        } ${size >= 110 ? 'text-3xl' : size >= 80 ? 'text-xl' : 'text-sm'}`}
+        style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}
       >
-        <span
-          className={`font-extrabold tracking-tight ${
-            pct >= 80 ? 'text-emerald-600' : pct <= 30 && bloqueClient > 0 ? 'text-red-500' : 'text-gray-800'
-          } ${size >= 110 ? 'text-3xl' : size >= 80 ? 'text-xl' : 'text-sm'}`}
-        >
-          {Math.round(pct * animProgress)}%
-        </span>
-      </div>
+        {Math.round(pct * animProgress)}%
+      </span>
     </div>
   );
 }
