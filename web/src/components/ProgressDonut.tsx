@@ -12,14 +12,12 @@ interface ProgressDonutProps {
 }
 
 const COLORS = {
-  fait: '#10b981',       // emerald-500 — ça marche
-  enCours: '#9ca3af',    // gray-400 — en attente (fi la7dha)
+  fait: '#10b981',        // emerald-500 — ça marche
   bloqueClient: '#ef4444', // red-500 — ne marche pas
 };
 
 const GLOW_COLORS = {
   fait: '#34d399',
-  enCours: '#d1d5db',
   bloqueClient: '#f87171',
 };
 
@@ -30,22 +28,19 @@ export default function ProgressDonut({
   const [animProgress, setAnimProgress] = useState(animated ? 0 : 1);
   const total = fait + enCours + bloqueClient;
   const pct = total > 0 ? Math.round((fait / total) * 100) : 0;
-  const radius = (size - 10) / 2;
+  const radius = (size - 12) / 2;
   const circumference = 2 * Math.PI * radius;
   const center = size / 2;
-  const strokeWidth = Math.max(8, size / 10);
-  const innerRadius = radius - strokeWidth / 2;
+  const strokeWidth = Math.max(10, size / 9);
 
-  // Animate on mount
   useEffect(() => {
     if (!animated) { setAnimProgress(1); return; }
     let start: number | null = null;
-    const duration = 800;
-    const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+    const duration = 900;
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3);
     const step = (ts: number) => {
       if (!start) start = ts;
-      const elapsed = ts - start;
-      const p = Math.min(elapsed / duration, 1);
+      const p = Math.min((ts - start) / duration, 1);
       setAnimProgress(ease(p));
       if (p < 1) requestAnimationFrame(step);
     };
@@ -54,22 +49,19 @@ export default function ProgressDonut({
 
   if (total === 0) {
     return (
-      <div className={`inline-flex items-center justify-center ${className}`} style={{ width: size, height: size }}>
+      <div className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size }}>
         <svg width={size} height={size}>
           <circle cx={center} cy={center} r={radius} fill="none" stroke="#e5e7eb" strokeWidth={strokeWidth} strokeDasharray="4 3" />
         </svg>
-        {showLabel && (
-          <span className="absolute text-[10px] font-bold text-gray-400">—</span>
-        )}
+        {showLabel && <span className="absolute text-sm font-bold text-gray-300">—</span>}
       </div>
     );
   }
 
-  // Calculate arc segments
+  // Only green + red arcs; enCours stays on the light track (no gray segment)
   const segments = [
-    { value: fait, color: COLORS.fait, glow: GLOW_COLORS.fait, label: 'fait' },
-    { value: enCours, color: COLORS.enCours, glow: GLOW_COLORS.enCours, label: 'enCours' },
-    { value: bloqueClient, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient, label: 'bloqueClient' },
+    { value: fait, color: COLORS.fait, glow: GLOW_COLORS.fait },
+    { value: bloqueClient, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient },
   ].filter(s => s.value > 0);
 
   let offset = 0;
@@ -81,91 +73,112 @@ export default function ProgressDonut({
     return { ...seg, dashLen, gap, dashOffset };
   });
 
-  const gradientId = `donut-grad-${size}`;
+  const trackId = `donut-track-${size}-${Math.round(size)}`;
+  const greenGradId = `donut-green-${size}`;
+  const redGradId = `donut-red-${size}`;
 
   return (
     <div className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90 drop-shadow-sm">
+      <svg width={size} height={size} className="-rotate-90">
         <defs>
-          <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#f3f4f6" />
-            <stop offset="100%" stopColor="#e5e7eb" />
+          <linearGradient id={trackId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#f9fafb" />
+            <stop offset="100%" stopColor="#eef0f3" />
           </linearGradient>
+          <linearGradient id={greenGradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#34d399" />
+            <stop offset="100%" stopColor="#059669" />
+          </linearGradient>
+          <linearGradient id={redGradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#f87171" />
+            <stop offset="100%" stopColor="#dc2626" />
+          </linearGradient>
+          <filter id={`donut-shadow-${size}`} x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000" floodOpacity="0.08" />
+          </filter>
         </defs>
-        {/* Background track */}
+        {/* Light track = en attente (fi la7dha) */}
         <circle
           cx={center} cy={center} r={radius}
           fill="none"
-          stroke={`url(#${gradientId})`}
+          stroke={`url(#${trackId})`}
           strokeWidth={strokeWidth}
+          filter={`url(#donut-shadow-${size})`}
         />
-        {/* Animated arcs */}
-        {arcs.map((arc, i) => (
-          <g key={i}>
-            {/* Glow layer */}
-            <circle
-              cx={center} cy={center} r={radius}
-              fill="none"
-              stroke={arc.glow}
-              strokeWidth={strokeWidth + 4}
-              strokeDasharray={`${arc.dashLen} ${arc.gap}`}
-              strokeDashoffset={arc.dashOffset}
-              strokeLinecap="round"
-              opacity={0.2}
-              style={{ filter: 'blur(4px)' }}
-            />
-            {/* Main arc */}
-            <circle
-              cx={center} cy={center} r={radius}
-              fill="none"
-              stroke={arc.color}
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${arc.dashLen} ${arc.gap}`}
-              strokeDashoffset={arc.dashOffset}
-              strokeLinecap="round"
-              style={{
-                transition: animated ? 'stroke-dasharray 0.1s ease-out' : undefined,
-                filter: `drop-shadow(0 0 3px ${arc.glow}40)`,
-              }}
-            />
-          </g>
-        ))}
+        {/* Green + Red arcs */}
+        {arcs.map((arc, i) => {
+          const grad = arc.color === COLORS.fait ? greenGradId : redGradId;
+          return (
+            <g key={i}>
+              <circle
+                cx={center} cy={center} r={radius}
+                fill="none"
+                stroke={arc.glow}
+                strokeWidth={strokeWidth + 5}
+                strokeDasharray={`${arc.dashLen} ${arc.gap}`}
+                strokeDashoffset={arc.dashOffset}
+                strokeLinecap="round"
+                opacity={0.25}
+                style={{ filter: 'blur(5px)' }}
+              />
+              <circle
+                cx={center} cy={center} r={radius}
+                fill="none"
+                stroke={`url(#${grad})`}
+                strokeWidth={strokeWidth}
+                strokeDasharray={`${arc.dashLen} ${arc.gap}`}
+                strokeDashoffset={arc.dashOffset}
+                strokeLinecap="round"
+                style={{
+                  transition: animated ? 'stroke-dasharray 0.12s ease-out' : undefined,
+                }}
+              />
+            </g>
+          );
+        })}
       </svg>
-      {/* Center percentage */}
-      <span
-        className={`absolute font-bold text-gray-800 ${
-          size >= 100 ? 'text-2xl' : size >= 60 ? 'text-base' : 'text-xs'
-        }`}
+      {/* Inner disc + center % */}
+      <div
+        className="absolute rounded-full bg-white shadow-inner flex items-center justify-center"
         style={{
-          textShadow: '0 1px 2px rgba(0,0,0,0.05)',
+          width: size - strokeWidth * 2 - 6,
+          height: size - strokeWidth * 2 - 6,
+          boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
         }}
       >
-        {Math.round(pct * animProgress)}%
-      </span>
+        <span
+          className={`font-extrabold tracking-tight ${
+            pct >= 80 ? 'text-emerald-600' : pct <= 30 && bloqueClient > 0 ? 'text-red-500' : 'text-gray-800'
+          } ${size >= 110 ? 'text-3xl' : size >= 80 ? 'text-xl' : 'text-sm'}`}
+        >
+          {Math.round(pct * animProgress)}%
+        </span>
+      </div>
     </div>
   );
 }
 
-// Enhanced Legend — always shows the 3 states: marche / en attente / ne marche pas
+// Legend — only green + red (attente reste sur la piste)
 export function DonutLegend({ fait, enCours, bloqueClient, className = '' }: {
   fait: number; enCours: number; bloqueClient: number; className?: string;
 }) {
   const total = fait + enCours + bloqueClient;
   const items = [
-    { count: fait, color: COLORS.fait, label: t('donut.done'), hint: '✓' },
-    { count: enCours, color: COLORS.enCours, label: t('donut.in_progress'), hint: '…' },
-    { count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked'), hint: '✕' },
+    { count: fait, color: COLORS.fait, label: t('donut.done'), icon: '✓' },
+    { count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked'), icon: '✕' },
   ];
 
   return (
-    <div className={`flex flex-wrap gap-x-5 gap-y-2 text-sm ${className}`}>
+    <div className={`flex flex-wrap gap-x-6 gap-y-2 text-sm ${className}`}>
       {items.map((item, i) => {
         const pct = total > 0 ? Math.round(item.count / total * 100) : 0;
         return (
           <span key={i} className="flex items-center gap-2">
-            <span className="relative flex h-3.5 w-3.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-30" style={{ background: item.color }} />
-              <span className="relative inline-flex rounded-full h-3.5 w-3.5" style={{ background: item.color }} />
+            <span
+              className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-sm"
+              style={{ background: item.color }}
+            >
+              {item.icon}
             </span>
             <span className="text-gray-700 font-medium">{item.label}</span>
             <span className="font-bold text-gray-900 text-base">{item.count}</span>

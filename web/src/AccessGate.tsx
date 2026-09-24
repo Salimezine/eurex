@@ -141,7 +141,7 @@ export default function AccessGate({ onAuthorized }: AccessGateProps) {
           {loading ? <RefreshCw size={15} className="animate-spin" /> : 'Entrer'}
         </button>
 
-        <p className="text-[11px] text-gray-400 mt-5 text-center">Created by Med Salim Ezzine</p>
+        <p className="text-[11px] text-gray-400 mt-5 text-center">Created by EUREX</p>
       </div>
     </div>
   );

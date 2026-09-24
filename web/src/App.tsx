@@ -137,7 +137,7 @@ export default function App() {
         <footer className="border-t border-gray-200 mt-10">
           <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between text-xs text-gray-400">
             <span>EUREX — Générateur d'Écritures Comptables IA</span>
-            <span>Created by Med Salim Ezzine</span>
+            <span>Created by EUREX</span>
           </div>
         </footer>
       </div>

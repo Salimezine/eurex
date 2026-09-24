@@ -162,12 +162,12 @@ CREATE INDEX IF NOT EXISTS idx_org_fiscal_client ON org_fiscal_deadlines(client_
 -- ============================================================
 
 -- Organization
-INSERT INTO organizations (id, name) VALUES ('org_cabinet_001', 'Cabinet Ezzine & Associates');
+INSERT INTO organizations (id, name) VALUES ('org_cabinet_001', 'EUREX');
 
 -- Users (passwords: hash of "expert1234567" and "comptable1234567")
 -- SHA-256 hashes computed at runtime, using placeholder bcrypt-compatible hashes
 INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES
-  ('user_expert_001', 'org_cabinet_001', 'Med Salim Ezzine', 'expert@eurex.tn', '$argon2id$v=19$m=65536,t=3,p=4$placeholder_expert_hash', 'expert'),
+  ('user_expert_001', 'org_cabinet_001', 'EUREX', 'expert@eurex.tn', '$argon2id$v=19$m=65536,t=3,p=4$placeholder_expert_hash', 'expert'),
   ('user_comp_001', 'org_cabinet_001', 'Ahmed Ben Ali', 'ahmed@eurex.tn', '$argon2id$v=19$m=65536,t=3,p=4$placeholder_comp1_hash', 'comptable'),
   ('user_comp_002', 'org_cabinet_001', 'Fatma Trabelsi', 'fatma@eurex.tn', '$argon2id$v=19$m=65536,t=3,p=4$placeholder_comp2_hash', 'comptable');
 

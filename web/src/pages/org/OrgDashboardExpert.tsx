@@ -96,11 +96,12 @@ export default function OrgDashboardExpert() {
   return (
     <div className="space-y-4">
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {[
           { label: 'Dossiers actifs', value: activeDossiers, icon: '📁', color: 'blue' },
           { label: 'Avancement moyen', value: `${avgProgress}%`, icon: '📊', color: 'emerald' },
-          { label: 'En cours', value: activeDossiers, icon: '🔴', color: 'red' },
+          { label: 'En cours', value: activeDossiers, icon: '⏳', color: 'gray' },
+          { label: 'Bloqués', value: blockedCount, icon: '🔴', color: 'red' },
           { label: 'Comptables', value: comptables.length, icon: '👥', color: 'purple' },
         ].map((kpi, i) => {
           const bgMap: Record<string, string> = {
@@ -108,12 +109,14 @@ export default function OrgDashboardExpert() {
             emerald: 'bg-emerald-50 border-emerald-200',
             red: 'bg-red-50 border-red-200',
             purple: 'bg-purple-50 border-purple-200',
+            gray: 'bg-gray-50 border-gray-200',
           };
           const valMap: Record<string, string> = {
             blue: 'text-blue-700',
             emerald: 'text-emerald-700',
             red: 'text-red-700',
             purple: 'text-purple-700',
+            gray: 'text-gray-700',
           };
           return (
             <div key={i} className={`${bgMap[kpi.color] || 'bg-white border-gray-200'} border rounded-xl p-4`}>
@@ -169,7 +172,7 @@ export default function OrgDashboardExpert() {
                     fait={c.task_stats.fait}
                     enCours={c.task_stats.en_cours}
                     bloqueClient={c.task_stats.bloque_client}
-                    size={120}
+                    size={128}
                   />
                   {/* Pulse ring on hover */}
                   <div className="absolute inset-0 rounded-full border-2 border-purple-400 opacity-0 group-hover:opacity-30 group-hover:animate-ping" style={{ margin: -8 }} />

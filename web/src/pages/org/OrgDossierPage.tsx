@@ -236,12 +236,12 @@ export default function OrgDossierPage() {
             Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={120} />
+        <div className="flex items-center gap-4 bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
+          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={128} />
           <div className="text-right">
-            <span className="text-2xl font-bold text-gray-800">{dossier.progress}%</span>
-            <p className="text-xs text-gray-500">avancement</p>
-            <p className="text-[11px] text-gray-400 mt-0.5">
+            <span className="text-3xl font-extrabold text-gray-900 tracking-tight">{dossier.progress}%</span>
+            <p className="text-xs text-gray-500 font-medium">avancement</p>
+            <p className="text-[11px] text-gray-400 mt-1">
               ⏱ {formatTime(dossier.tasks?.reduce((s: number, t: any) => s + (t.total_time_seconds || 0), 0) || 0)}
             </p>
           </div>

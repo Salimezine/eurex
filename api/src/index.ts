@@ -2258,7 +2258,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
         // Create organization
         const orgId = 'org_cabinet_001';
-        await env.DB.prepare('INSERT INTO organizations (id, name) VALUES (?, ?)').bind(orgId, 'Cabinet Ezzine & Associates').run();
+        await env.DB.prepare('INSERT INTO organizations (id, name) VALUES (?, ?)').bind(orgId, 'EUREX').run();
 
         // Helper to create password hash
         const makeHash = async (pwd: string) => {
@@ -2273,7 +2273,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const comp1Hash = await makeHash('comptable1234567');
         const comp2Hash = await makeHash('comptable1234567');
 
-        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'Med Salim Ezzine', 'expert@eurex.tn', expertHash, 'expert').run();
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'EUREX', 'expert@eurex.tn', expertHash, 'expert').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 

@@ -96,10 +96,11 @@ export default function OrgComptableDetail() {
       )}
 
       {/* KPIs */}
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
         {[
           { label: 'Dossiers', value: kpis.total_dossiers, color: 'blue' },
-          { label: 'En cours', value: kpis.en_cours, color: 'red' },
+          { label: 'En cours', value: kpis.en_cours, color: 'gray' },
+          { label: 'Bloqué', value: kpis.bloque_client, color: 'red' },
           { label: 'Avancement', value: `${kpis.avg_progress}%`, color: 'emerald' },
           { label: 'Tâches faites', value: kpis.tasks_done, color: 'purple' },
           { label: 'Notes', value: kpis.total_notes, color: 'orange' },
@@ -144,7 +145,7 @@ export default function OrgComptableDetail() {
             {dossiers.length === 0 && <p className="text-xs text-gray-400">Aucun dossier assigné</p>}
             {dossiers.map((d: any) => (
               <div key={d.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer" onClick={() => navigate(`/cabinet/dossier/${d.id}`)}>
-                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={96} />
+                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={104} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-800 truncate">{d.client_name}</p>
                   <p className="text-[11px] text-gray-400">Exercice {d.exercice} • {d.progress}%</p>
@@ -210,7 +211,7 @@ export default function OrgComptableDetail() {
           {dossiers.length === 0 && <p className="text-center text-gray-400 py-8">Aucun dossier assigné</p>}
           {dossiers.map((d: any) => (
             <div key={d.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => navigate(`/cabinet/dossier/${d.id}`)}>
-                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={72} />
+                <ProgressDonut fait={d.task_stats.fait} enCours={d.task_stats.en_cours} bloqueClient={d.task_stats.bloque_client} size={80} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-gray-800">{d.client_name}</p>
                 <p className="text-xs text-gray-500">Exercice {d.exercice} • Matricule {d.matricule_fiscal || '—'}</p>

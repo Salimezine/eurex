@@ -151,7 +151,7 @@ export default function OrgDashboardComptable() {
                   fait={client.task_stats.fait}
                   enCours={client.task_stats.en_cours}
                   bloqueClient={client.task_stats.bloque_client}
-                  size={96}
+                  size={104}
                 />
                 <div className="flex-1 min-w-0">
                   <h3 className="font-bold text-gray-800 text-base group-hover:text-purple-700 transition-colors truncate">{client.name}</h3>

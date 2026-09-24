@@ -56,7 +56,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'expert.avg_progress': { fr: 'Avancement moyen', ar: 'متوسط التقدم' },
   'expert.blocked_dossiers': { fr: 'Dossiers bloqués', ar: 'الملفات المحجوبة' },
 
-  // Donut — vert = marche, gris = en attente (fi la7dha), rouge = ne marche pas
+  // Donut — vert = marche, rouge = ne marche pas (attente sur la piste claire)
   'donut.done': { fr: 'Ça marche', ar: 'يعمل' },
   'donut.in_progress': { fr: 'En attente', ar: 'في الانتظار' },
   'donut.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
