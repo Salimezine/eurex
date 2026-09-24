@@ -173,7 +173,7 @@ export default function OrgDashboardComptable() {
                 </span>
                 {client.task_stats.bloque_client > 0 && (
                   <span className="bg-red-100 text-red-600 px-2.5 py-1 rounded-lg font-semibold">
-                    🔴 {client.task_stats.bloque_client} pas fait{client.task_stats.bloque_client > 1 ? 's' : ''}
+                    🔴 {client.task_stats.bloque_client} bloqué{client.task_stats.bloque_client > 1 ? 's' : ''} client
                   </span>
                 )}
               </div>

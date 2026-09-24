@@ -95,12 +95,12 @@ export default function OrgDashboardExpert() {
 
   return (
     <div className="space-y-4">
-      {/* KPIs — 2 catégories : fait / pas fait */}
+      {/* KPIs — 2 catégories : fait / bloqué client */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
           { label: 'Dossiers actifs', value: activeDossiers, icon: '📁', color: 'blue' },
           { label: 'Avancement moyen', value: `${avgProgress}%`, icon: '📊', color: 'emerald' },
-          { label: 'Pas fait', value: blockedCount, icon: '🔴', color: 'red' },
+          { label: 'Bloqué client', value: blockedCount, icon: '🔴', color: 'red' },
           { label: 'Comptables', value: comptables.length, icon: '👥', color: 'purple' },
         ].map((kpi, i) => {
           const bgMap: Record<string, string> = {
@@ -188,7 +188,7 @@ export default function OrgDashboardExpert() {
                     </span>
                     {c.task_stats.bloque_client > 0 && (
                       <span className="bg-red-50 text-red-600 px-2 py-1 rounded-lg font-medium animate-pulse">
-                        🔴 {c.task_stats.bloque_client} pas fait{c.task_stats.bloque_client > 1 ? 's' : ''}
+                        🔴 {c.task_stats.bloque_client} bloqué{c.task_stats.bloque_client > 1 ? 's' : ''} client
                       </span>
                     )}
                   </div>
@@ -242,7 +242,7 @@ export default function OrgDashboardExpert() {
                   <th className="text-left px-5 py-3.5 font-semibold text-gray-600">Comptable</th>
                   <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Avancement</th>
                   <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Statut</th>
-                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Pas fait</th>
+                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Bloqué client</th>
                 </tr>
               </thead>
               <tbody>

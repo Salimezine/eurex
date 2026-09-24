@@ -13,7 +13,7 @@ interface ProgressDonutProps {
 
 const COLORS = {
   fait: '#10b981',        // emerald-500 — fait
-  bloqueClient: '#ef4444', // red-500 — pas fait
+  bloqueClient: '#ef4444', // red-500 — bloqué client
 };
 
 const GLOW_COLORS = {
@@ -26,7 +26,7 @@ export default function ProgressDonut({
   size = 100, showLabel = true, className = '', animated = true,
 }: ProgressDonutProps) {
   const [animProgress, setAnimProgress] = useState(animated ? 0 : 1);
-  // Vert = fait ; Rouge = pas fait (en cours + bloqué)
+  // Vert = fait ; Rouge = bloqué client (en cours + bloqué)
   const notWorking = enCours + bloqueClient;
   const total = fait + notWorking;
   const pct = total > 0 ? Math.round((fait / total) * 100) : 0;
@@ -60,7 +60,7 @@ export default function ProgressDonut({
     );
   }
 
-  // Only green (fait) + red (pas fait)
+  // Only green (fait) + red (bloqué client)
   const segments = [
     { value: fait, color: COLORS.fait, glow: GLOW_COLORS.fait },
     { value: notWorking, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient },
