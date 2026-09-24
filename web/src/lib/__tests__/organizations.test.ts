@@ -512,9 +512,9 @@ describe('Organization: I18n', () => {
     'status.cloture': { fr: 'Clôturé', ar: 'مغلق' },
     'status.a_faire': { fr: 'À faire', ar: 'للقيام' },
     'status.fait': { fr: 'Fait', ar: 'منجز' },
-    'status.bloque_client': { fr: 'Ne marche pas', ar: 'لا يعمل' },
+    'status.bloque_client': { fr: 'Pas fait', ar: 'غير منجز' },
     'donut.done': { fr: 'Ça marche', ar: 'يعمل' },
-    'donut.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
+    'donut.blocked': { fr: 'Pas fait', ar: 'غير منجز' },
   };
 
   it('has FR translation for all statuses', () => {
@@ -522,7 +522,7 @@ describe('Organization: I18n', () => {
     expect(translations['status.cloture'].fr).toBe('Clôturé');
     expect(translations['status.a_faire'].fr).toBe('À faire');
     expect(translations['status.fait'].fr).toBe('Fait');
-    expect(translations['status.bloque_client'].fr).toContain('Ne marche pas');
+    expect(translations['status.bloque_client'].fr).toContain('Pas fait');
   });
 
   it('has AR translation for all statuses', () => {

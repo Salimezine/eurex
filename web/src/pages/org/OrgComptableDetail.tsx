@@ -95,11 +95,11 @@ export default function OrgComptableDetail() {
         </div>
       )}
 
-      {/* KPIs — 2 catégories : ça marche / ne marche pas */}
+      {/* KPIs — 2 catégories : fait / pas fait */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         {[
           { label: 'Dossiers', value: kpis.total_dossiers, color: 'blue' },
-          { label: 'Ne marche pas', value: kpis.blocked_tasks, color: 'red' },
+          { label: 'Pas fait', value: kpis.blocked_tasks, color: 'red' },
           { label: 'Avancement', value: `${kpis.avg_progress}%`, color: 'emerald' },
           { label: 'Tâches faites', value: kpis.tasks_done, color: 'purple' },
           { label: 'Notes', value: kpis.total_notes, color: 'orange' },
@@ -218,7 +218,7 @@ export default function OrgComptableDetail() {
                 <p className="text-xs text-gray-500">Exercice {d.exercice} • Matricule {d.matricule_fiscal || '—'}</p>
                 <div className="flex gap-3 mt-1 text-[11px] text-gray-500">
                   <span>✅ {d.task_stats.fait}/{d.task_stats.total}</span>
-                  {d.task_stats.bloque_client > 0 && <span className="text-red-500">✕ {d.task_stats.bloque_client} ne marche pas</span>}
+                  {d.task_stats.bloque_client > 0 && <span className="text-red-500">✕ {d.task_stats.bloque_client} pas fait{d.task_stats.bloque_client > 1 ? 's' : ''}</span>}
                   {d.total_time_seconds > 0 && <span className="font-mono">⏱ {formatTime(d.total_time_seconds)}</span>}
                 </div>
               </div>
