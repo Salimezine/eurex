@@ -110,12 +110,17 @@ export default function AchatsDossierPage() {
         newFactures.push(...invoices);
         setMsg(`${invoices.length} facture(s) extraite(s) de ${file.name}`);
       } catch (e: any) {
-        setMsg(`Erreur ${file.name}: ${e.message}`);
+        setMsg(`⚠ ${file.name}: ${e.message}`);
       }
     }
     const updatedFactures = [...factures, ...newFactures];
     setFactures(updatedFactures);
     setUploading(false);
+
+    if (newFactures.length === 0 && files.length > 0) {
+      setMsg(`⚠ Aucune facture lisible sur ${files.length} fichier(s). Vérifiez la qualité image ou le quota AI.`);
+      return;
+    }
 
     if (updatedFactures.length > 0) {
       setMsg('Génération des écritures...');

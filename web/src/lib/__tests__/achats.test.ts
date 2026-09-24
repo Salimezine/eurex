@@ -369,7 +369,45 @@ describe('ACHATS rules', () => {
 
   it('facture importée mais non comptabilisée → avertissement', () => {
     const inv: any = { numero: 'R103', date: '2026-09-05', fournisseur: 'FOURNI', ht0: 0, ht19: 50, tva19: 9.5, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 59.5 };
-    const checks = checkRemiseConsistency([makeEntry('R999', '607000', 100)], [inv]);
+    const checks = checkRemiseConsistency([makeEntry('R999', '2026-09-05', 100)], [inv]);
     expect(checks.some(c => c.status === 'warning' && c.name.includes('non comptabilisée'))).toBe(true);
+  });
+
+  // === ANTI-ÉCHELLE ×1000 (normalizeInvoiceData) ===
+
+  it('échelle ×1000: entiers 4+ chiffres sans TVA lue → rescale (36950 → 36.950)', () => {
+    const inv = normalizeInvoiceData({
+      numero: 'TICKET-1', date: '2026-09-01', fournisseur: 'MONOPRIX',
+      ht0: 0, ht19: 36950, tva19: 0, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 36950,
+    });
+    expect(inv!.ttc).toBeCloseTo(36.95, 3);
+    expect(inv!.ht19).toBeCloseTo(36.95, 3);
+  });
+
+  it('TTC seul ×1000, composants en vrais DT → corrige le TTC', () => {
+    const inv = normalizeInvoiceData({
+      numero: 'TICKET-2', date: '2026-09-01', fournisseur: 'MONOPRIX',
+      ht0: 0, ht19: 36.95, tva19: 0, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 36950,
+    });
+    expect(inv!.ttc).toBeCloseTo(36.95, 3);
+    expect(inv!.ht19).toBeCloseTo(36.95, 3);
+  });
+
+  it('pas de rescale sur une vraie facture B2B entière (15000)', () => {
+    const inv = normalizeInvoiceData({
+      numero: 'B2B-1', date: '2026-09-01', fournisseur: 'GROS',
+      ht0: 0, ht19: 12605, tva19: 2395, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 15000,
+    });
+    // 12605 * 0.19 ≈ 2394.95 → ratio TVA cohérent à l'échelle d'origine
+    // Ne pas diviser par 1000 si TVA déjà cohérente
+    expect(inv!.ttc).toBe(15000);
+  });
+
+  it('MONOPRIX ht=2101 ttc=22.1: ne pas massacrer le TTC écrit', () => {
+    const inv = normalizeInvoiceData({
+      numero: 'NC-MONO', date: '2026-08-31', fournisseur: 'MONOPRIX',
+      ht0: 0, ht19: 2101, tva19: 0, tva7: 0, fodec: 0, timbre: 0, remise: 0, ttc: 22.1,
+    });
+    expect(inv!.ttc).toBeCloseTo(22.1, 3);
   });
 });

@@ -28,7 +28,15 @@ function genId(): string {
 
 function parseNumber(s: string): number {
   if (!s) return 0;
-  const cleaned = s.replace(/\s/g, '').replace(/,/g, '.').replace(/'/g, '').replace(/-/g, '');
+  let cleaned = s.replace(/\s/g, '').replace(/'/g, '');
+  // Format FR/Suisse: 1.234,56 ou 1234,56 → point = milliers
+  if (cleaned.includes(',')) {
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(cleaned)) {
+    // 1.234.567 ou 1.234 → séparateur milliers
+    cleaned = cleaned.replace(/\./g, '');
+  }
+  cleaned = cleaned.replace(/[^0-9.\-]/g, '');
   const val = parseFloat(cleaned);
   return isNaN(val) ? 0 : Math.round(val * 1000) / 1000;
 }

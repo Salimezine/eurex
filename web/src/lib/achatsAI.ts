@@ -10,7 +10,7 @@ async function pdfToImages(file: File, maxPages: number = 3): Promise<string[]> 
   const doc = await pdfjsLib.getDocument({ data: uint8Array }).promise;
   const images: string[] = [];
 
-  const MAX_DIM = 1024;
+  const MAX_DIM = 2048;
 
   for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
     const page = await doc.getPage(i);
@@ -59,6 +59,21 @@ export interface VerificationResult {
 
 const AI_PROXY = import.meta.env.VITE_AI_PROXY_URL || 'https://eurex-api.ezzinesalim21.workers.dev/api/achats/ai';
 
+let lastAIError = '';
+
+export function getLastAIError(): string {
+  return lastAIError;
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Lecture du fichier impossible'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function genId(): string {
   return Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
 }
@@ -96,6 +111,10 @@ RÈGLES CRITIQUES (TOUJOURS les respecter):
 7. NUMÉRO: UNIQUEMENT le numéro (ex: "FV10-26+107258"). S'il n'existe pas: NC-<FOURNISSEUR>-<DATE>-<MONTANT>.
 
 8. REMISE: Si une remise commerciale est imprimée (sur une ligne, en % ou en DT), extrais sa valeur en DT dans "remise" (>0 uniquement, sinon 0). Le TTC reste TOUJOURS le montant écrit sur le document.
+
+9. IMAGE FLOUE: Si le texte est difficile à lire, privilégie le montant TOTAL / "Arrêtée à" / montant en toutes lettres. Ne devine JAMAIS un montant illisible — mets 0 plutôt que de inventer.
+
+10. MULTI-FACTURES: Si la page contient plusieurs factures (tableau récapitulatif, feuilles collées), renvoie OBLIGATOIREMENT un tableau JSON avec UNE entrée par facture. Ne fusionne jamais deux factures.
 
 Mapping comptable connu:
 ${fournText}
@@ -162,17 +181,20 @@ async function callAI(prompt: string, systemPrompt: string): Promise<string | nu
         model: 'text',
         prompt,
         systemPrompt,
-        max_tokens: 2000,
+        max_tokens: 4000,
       }),
     });
 
     const result = await response.json();
     if (!result.ok) {
+      lastAIError = typeof result.error === 'string' ? result.error : 'Erreur AI (texte)';
       console.warn('AI error:', result.error);
       return null;
     }
+    lastAIError = '';
     return typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
-  } catch (e) {
+  } catch (e: any) {
+    lastAIError = e?.message || 'Appel AI impossible';
     console.warn('AI call failed:', e);
     return null;
   }
@@ -196,11 +218,14 @@ async function callVisionAI(images: string[], prompt: string, systemPrompt: stri
 
     const result = await response.json();
     if (!result.ok) {
+      lastAIError = typeof result.error === 'string' ? result.error : 'Erreur Vision AI';
       console.warn('Vision AI error:', result.error);
       return null;
     }
+    lastAIError = '';
     return typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
-  } catch (e) {
+  } catch (e: any) {
+    lastAIError = e?.message || 'Appel Vision AI impossible';
     console.warn('Vision AI call failed:', e);
     return null;
   }
@@ -396,6 +421,37 @@ export function normalizeInvoiceData(data: any): any {
   }
   // Ne PAS inventer de TVA: la TVA ne se déduit que si elle est affichée sur la facture.
   // Si le TTC imprimé est absent, on reconstruit le TTC avec l'HT seul (la TVA non affichée n'est pas déductible).
+  // Anti-échelle ×1000: ticket supérette à 4+ chiffres entiers (ex: 36950 = 36.950 DT).
+  // On NE scale PAS si la TVA 19% est déjà cohérente à l'échelle d'origine (vraie facture B2B entière).
+  const intish = [ht0, ht19, ht7, tva19, tva7, fodec, remise, ttc]
+    .every(v => v === 0 || Number.isInteger(v));
+  const compsBefore = ht0 + ht19 + ht7 + tva19 + tva7 + fodec + timbre;
+  const expectedTva19 = Math.round(ht19 * 0.19 * 1000) / 1000;
+  const tvaCoherent =
+    (tva19 === 0 && tva7 === 0 && ht19 === 0 && ht7 === 0) ||
+    (tva19 > 0 && expectedTva19 > 0 && Math.abs(tva19 - expectedTva19) <= Math.max(1, expectedTva19 * 0.05));
+  // Scale ×1000 si: entiers bruts, échelle incohérente (pas de TVA 19% lisible),
+  // et les composants somment bien sur le TTC (tout a été lu à la même échelle fausse).
+  const noTvaLue = tva19 === 0 && tva7 === 0 && (ht0 > 0 || ht19 > 0 || ht7 > 0);
+  if (
+    intish && (!tvaCoherent || noTvaLue) &&
+    ttc >= 10000 && ttc < 5000000 &&
+    compsBefore >= ttc * 0.8 && compsBefore <= ttc * 1.2
+  ) {
+    ht0 = Math.round((ht0 / 1000) * 1000) / 1000;
+    ht19 = Math.round((ht19 / 1000) * 1000) / 1000;
+    ht7 = Math.round((ht7 / 1000) * 1000) / 1000;
+    tva19 = Math.round((tva19 / 1000) * 1000) / 1000;
+    tva7 = Math.round((tva7 / 1000) * 1000) / 1000;
+    fodec = Math.round((fodec / 1000) * 1000) / 1000;
+    remise = Math.round((remise / 1000) * 1000) / 1000;
+    ttc = Math.round((ttc / 1000) * 1000) / 1000;
+    if (timbre >= 1000) timbre = Math.round((timbre / 1000) * 1000) / 1000;
+  } else if (ttc >= 10000 && compsBefore > 0 && Math.abs(compsBefore - ttc / 1000) < Math.abs(compsBefore - ttc) * 0.05) {
+    // Composants déjà en vrais DT, TTC seul ×1000 → corriger le TTC
+    ttc = Math.round((ttc / 1000) * 1000) / 1000;
+  }
+
   const computedSum = Math.round((ht0 + ht19 + ht7 + tva19 + tva7 + fodec + timbre) * 1000) / 1000;
   if (ttc === 0 && (ht0 > 0 || ht19 > 0 || ht7 > 0 || tva19 > 0 || tva7 > 0 || fodec > 0)) {
     ttc = computedSum;
@@ -512,40 +568,19 @@ Règles:
 }
 
 export async function processFileWithAI(file: File, plan: PlanComptable): Promise<AchatInvoice[]> {
+  lastAIError = '';
   const isImage = file.type.startsWith('image/');
+  const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   let text = '';
-  let isHandwritten = false;
   let confidence = 100;
-
-  console.log(`[ACHATS] Fichier: ${file.name}, type: ${file.type}, taille: ${(file.size/1024).toFixed(0)}KB`);
-
-  if (isImage) {
-    console.log('[ACHATS] Mode IMAGE - extraction OCR...');
-    const imgResult = await (await import('./achatsParser')).extractFromImage(file);
-    text = imgResult.text;
-    confidence = imgResult.confidence;
-    isHandwritten = true;
-  } else {
-    console.log('[ACHATS] Mode PDF - extraction texte...');
-    const pdfResult = await (await import('./achatsParser')).extractFromPDF(file);
-    text = pdfResult.text;
-    isHandwritten = !text || text.replace(/\s/g, '').length < 50;
-    console.log(`[ACHATS] Texte extrait: ${text.length} chars, isHandwritten: ${isHandwritten}`);
-  }
-
   const allInvoices: AchatInvoice[] = [];
-  const needsVision = (isImage || isHandwritten) && file.type === 'application/pdf';
-  console.log(`[ACHATS] needsVision: ${needsVision}`);
 
-  if (needsVision) {
-    console.log('[ACHATS] Début conversion PDF → images...');
-    try {
-      const pages = await pdfToImages(file, 37);
-      console.log(`[ACHATS] ${pages.length} pages extraites, début Vision AI...`);
-      const planText = getPlanText(plan);
-      const fournText = getFournisseursText(plan);
-      const prompt = buildExtractionPrompt(plan, planText, fournText);
-      const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
+  console.log(`[ACHATS] Fichier: ${file.name}, type: ${file.type}, taille: ${(file.size / 1024).toFixed(0)}KB`);
+
+  const planText = getPlanText(plan);
+  const fournText = getFournisseursText(plan);
+  const prompt = buildExtractionPrompt(plan, planText, fournText);
+  const systemPrompt = `Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs pour des sociétés tunisiennes (restauration/commerce).
 
 RÈGLES CRITIQUES À RESPECTER:
 1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
@@ -553,94 +588,156 @@ RÈGLES CRITIQUES À RESPECTER:
 3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
+6. IMAGE FLOUE: Lis d'abord le TOTAL / montant en toutes lettres. Ne devine pas un chiffre illisible (0 plutôt qu'inventer).
+7. MULTI-FACTURES: Plusieurs factures sur la page → TABLEAU JSON, une entrée par facture, jamais fusionnées.
 
-Réponds TOUJOURS en JSON valide sans aucun texte avant ou après. Si la page ne contient pas de facture, réponds exactement: null`;
+Réponds TOUJOURS en JSON valide (objet, tableau, ou null) sans aucun texte avant ou après. Si la page ne contient pas de facture, réponds exactement: null`;
 
-      for (let i = 0; i < pages.length; i++) {
-        try {
-          console.log(`[ACHATS] Page ${i + 1}/${pages.length}...`);
-          let response = await callVisionAI([pages[i]], prompt, systemPrompt);
-          console.log(`[ACHATS] Page ${i + 1} réponse:`, response?.substring(0, 160) || 'VIDE');
-          let data = extractJSON(response);
-
-          if (!data) {
-            console.log(`[ACHATS] Page ${i + 1} JSON absent, conversion texte AI...`);
-            const fixPrompt = `Convertis ce texte en un objet JSON avec exactement ce schéma, sans rien d'autre (ni texte, ni markdown):\n{"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"ttc":0}\n\nTEXTE À CONVERTIR:\n${(response || '').substring(0, 6000)}`;
-            const fixResponse = await callAI(fixPrompt, 'Tu réponds uniquement avec le JSON demandé, rien d\'autre.');
-            data = extractJSON(fixResponse);
-            console.log(`[ACHATS] Page ${i + 1} conversion:`, (data ? 'OK' : 'ÉCHEC'));
-          }
-
-          const invs = toInvoices(data);
-          for (const raw of invs) {
-            const inv = normalizeInvoiceData(raw);
-            if (inv && (inv.numero || inv.fournisseur || inv.ttc > 0)) {
-              const fm = matchFournisseur(inv.fournisseur, plan);
-              if (fm) inv.fournisseur = fm.libelle;
-              allInvoices.push({
-                id: genId(),
-                numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
-                description: inv.description, ht0: inv.ht0, ht19: inv.ht19,
-                tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
-                timbre: inv.timbre, remise: inv.remise, ttc: inv.ttc,
-                is_handwritten: true, raw_text: '', ocr_confidence: confidence,
-                page: i + 1, arith_note: inv.arith_note,
-              });
-              console.log(`[ACHATS]   ✓ ${inv.numero || '(sans n°)'} ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
-            }
-          }
-        } catch (e) {
-          console.error(`[ACHATS] ✗ Page ${i + 1} failed:`, e);
-        }
+  const addParsed = (data: any, page?: number, rawText = '') => {
+    let count = 0;
+    for (const raw of toInvoices(data)) {
+      const inv = normalizeInvoiceData(raw);
+      if (inv && (inv.numero || inv.fournisseur || inv.ttc > 0)) {
+        const fm = matchFournisseur(inv.fournisseur, plan);
+        if (fm) inv.fournisseur = fm.libelle;
+        allInvoices.push({
+          id: genId(),
+          numero: inv.numero, date: inv.date, fournisseur: inv.fournisseur,
+          description: inv.description, ht0: inv.ht0, ht19: inv.ht19,
+          tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
+          timbre: inv.timbre, remise: inv.remise, ttc: inv.ttc,
+          is_handwritten: true, raw_text: rawText.substring(0, 500), ocr_confidence: confidence,
+          page, arith_note: inv.arith_note,
+        });
+        count++;
+        console.log(`[ACHATS]   ✓ ${inv.numero || '(sans n°)'} ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
       }
-      console.log(`[ACHATS] Total: ${allInvoices.length} factures extraites`);
+    }
+    return count;
+  };
+
+  // --- Collecte des images pour Vision AI ---
+  let visionImages: string[] = [];
+  let scannedPDF = false;
+
+  if (isImage) {
+    console.log('[ACHATS] Mode IMAGE → Vision AI directe');
+    try {
+      visionImages = [await fileToDataURL(file)];
     } catch (e) {
-      console.error('[ACHATS] Vision AI failed:', e);
+      console.warn('[ACHATS] Conversion image impossible:', e);
+    }
+  } else if (isPDF) {
+    console.log('[ACHATS] Mode PDF - extraction texte...');
+    try {
+      const pdfResult = await (await import('./achatsParser')).extractFromPDF(file);
+      text = pdfResult.text;
+      scannedPDF = pdfResult.isHandwritten || text.replace(/\s/g, '').length < 50;
+      console.log(`[ACHATS] Texte extrait: ${text.length} chars, scanné: ${scannedPDF}`);
+    } catch (e) {
+      console.warn('[ACHATS] extractFromPDF failed:', e);
+      scannedPDF = true;
+    }
+    if (scannedPDF) {
+      try {
+        visionImages = await pdfToImages(file, 37);
+        console.log(`[ACHATS] ${visionImages.length} page(s) PDF → images`);
+      } catch (e) {
+        console.error('[ACHATS] pdfToImages failed:', e);
+        lastAIError = 'Conversion PDF → image impossible';
+      }
+    }
+  } else {
+    throw new Error(`Format non supporté: ${file.name} (PDF ou image requis)`);
+  }
+
+  // --- 1) Vision AI (images + PDF scannés) ---
+  if (visionImages.length > 0) {
+    console.log(`[ACHATS] Vision AI sur ${visionImages.length} image(s)...`);
+    for (let i = 0; i < visionImages.length; i++) {
+      try {
+        console.log(`[ACHATS] Page ${i + 1}/${visionImages.length}...`);
+        let response = await callVisionAI([visionImages[i]], prompt, systemPrompt);
+        console.log(`[ACHATS] Page ${i + 1} réponse:`, response?.substring(0, 160) || 'VIDE');
+        let data = extractJSON(response);
+
+        if (!data && response) {
+          // 2e passe: reprompt VISION avec l'image (pas texte seul)
+          console.log(`[ACHATS] Page ${i + 1} JSON absent → 2e passe vision...`);
+          const fixPrompt = `La réponse précédente n'était pas un JSON valide. Corrige-la.
+
+Réponse reçue:
+${response.substring(0, 3000)}
+
+Réponds UNIQUEMENT en JSON valide, sans markdown:
+- Une facture: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"remise":0,"ttc":0}
+- Plusieurs factures: [ mêmes objets ]
+- Aucune facture: null`;
+          response = await callVisionAI([visionImages[i]], fixPrompt, systemPrompt);
+          data = extractJSON(response);
+          console.log(`[ACHATS] Page ${i + 1} 2e passe:`, data ? 'OK' : 'ÉCHEC');
+        }
+
+        addParsed(data, isImage ? undefined : i + 1, text);
+      } catch (e) {
+        console.error(`[ACHATS] ✗ Page ${i + 1} failed:`, e);
+      }
+    }
+    console.log(`[ACHATS] Vision total: ${allInvoices.length} facture(s)`);
+  }
+
+  // --- 2) PDF avec texte → Text AI multi-factures (zéro regex seule) ---
+  if (allInvoices.length === 0 && !isImage && !scannedPDF && text.replace(/\s/g, '').length >= 50) {
+    console.log('[ACHATS] PDF texte → callAI multi-factures...');
+    const textPrompt = `## TEXTE EXTRAIT DU PDF\n${text}\n\n${prompt}`;
+    const response = await callAI(textPrompt, systemPrompt);
+    const data = extractJSON(response);
+    if (data) {
+      addParsed(data, undefined, text);
+    } else {
+      console.warn('[ACHATS] Text AI JSON absent:', lastAIError || response?.substring(0, 120));
     }
   }
 
+  // --- 3) Fallback image: Tesseract + Text AI (si vision a échoué) ---
   if (allInvoices.length === 0 && isImage) {
+    console.log('[ACHATS] Fallback Tesseract + Text AI...');
     try {
       const Tesseract = await import('tesseract.js');
       const result = await Tesseract.default.recognize(file, 'fra+ara');
       text = result.data.text;
       confidence = result.data.confidence;
       if (text.replace(/\s/g, '').length > 50) {
-        const planText = getPlanText(plan);
-        const fournText = getFournisseursText(plan);
-        const prompt = `## TEXTE OCR DE LA FACTURE\n${text}\n\nExtrait les données en JSON: {"numero":"","date":"YYYY-MM-DD","fournisseur":"","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":1,"remise":0,"ttc":0}\n\nPlan: ${planText}\nFournisseurs: ${fournText}`;
-        const systemPrompt = 'Tu es un expert-comptable tunisien. Extrais les données de la facture.';
-        const aiResponse = await callAI(prompt, systemPrompt);
-        if (aiResponse) {
-          const data = extractJSON(aiResponse);
-          if (data) {
-            const fm = matchFournisseur(String(data.fournisseur || ''), plan);
-            allInvoices.push({
-id: genId(), numero: String(data.numero || ''), date: String(data.date || ''), fournisseur: fm ? fm.libelle : String(data.fournisseur || ''),
-              description: String(data.description || ''), ht0: parseNum(data.ht0), ht19: parseNum(data.ht19),
-              tva19: parseNum(data.tva19), tva7: parseNum(data.tva7), fodec: parseNum(data.fodec),
-timbre: typeof data.timbre !== 'undefined' ? parseNum(data.timbre) : 0, ttc: parseNum(data.ttc),
-			  remise: typeof data.remise !== 'undefined' ? parseNum(data.remise) : 0,
-			  is_handwritten: true, raw_text: text.substring(0, 500), ocr_confidence: confidence,
-            });
-          }
-        }
+        const aiResponse = await callAI(
+          `## TEXTE OCR DE LA FACTURE\n${text}\n\n${prompt}`,
+          systemPrompt
+        );
+        addParsed(extractJSON(aiResponse), undefined, text);
       }
     } catch (e) {
       console.warn('Tesseract OCR failed:', e);
     }
   }
 
+  // --- 4) Dernier recours: regex UNIQUEMENT si le texte a de la substance ---
+  if (allInvoices.length === 0 && text.replace(/\s/g, '').length >= 30) {
+    console.log('[ACHATS] Fallback regex parseInvoiceText');
+    const parsed = (await import('./achatsParser')).parseInvoiceText(text, true);
+    if (parsed.numero || parsed.fournisseur || parsed.ttc > 0) {
+      allInvoices.push({
+        ...parsed,
+        id: genId(),
+        is_handwritten: true,
+        raw_text: text.substring(0, 500),
+        ocr_confidence: confidence,
+      });
+    }
+  }
+
+  // --- 5) Jamais de facture fantôme ---
   if (allInvoices.length === 0) {
-    console.log('[ACHATS] Fallback: parseInvoiceText');
-    const parsed = (await import('./achatsParser')).parseInvoiceText(text, isHandwritten);
-    allInvoices.push({
-      ...parsed,
-      id: genId(),
-      is_handwritten: isHandwritten,
-      raw_text: text.substring(0, 500),
-      ocr_confidence: confidence,
-    });
+    const detail = lastAIError ? ` — ${lastAIError}` : '';
+    throw new Error(`Aucune facture lisible dans ${file.name}${detail}. Image peut-être trop floue, page sans facture, ou quota AI épuisé.`);
   }
 
   harmonizeDatesAndFournisseurs(allInvoices);
