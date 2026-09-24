@@ -26,7 +26,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'dash.progress': { fr: 'Avancement', ar: 'التقدم' },
   'dash.tasks_remaining': { fr: 'tâches restantes', ar: 'المهام المتبقية' },
   'dash.no_clients': { fr: 'Aucun client assigné', ar: 'لا عملاء معيّنين' },
-  'dash.blocked': { fr: 'Bloqué', ar: 'محجوب' },
+  'dash.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
   'dash.open_dossier': { fr: 'Ouvrir le dossier', ar: 'فتح الملف' },
   'dash.since_days': { fr: 'depuis {n} jours', ar: 'منذ {n} أيام' },
 
@@ -36,7 +36,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'status.a_faire': { fr: 'À faire', ar: 'للقيام' },
   'status.en_cours_task': { fr: 'En cours', ar: 'قيد التنفيذ' },
   'status.fait': { fr: 'Fait', ar: 'منجز' },
-  'status.bloque_client': { fr: 'Bloqué client', ar: 'محجوب — في انتظار العميل' },
+  'status.bloque_client': { fr: 'Ne marche pas', ar: 'لا يعمل' },
 
   // Dossier
   'dossier.checklist': { fr: 'Checklist des tâches', ar: 'قائمة المهام' },
@@ -54,11 +54,10 @@ const translations: Record<string, Record<Lang, string>> = {
   'expert.comptables': { fr: 'Comptables du cabinet', ar: 'محاسبو المكتب' },
   'expert.clients_count': { fr: '{n} clients', ar: '{n} عملاء' },
   'expert.avg_progress': { fr: 'Avancement moyen', ar: 'متوسط التقدم' },
-  'expert.blocked_dossiers': { fr: 'Dossiers bloqués', ar: 'الملفات المحجوبة' },
+  'expert.blocked_dossiers': { fr: 'Dossiers ne marchent pas', ar: 'ملفات لا تعمل' },
 
-  // Donut — vert = marche, rouge = ne marche pas (attente sur la piste claire)
+  // Donut — 2 catégories : vert = marche, rouge = ne marche pas
   'donut.done': { fr: 'Ça marche', ar: 'يعمل' },
-  'donut.in_progress': { fr: 'En attente', ar: 'في الانتظار' },
   'donut.blocked': { fr: 'Ne marche pas', ar: 'لا يعمل' },
 
   // Templates
@@ -69,7 +68,7 @@ const translations: Record<string, Record<Lang, string>> = {
 
   // Timeline
   'timeline.all': { fr: 'Tout', ar: 'الكل' },
-  'timeline.blockages': { fr: 'Blocages uniquement', ar: 'الحجوب فقط' },
+  'timeline.blockages': { fr: 'Ne marche pas uniquement', ar: 'التي لا تعمل فقط' },
   'timeline.documents': { fr: 'Documents uniquement', ar: 'المستندات فقط' },
   'timeline.time': { fr: 'Chrono', ar: 'التوقيت' },
   // Comptable detail

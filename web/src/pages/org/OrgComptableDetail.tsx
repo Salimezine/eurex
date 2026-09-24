@@ -95,12 +95,11 @@ export default function OrgComptableDetail() {
         </div>
       )}
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
+      {/* KPIs — En cours masqué, Bloqué → Ne marche pas */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         {[
           { label: 'Dossiers', value: kpis.total_dossiers, color: 'blue' },
-          { label: 'En cours', value: kpis.en_cours, color: 'gray' },
-          { label: 'Bloqué', value: kpis.bloque_client, color: 'red' },
+          { label: 'Ne marche pas', value: kpis.bloque_client, color: 'red' },
           { label: 'Avancement', value: `${kpis.avg_progress}%`, color: 'emerald' },
           { label: 'Tâches faites', value: kpis.tasks_done, color: 'purple' },
           { label: 'Notes', value: kpis.total_notes, color: 'orange' },
@@ -217,8 +216,7 @@ export default function OrgComptableDetail() {
                 <p className="text-xs text-gray-500">Exercice {d.exercice} • Matricule {d.matricule_fiscal || '—'}</p>
                 <div className="flex gap-3 mt-1 text-[11px] text-gray-500">
                   <span>✅ {d.task_stats.fait}/{d.task_stats.total}</span>
-                  <span>🔄 {d.task_stats.en_cours}</span>
-                  {d.task_stats.bloque_client > 0 && <span className="text-red-500">🔴 {d.task_stats.bloque_client}</span>}
+                  {d.task_stats.bloque_client > 0 && <span className="text-red-500">✕ {d.task_stats.bloque_client} ne marche pas</span>}
                   {d.total_time_seconds > 0 && <span className="font-mono">⏱ {formatTime(d.total_time_seconds)}</span>}
                 </div>
               </div>
