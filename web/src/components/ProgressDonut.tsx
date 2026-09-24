@@ -26,8 +26,9 @@ export default function ProgressDonut({
   size = 100, showLabel = true, className = '', animated = true,
 }: ProgressDonutProps) {
   const [animProgress, setAnimProgress] = useState(animated ? 0 : 1);
-  // 2 categories only: fait (vert) + bloque (rouge) — enCours masqué
-  const total = fait + bloqueClient;
+  // Vert = fait ; Rouge = en cours + bloqué (tout ce qui ne marche pas encore)
+  const notWorking = enCours + bloqueClient;
+  const total = fait + notWorking;
   const pct = total > 0 ? Math.round((fait / total) * 100) : 0;
   const radius = (size - 12) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -59,10 +60,10 @@ export default function ProgressDonut({
     );
   }
 
-  // Only green (ça marche) + red (ne marche pas) — full ring, no gap
+  // Only green (ça marche) + red (ne marche pas = en cours + bloqué)
   const segments = [
     { value: fait, color: COLORS.fait, glow: GLOW_COLORS.fait },
-    { value: bloqueClient, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient },
+    { value: notWorking, color: COLORS.bloqueClient, glow: GLOW_COLORS.bloqueClient },
   ].filter(s => s.value > 0);
 
   let offset = 0;
@@ -141,7 +142,7 @@ export default function ProgressDonut({
       {/* Center % — sans disque blanc */}
       <span
         className={`absolute font-extrabold tracking-tight ${
-          pct >= 80 ? 'text-emerald-600' : pct <= 30 && bloqueClient > 0 ? 'text-red-500' : 'text-gray-800'
+          pct >= 80 ? 'text-emerald-600' : pct <= 30 && notWorking > 0 ? 'text-red-500' : 'text-gray-800'
         } ${size >= 110 ? 'text-3xl' : size >= 80 ? 'text-xl' : 'text-sm'}`}
         style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}
       >
@@ -152,10 +153,10 @@ export default function ProgressDonut({
 }
 
 // Legend — only "Ça marche" (vert)
-export function DonutLegend({ fait, enCours: _enCours, bloqueClient: _bloqueClient, className = '' }: {
+export function DonutLegend({ fait, enCours, bloqueClient, className = '' }: {
   fait: number; enCours: number; bloqueClient: number; className?: string;
 }) {
-  const total = fait + _bloqueClient;
+  const total = fait + enCours + bloqueClient;
   const items = [
     { count: fait, color: COLORS.fait, label: t('donut.done'), icon: '✓' },
   ];
