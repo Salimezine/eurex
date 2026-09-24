@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { orgApi, OrgDossier, OrgTask, OrgDocument } from '../../lib/orgApi';
+import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
@@ -8,7 +8,7 @@ import Timeline from '../../components/Timeline';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, FileText, MessageSquare, Clock, ChevronDown, ChevronUp,
-  ExternalLink, Eye, Users,
+  ExternalLink, Eye, Users, UserRound,
 } from 'lucide-react';
 
 type Tab = 'checklist' | 'documents' | 'notes' | 'timeline';
@@ -47,6 +47,7 @@ export default function OrgDossierPage() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskLabel, setEditTaskLabel] = useState('');
+  const [comptables, setComptables] = useState<OrgComptable[]>([]);
 
   const load = () => {
     if (!id) return;
@@ -54,6 +55,10 @@ export default function OrgDossierPage() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  useEffect(() => {
+    if (isExpert) orgApi.getComptables().then(setComptables).catch(() => {});
+  }, [isExpert]);
 
   // Live timer tick
   useEffect(() => {
@@ -179,6 +184,16 @@ export default function OrgDossierPage() {
     try {
       await orgApi.renameTask(dossier.id, taskId, editTaskLabel.trim());
       setEditingTaskId(null);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const assignTask = async (taskId: string, comptableId: string | null) => {
+    if (!dossier) return;
+    try {
+      await orgApi.assignTask(dossier.id, taskId, comptableId);
       load();
     } catch (err: any) {
       alert(err.message);
@@ -366,6 +381,12 @@ export default function OrgDossierPage() {
                       {formatTime(task.total_time_seconds)}
                     </span>
                   )}
+                  {task.assigned_comptable_name && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-full font-medium">
+                      <UserRound size={10} />
+                      {task.assigned_comptable_name}
+                    </span>
+                  )}
                   {isExpert && task.updated_by_name && (
                     <span className="text-[10px] text-purple-500 bg-purple-50 px-1.5 py-0.5 rounded-full">
                       {task.updated_by_name}
@@ -427,6 +448,21 @@ export default function OrgDossierPage() {
                       >
                         ✏️ Renommer
                       </button>
+                      {isExpert && (
+                        <label className="flex items-center gap-1.5 text-xs text-gray-600" onClick={e => e.stopPropagation()}>
+                          <UserRound size={12} className="text-emerald-600" />
+                          <select
+                            value={task.assigned_comptable_id || ''}
+                            onChange={e => assignTask(task.id, e.target.value || null)}
+                            className="border border-gray-200 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-purple-500 outline-none max-w-[150px]"
+                          >
+                            <option value="">Aucun comptable</option>
+                            {comptables.filter(c => c.is_active).map(c => (
+                              <option key={c.id} value={c.id}>{c.full_name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
                       {/* Delete button */}
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteTask(task.id, task.label); }}

@@ -65,6 +65,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },
   'templates.add': { fr: 'Ajouter une tâche type', ar: 'إضافة مهمة نموذجية' },
   'templates.requires_doc': { fr: 'Nécessite un document', ar: 'يتطلب مستنداً' },
+  'templates.comptable': { fr: 'Comptable assigné', ar: 'محاسب معين' },
 
   // Timeline
   'timeline.all': { fr: 'Tout', ar: 'الكل' },

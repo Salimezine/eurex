@@ -67,6 +67,8 @@ export interface OrgTask {
   timer_started_at: string | null;
   timer_user_id: string | null;
   updated_by_name: string | null;
+  assigned_comptable_id: string | null;
+  assigned_comptable_name: string | null;
 }
 
 export interface OrgDocument {
@@ -104,6 +106,8 @@ export interface OrgTemplate {
   label: string;
   order_index: number;
   requires_document: number;
+  assigned_comptable_id: string | null;
+  assigned_comptable_name: string | null;
 }
 
 export interface TimelineEvent {
@@ -133,12 +137,14 @@ export const orgApi = {
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status, blocked_reason }) }),
+  assignTask: (dossierId: string, taskId: string, assignedComptableId: string | null) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: assignedComptableId }) }),
   renameTask: (dossierId: string, taskId: string, label: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ label }) }),
   deleteTask: (dossierId: string, taskId: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'DELETE' }),
-  addTask: (dossierId: string, label: string) =>
-    req<any>(`/org/dossiers/${dossierId}/tasks`, { method: 'POST', body: JSON.stringify({ label }) }),
+  addTask: (dossierId: string, label: string, assignedComptableId?: string | null) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks`, { method: 'POST', body: JSON.stringify({ label, assigned_comptable_id: assignedComptableId || null }) }),
 
   // Documents
   updateDocument: (dossierId: string, docId: string, received: boolean, note?: string) =>
@@ -170,7 +176,9 @@ export const orgApi = {
 
   // Templates
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),
-  createTemplate: (label: string, requiresDocument: boolean) =>
-    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument }) }),
+  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null) =>
+    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null }) }),
+  updateTemplate: (id: string, assignedComptableId: string | null) =>
+    req<any>(`/org/templates/${id}`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: assignedComptableId }) }),
   deleteTemplate: (id: string) => req<any>(`/org/templates/${id}`, { method: 'DELETE' }),
 };

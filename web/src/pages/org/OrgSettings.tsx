@@ -15,6 +15,7 @@ export default function OrgSettings() {
   const [loading, setLoading] = useState(true);
   const [newLabel, setNewLabel] = useState('');
   const [newRequiresDoc, setNewRequiresDoc] = useState(false);
+  const [newAssignedComp, setNewAssignedComp] = useState('');
   const [newCompName, setNewCompName] = useState('');
   const [newCompEmail, setNewCompEmail] = useState('');
   const [newCompPassword, setNewCompPassword] = useState('');
@@ -29,10 +30,22 @@ export default function OrgSettings() {
   const addTemplate = async () => {
     if (!newLabel.trim()) return;
     try {
-      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc);
+      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc, newAssignedComp || null);
       setNewLabel('');
       setNewRequiresDoc(false);
+      setNewAssignedComp('');
       setTemplates(await orgApi.getTemplates());
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const assignTemplate = async (id: string, comptableId: string | null) => {
+    try {
+      await orgApi.updateTemplate(id, comptableId);
+      setTemplates(templates.map(t => t.id === id
+        ? { ...t, assigned_comptable_id: comptableId, assigned_comptable_name: comptables.find(c => c.id === comptableId)?.full_name || null }
+        : t));
     } catch (err: any) {
       alert(err.message);
     }
@@ -132,7 +145,16 @@ export default function OrgSettings() {
                 />
                 {t('templates.requires_doc')}
               </label>
-              <button
+              <select
+                value={newAssignedComp}
+                onChange={e => setNewAssignedComp(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+              >
+                <option value="">Comptable : —</option>
+                {comptables.filter(c => c.is_active).map(c => (
+                  <option key={c.id} value={c.id}>{c.full_name}</option>
+                ))}
+              </select>              <button
                 onClick={addTemplate}
                 disabled={!newLabel.trim()}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5"
@@ -149,6 +171,18 @@ export default function OrgSettings() {
               {tmpl.requires_document ? (
                 <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[11px] font-medium">📄 Doc requis</span>
               ) : null}
+              <select
+                value={tmpl.assigned_comptable_id || ''}
+                onChange={e => assignTemplate(tmpl.id, e.target.value || null)}
+                onClick={e => e.stopPropagation()}
+                className="border border-gray-200 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-purple-500 outline-none max-w-[160px]"
+                title="Comptable assigné par défaut"
+              >
+                <option value="">Comptable : —</option>
+                {comptables.filter(c => c.is_active).map(c => (
+                  <option key={c.id} value={c.id}>{c.full_name}</option>
+                ))}
+              </select>
               <button
                 onClick={() => deleteTemplate(tmpl.id)}
                 className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"

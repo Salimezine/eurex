@@ -233,6 +233,35 @@ describe('Organization: Task Templates', () => {
     expect(expectedDocs.length).toBe(1);
     expect(expectedDocs[0].received).toBe(0);
   });
+
+  it('applying template copies assigned_comptable_id to tasks', () => {
+    const templates = [
+      { label: 'Saisie achats', assigned_comptable_id: 'user_comp_001' },
+      { label: 'Saisie ventes', assigned_comptable_id: null },
+    ];
+    const newTasks = templates.map(t => ({
+      label: t.label,
+      status: 'a_faire',
+      assigned_comptable_id: t.assigned_comptable_id,
+    }));
+    expect(newTasks[0].assigned_comptable_id).toBe('user_comp_001');
+    expect(newTasks[1].assigned_comptable_id).toBeNull();
+  });
+
+  it('expert can reassign a task to another comptable', () => {
+    const task = { assigned_comptable_id: 'user_comp_001' as string | null };
+    const user = { role: 'expert' };
+    if (user.role === 'expert') task.assigned_comptable_id = 'user_comp_002';
+    expect(task.assigned_comptable_id).toBe('user_comp_002');
+  });
+
+  it('comptable cannot reassign a task', () => {
+    const task = { assigned_comptable_id: 'user_comp_001' as string | null };
+    const user = { role: 'comptable' };
+    const canReassign = user.role === 'expert';
+    expect(canReassign).toBe(false);
+    expect(task.assigned_comptable_id).toBe('user_comp_001');
+  });
 });
 
 // --- Donut chart data ---

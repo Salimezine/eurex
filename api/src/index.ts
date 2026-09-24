@@ -1814,7 +1814,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
         for (const tmpl of templates as any[]) {
           const taskId = genId();
-          await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index) VALUES (?, ?, ?, \'a_faire\', ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index).run();
+          await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null).run();
           if (tmpl.requires_document) {
             await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, tmpl.label).run();
           }
@@ -1831,7 +1831,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id WHERE t.dossier_id = ? ORDER BY t.order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.order_index').bind(orgDossierGetMatch[1]).all();
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
         const { results: notes } = await env.DB.prepare('SELECT n.*, u.full_name as author_name FROM org_notes n LEFT JOIN org_users u ON n.user_id = u.id WHERE n.dossier_id = ? ORDER BY n.created_at DESC').bind(orgDossierGetMatch[1]).all();
         // Time entries breakdown
@@ -1942,7 +1942,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
-        const { status, blocked_reason, label } = body;
+        const { status, blocked_reason, label, assigned_comptable_id } = body;
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         const updates: string[] = [];
@@ -1953,6 +1953,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (blocked_reason !== undefined) { updates.push('blocked_reason = ?'); binds.push(blocked_reason || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
+        if (assigned_comptable_id !== undefined) {
+          if (user.role !== 'expert') return json({ error: 'Seul un expert peut réassigner une tâche' }, 403);
+          if (assigned_comptable_id !== null) {
+            const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
+            if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+          }
+          updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null);
+        }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         updates.push("updated_by = ?", "updated_at = datetime('now')");
         binds.push(user.id, orgTaskMatch[2]);
@@ -1965,6 +1973,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (label !== undefined && label.trim() && label.trim() !== task.label) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_renamed', 'task', orgTaskMatch[2], JSON.stringify({ old_label: task.label, new_label: label.trim() })).run();
+        }
+        if (assigned_comptable_id !== undefined && (assigned_comptable_id || null) !== (task.assigned_comptable_id || null)) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_assigned', 'task', orgTaskMatch[2], JSON.stringify({ old: task.assigned_comptable_id || null, new: assigned_comptable_id || null })).run();
         }
         return json({ ok: true, progress });
       }
@@ -1992,17 +2003,22 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
-        const { label } = await request.json() as any;
+        const { label, assigned_comptable_id } = await request.json() as any;
         if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
+        if (assigned_comptable_id) {
+          if (user.role !== 'expert') return json({ error: 'Seul un expert peut affecter une tâche' }, 403);
+          const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
+          if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+        }
         const dossier = await env.DB.prepare('SELECT * FROM org_dossiers WHERE id = ?').bind(dossierId).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         // Get next order_index
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
         const taskId = genId();
-        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index) VALUES (?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx).run();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id) VALUES (?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null).run();
         const progress = await orgRecalcProgress(dossierId);
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, assigned_comptable_id: assigned_comptable_id || null })).run();
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
       }
 
@@ -2055,6 +2071,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           else if (r.action === 'timer_started') { icon = '▶️'; label = 'Chrono démarré'; }
           else if (r.action === 'timer_stopped') { icon = '⏹️'; label = `Chrono arrêté — ${details ? formatDur(details.duration_seconds) : ''}`; }
           else if (r.action === 'client_reassigned') { icon = '👤'; label = 'Client réassigné'; }
+          else if (r.action === 'task_assigned') { icon = '👤'; label = 'Tâche réassignée'; }
+          else if (r.action === 'template_updated') { icon = '📝'; label = 'Modèle de tâche modifié'; }
           return { date: r.created_at, type: r.action, icon, label, actor: r.user_name || 'Système', details };
         });
         return json(timeline);
@@ -2186,24 +2204,49 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/templates' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        const { results } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
+        const { results } = await env.DB.prepare('SELECT t.*, u.full_name as assigned_comptable_name FROM org_task_templates t LEFT JOIN org_users u ON t.assigned_comptable_id = u.id WHERE t.organization_id = ? ORDER BY t.order_index').bind(user.organization_id).all();
         return json(results);
       }
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { label, requires_document } = await request.json() as any;
+        const { label, requires_document, assigned_comptable_id } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
+        if (assigned_comptable_id) {
+          const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
+          if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+        }
         const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document) VALUES (?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0).run();
-        return json({ id, label }, 201);
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id) VALUES (?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null).run();
+        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null }, 201);
       }
-      const orgTmplDelMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
-      if (orgTmplDelMatch && method === 'DELETE') {
+      const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
+      if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        await env.DB.prepare('DELETE FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplDelMatch[1], user.organization_id).run();
+        const { assigned_comptable_id, label, requires_document } = await request.json() as any;
+        const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
+        if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
+        if (assigned_comptable_id !== undefined && assigned_comptable_id !== null) {
+          const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
+          if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+        }
+        const updates: string[] = [];
+        const binds: any[] = [];
+        if (assigned_comptable_id !== undefined) { updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null); }
+        if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
+        if (requires_document !== undefined) { updates.push('requires_document = ?'); binds.push(requires_document ? 1 : 0); }
+        if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
+        binds.push(orgTmplMatch[1], user.organization_id);
+        await env.DB.prepare(`UPDATE org_task_templates SET ${updates.join(', ')} WHERE id = ? AND organization_id = ?`).bind(...binds).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document })).run();
+        return json({ ok: true });
+      }
+      if (orgTmplMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        await env.DB.prepare('DELETE FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).run();
         return json({ ok: true });
       }
 
