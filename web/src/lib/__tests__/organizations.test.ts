@@ -508,7 +508,7 @@ describe('Organization: Role-Based Access', () => {
 // --- I18n translations ---
 describe('Organization: I18n', () => {
   const translations: Record<string, Record<string, string>> = {
-    'status.en_cours': { fr: 'En cours', ar: 'قيد التنفيذ' },
+    'status.en_cours': { fr: 'À faire', ar: 'للقيام' },
     'status.cloture': { fr: 'Clôturé', ar: 'مغلق' },
     'status.a_faire': { fr: 'À faire', ar: 'للقيام' },
     'status.fait': { fr: 'Fait', ar: 'منجز' },
@@ -518,7 +518,7 @@ describe('Organization: I18n', () => {
   };
 
   it('has FR translation for all statuses', () => {
-    expect(translations['status.en_cours'].fr).toBe('En cours');
+    expect(translations['status.en_cours'].fr).not.toBe('En cours');
     expect(translations['status.cloture'].fr).toBe('Clôturé');
     expect(translations['status.a_faire'].fr).toBe('À faire');
     expect(translations['status.fait'].fr).toBe('Fait');

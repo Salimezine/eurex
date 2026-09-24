@@ -95,7 +95,7 @@ export default function OrgDashboardExpert() {
 
   return (
     <div className="space-y-4">
-      {/* KPIs — 2 catégories : ça marche / ne marche pas (En cours masqué) */}
+      {/* KPIs — 2 catégories : ça marche / ne marche pas */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
           { label: 'Dossiers actifs', value: activeDossiers, icon: '📁', color: 'blue' },
@@ -271,11 +271,11 @@ export default function OrgDashboardExpert() {
                       </div>
                     </td>
                     <td className="px-5 py-4 text-center">
-                      <span className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
-                        d.status === 'cloture' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
-                      }`}>
-                        {t(`status.${d.status}`)}
-                      </span>
+                      {d.status === 'cloture' && (
+                        <span className="px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-700">
+                          {t('status.cloture')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-center">
                       {d.task_stats?.bloque_client > 0 && (

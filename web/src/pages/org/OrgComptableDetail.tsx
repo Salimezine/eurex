@@ -5,7 +5,7 @@ import { t } from '../../lib/orgI18n';
 import { useOrgAuth } from '../../lib/orgAuth';
 import ProgressDonut from '../../components/ProgressDonut';
 import {
-  ArrowLeft, Users, Clock, FileText, MessageSquare, CheckCircle2,
+  ArrowLeft, Users, FileText, MessageSquare, CheckCircle2,
   Circle, AlertTriangle, BarChart3, Activity, Timer,
 } from 'lucide-react';
 
@@ -46,13 +46,13 @@ export default function OrgComptableDetail() {
 
   const STATUS_COLORS: Record<string, string> = {
     fait: 'text-emerald-600 bg-emerald-50',
-    en_cours: 'text-gray-600 bg-gray-100',
+    en_cours: 'text-gray-500 bg-gray-50',
     a_faire: 'text-gray-500 bg-gray-50',
     bloque_client: 'text-red-600 bg-red-50',
   };
   const STATUS_ICONS: Record<string, any> = {
     fait: CheckCircle2,
-    en_cours: Clock,
+    en_cours: Circle,
     a_faire: Circle,
     bloque_client: AlertTriangle,
   };
@@ -95,11 +95,11 @@ export default function OrgComptableDetail() {
         </div>
       )}
 
-      {/* KPIs — En cours masqué, Bloqué → Ne marche pas */}
+      {/* KPIs — 2 catégories : ça marche / ne marche pas */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         {[
           { label: 'Dossiers', value: kpis.total_dossiers, color: 'blue' },
-          { label: 'Ne marche pas', value: kpis.bloque_client, color: 'red' },
+          { label: 'Ne marche pas', value: kpis.blocked_tasks, color: 'red' },
           { label: 'Avancement', value: `${kpis.avg_progress}%`, color: 'emerald' },
           { label: 'Tâches faites', value: kpis.tasks_done, color: 'purple' },
           { label: 'Notes', value: kpis.total_notes, color: 'orange' },
@@ -149,9 +149,11 @@ export default function OrgComptableDetail() {
                   <p className="text-sm font-medium text-gray-800 truncate">{d.client_name}</p>
                   <p className="text-[11px] text-gray-400">Exercice {d.exercice} • {d.progress}%</p>
                 </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${d.status === 'en_cours' ? 'bg-blue-100 text-blue-700' : d.status === 'clos' ? 'bg-gray-100 text-gray-500' : 'bg-red-100 text-red-600'}`}>
-                  {d.status === 'en_cours' ? 'En cours' : d.status === 'clos' ? 'Clos' : d.status}
-                </span>
+                {d.status === 'cloture' && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-500">
+                    Clôturé
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -243,7 +245,7 @@ export default function OrgComptableDetail() {
                   <span className="text-[11px] text-gray-400 font-mono">⏱ {formatTime(task.total_time_seconds)}</span>
                 )}
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[task.status]}`}>
-                  {task.status}
+                  {t(`status.${task.status}`)}
                 </span>
                 <span className="text-[10px] text-gray-400">{formatDateTime(task.updated_at)}</span>
               </div>

@@ -30,13 +30,12 @@ const translations: Record<string, Record<Lang, string>> = {
   'dash.open_dossier': { fr: 'Ouvrir le dossier', ar: 'فتح الملف' },
   'dash.since_days': { fr: 'depuis {n} jours', ar: 'منذ {n} أيام' },
 
-  // Status
-  'status.en_cours': { fr: 'En cours', ar: 'قيد التنفيذ' },
+  // Status — 3 statuts visibles (En cours supprimé)
   'status.cloture': { fr: 'Clôturé', ar: 'مغلق' },
   'status.a_faire': { fr: 'À faire', ar: 'للقيام' },
-  'status.en_cours_task': { fr: 'En cours', ar: 'قيد التنفيذ' },
   'status.fait': { fr: 'Fait', ar: 'منجز' },
   'status.bloque_client': { fr: 'Ne marche pas', ar: 'لا يعمل' },
+  'status.en_cours': { fr: 'À faire', ar: 'للقيام' },
 
   // Dossier
   'dossier.checklist': { fr: 'Checklist des tâches', ar: 'قائمة المهام' },

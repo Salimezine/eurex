@@ -7,7 +7,7 @@ import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
-  Send, FileText, MessageSquare, Clock, ChevronDown, ChevronUp,
+  Send, FileText, MessageSquare, ChevronDown, ChevronUp,
   ExternalLink, Eye, Users, UserRound,
 } from 'lucide-react';
 
@@ -15,14 +15,14 @@ type Tab = 'checklist' | 'documents' | 'notes' | 'timeline';
 
 const STATUS_ICONS: Record<string, any> = {
   a_faire: Circle,
-  en_cours: Clock,
+  en_cours: Circle,
   fait: CheckCircle2,
   bloque_client: AlertTriangle,
 };
 
 const STATUS_COLORS: Record<string, string> = {
   a_faire: 'text-gray-500 bg-gray-50',
-  en_cours: 'text-gray-600 bg-gray-100',
+  en_cours: 'text-gray-500 bg-gray-50',
   fait: 'text-emerald-600 bg-emerald-50',
   bloque_client: 'text-red-600 bg-red-50',
 };
@@ -408,7 +408,7 @@ export default function OrgDossierPage() {
                         <>
                           <div className="flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                            <span className="text-xs text-gray-500">En cours depuis</span>
+                            <span className="text-xs text-gray-500">Depuis</span>
                             <span className="text-sm font-mono font-bold text-red-600">
                               {formatTime(getLiveElapsed(task.timer_started_at))}
                             </span>
@@ -476,11 +476,6 @@ export default function OrgDossierPage() {
                       {task.status !== 'a_faire' && task.status !== 'fait' && (
                         <button onClick={() => updateTaskStatus(task.id, 'a_faire')} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 text-gray-600 hover:bg-gray-200">
                           {t('status.a_faire')}
-                        </button>
-                      )}
-                      {task.status !== 'en_cours' && task.status !== 'fait' && (
-                        <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-3 py-1.5 rounded-lg text-xs bg-gray-200 text-gray-700 hover:bg-gray-300">
-                          {t('status.en_cours_task')}
                         </button>
                       )}
                       {task.status !== 'fait' && (

@@ -2307,11 +2307,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
         // Dossiers + tasks
         const dossierData = [
-          { id: 'doss_001', clientId: 'client_001', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','en_cours','a_faire','a_faire','a_faire'] },
+          { id: 'doss_001', clientId: 'client_001', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','a_faire','a_faire','a_faire','a_faire'] },
           { id: 'doss_002', clientId: 'client_002', status: 'en_cours', tasks: ['fait','fait','fait','bloque_client','a_faire','a_faire','a_faire','a_faire','a_faire'], blocked: [3] },
-          { id: 'doss_003', clientId: 'client_003', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','fait','fait','en_cours','a_faire'] },
+          { id: 'doss_003', clientId: 'client_003', status: 'en_cours', tasks: ['fait','fait','fait','fait','fait','fait','fait','a_faire','a_faire'] },
           { id: 'doss_004', clientId: 'client_004', status: 'en_cours', tasks: ['fait','bloque_client','bloque_client','a_faire','a_faire','a_faire','a_faire','a_faire','a_faire'], blocked: [1,2] },
-          { id: 'doss_005', clientId: 'client_005', status: 'en_cours', tasks: ['fait','fait','fait','fait','en_cours','a_faire','a_faire','a_faire','a_faire'] },
+          { id: 'doss_005', clientId: 'client_005', status: 'en_cours', tasks: ['fait','fait','fait','fait','a_faire','a_faire','a_faire','a_faire','a_faire'] },
         ];
         for (const dd of dossierData) {
           await env.DB.prepare('INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, 2026, ?)').bind(dd.id, dd.clientId, dd.status).run();

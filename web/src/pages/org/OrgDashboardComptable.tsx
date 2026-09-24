@@ -160,7 +160,7 @@ export default function OrgDashboardComptable() {
                   )}
                   {d && (
                     <p className="text-[11px] text-gray-500 mt-1">
-                      Exercice {d.exercice} — <span className="font-medium">{t(`status.${d.status}`)}</span>
+                      Exercice {d.exercice}{d.status === 'cloture' && <> — <span className="font-medium">{t('status.cloture')}</span></>}
                     </p>
                   )}
                 </div>
