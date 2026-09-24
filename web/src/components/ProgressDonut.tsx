@@ -151,14 +151,13 @@ export default function ProgressDonut({
   );
 }
 
-// Legend — only 2: Ça marche (vert) / Ne marche pas (rouge)
-export function DonutLegend({ fait, enCours: _enCours, bloqueClient, className = '' }: {
+// Legend — only "Ça marche" (vert)
+export function DonutLegend({ fait, enCours: _enCours, bloqueClient: _bloqueClient, className = '' }: {
   fait: number; enCours: number; bloqueClient: number; className?: string;
 }) {
-  const total = fait + bloqueClient;
+  const total = fait + _bloqueClient;
   const items = [
     { count: fait, color: COLORS.fait, label: t('donut.done'), icon: '✓' },
-    { count: bloqueClient, color: COLORS.bloqueClient, label: t('donut.blocked'), icon: '✕' },
   ];
 
   return (
