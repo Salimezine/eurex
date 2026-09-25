@@ -48,6 +48,12 @@ const translations: Record<string, Record<Lang, string>> = {
   'dossier.add_note': { fr: 'Ajouter une note...', ar: 'إضافة ملاحظة...' },
   'dossier.mark_received': { fr: 'Marquer reçu', ar: 'تحديد كمستلم' },
   'dossier.manual_received': { fr: 'Reçu hors plateforme (WhatsApp/email)', ar: 'مستلم خارج المنصة' },
+  'dossier.year': { fr: 'Année', ar: 'السنة' },
+  'dossier.filter_all': { fr: 'Tous', ar: 'الكل' },
+  'dossier.filter_annual': { fr: 'Annuel', ar: 'سنوي' },
+  'dossier.month_tasks': { fr: 'tâches', ar: 'مهام' },
+  'dossier.year_overview': { fr: 'Vue annuelle', ar: 'عرض سنوي' },
+  'dossier.empty_month': { fr: 'Aucune tâche ce mois', ar: 'لا مهام هذا الشهر' },
 
   // Expert
   'expert.comptables': { fr: 'Comptables du cabinet', ar: 'محاسبو المكتب' },
@@ -64,6 +70,9 @@ const translations: Record<string, Record<Lang, string>> = {
   'templates.add': { fr: 'Ajouter une tâche type', ar: 'إضافة مهمة نموذجية' },
   'templates.requires_doc': { fr: 'Nécessite un document', ar: 'يتطلب مستنداً' },
   'templates.comptable': { fr: 'Comptable assigné', ar: 'محاسب معين' },
+  'templates.frequency': { fr: 'Fréquence', ar: 'التكرار' },
+  'templates.freq_monthly': { fr: 'Mensuel', ar: 'شهري' },
+  'templates.freq_annual': { fr: 'Annuel', ar: 'سنوي' },
 
   // Timeline
   'timeline.all': { fr: 'Tout', ar: 'الكل' },

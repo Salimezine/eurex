@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { orgApi } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import { useOrgAuth } from '../../lib/orgAuth';
+import { monthShort } from '../../lib/orgMonths';
 import ProgressDonut from '../../components/ProgressDonut';
 import {
   ArrowLeft, Users, FileText, MessageSquare, CheckCircle2,
@@ -186,7 +187,10 @@ export default function OrgComptableDetail() {
               return (
                 <div key={task.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
                   <Icon size={14} className={STATUS_COLORS[task.status]?.split(' ')[0]} />
-                  <span className="text-xs text-gray-700 flex-1 truncate">{task.label}</span>
+                  <span className="text-xs text-gray-700 flex-1 truncate">
+                    {task.label}
+                    {task.month && <span className="ml-1.5 text-[10px] font-semibold text-indigo-500">[{monthShort(task.month)}]</span>}
+                  </span>
                   <span className="text-[10px] text-gray-400">{task.client_name}</span>
                 </div>
               );
@@ -238,7 +242,10 @@ export default function OrgComptableDetail() {
               <div key={task.id} className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50" onClick={() => navigate(`/cabinet/dossier/${task.dossier_id}`)}>
                 <Icon size={18} className={STATUS_COLORS[task.status]?.split(' ')[0]} />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-800">{task.label}</p>
+                  <p className="text-sm font-medium text-gray-800">
+                    {task.label}
+                    {task.month && <span className="ml-1.5 text-[11px] font-semibold text-indigo-500">[{monthShort(task.month)}]</span>}
+                  </p>
                   <p className="text-[11px] text-gray-400">{task.client_name} (ex. {task.exercice})</p>
                 </div>
                 {task.total_time_seconds > 0 && (

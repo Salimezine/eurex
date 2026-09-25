@@ -3,16 +3,20 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
+import {
+  monthLabel, monthShort, currentMonth, groupTasksByMonth, filterTasksByMonth,
+  taskStats, MonthFilter, MonthGroup,
+} from '../../lib/orgMonths';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import { SkeletonDossier } from '../../components/Skeleton';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, FileText, MessageSquare, ChevronDown, ChevronUp,
-  ExternalLink, Eye, Users, UserRound,
+  ExternalLink, Eye, Users, UserRound, CalendarDays,
 } from 'lucide-react';
 
-type Tab = 'checklist' | 'documents' | 'notes' | 'timeline';
+type Tab = 'checklist' | 'documents' | 'notes' | 'timeline' | 'year';
 
 const STATUS_ICONS: Record<string, any> = {
   a_faire: Circle,
@@ -49,6 +53,7 @@ export default function OrgDossierPage() {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskLabel, setEditTaskLabel] = useState('');
   const [comptables, setComptables] = useState<OrgComptable[]>([]);
+  const [monthFilter, setMonthFilter] = useState<MonthFilter>(currentMonth());
 
   const load = () => {
     if (!id) return;
@@ -170,8 +175,9 @@ export default function OrgDossierPage() {
 
   const addTask = async () => {
     if (!dossier || !newTaskLabel.trim()) return;
+    const month = typeof monthFilter === 'number' ? monthFilter : null;
     try {
-      await orgApi.addTask(dossier.id, newTaskLabel.trim());
+      await orgApi.addTask(dossier.id, newTaskLabel.trim(), null, month);
       setNewTaskLabel('');
       setShowAddTask(false);
       load();
@@ -219,6 +225,20 @@ export default function OrgDossierPage() {
   );
 
   const ts = dossier.task_stats;
+  const allTasks = dossier.tasks || [];
+  const monthChips: { key: MonthFilter; label: string; count: number }[] = [
+    { key: 'tous', label: t('dossier.filter_all'), count: allTasks.length },
+    { key: 'annuel', label: t('dossier.filter_annual'), count: filterTasksByMonth(allTasks, 'annuel').length },
+    ...Array.from({ length: 12 }, (_, i) => ({
+      key: (i + 1) as MonthFilter,
+      label: monthShort(i + 1),
+      count: filterTasksByMonth(allTasks, i + 1).length,
+    })),
+  ];
+  const visibleTasks = filterTasksByMonth(allTasks, monthFilter);
+  const visibleGroups: MonthGroup[] = monthFilter === 'tous'
+    ? groupTasksByMonth(allTasks).filter(g => g.tasks.length > 0)
+    : [{ month: typeof monthFilter === 'number' ? monthFilter : null, tasks: visibleTasks, stats: taskStats(visibleTasks) }];
 
   return (
     <div className="space-y-4">
@@ -324,6 +344,7 @@ export default function OrgDossierPage() {
       <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
         {([
           { key: 'checklist' as Tab, label: t('dossier.checklist'), count: ts.total },
+          { key: 'year' as Tab, label: t('dossier.year'), icon: <CalendarDays size={14} /> },
           { key: 'documents' as Tab, label: t('dossier.documents'), count: dossier.documents.length },
           { key: 'notes' as Tab, label: t('dossier.notes'), count: dossier.notes.length },
           { key: 'timeline' as Tab, label: t('dossier.timeline') },
@@ -335,7 +356,7 @@ export default function OrgDossierPage() {
               tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            {t2.label}
+            {t2.icon} {t2.label}
             {t2.count !== undefined && (
               <span className="ml-1 px-1.5 py-0.5 rounded-full bg-gray-200 text-[10px] text-gray-600">{t2.count}</span>
             )}
@@ -346,7 +367,52 @@ export default function OrgDossierPage() {
       {/* Tab: Checklist */}
       {tab === 'checklist' && (
         <div className="space-y-2">
-          {(dossier.tasks || []).map(task => {
+          {/* Filtre par mois */}
+          <div className="flex flex-wrap gap-1.5">
+            {monthChips.map(chip => (
+              <button
+                key={String(chip.key)}
+                onClick={() => setMonthFilter(chip.key)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
+                  monthFilter === chip.key
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'bg-white border border-gray-200 text-gray-600 hover:border-purple-300'
+                }`}
+              >
+                {chip.label}
+                <span className={`ml-1 text-[10px] ${monthFilter === chip.key ? 'text-purple-200' : 'text-gray-400'}`}>
+                  {chip.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {visibleGroups.map(group => (
+          <div key={String(group.month)} className="space-y-2">
+            {monthFilter === 'tous' && (
+              <div className="flex items-center gap-2 pt-2">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+                  {group.month ? monthLabel(group.month) : t('dossier.filter_annual')}
+                </h4>
+                <span className="text-[10px] text-gray-400 font-mono">{group.stats.fait}/{group.stats.total}</span>
+                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all"
+                    style={{ width: `${group.stats.total ? Math.round((group.stats.fait / group.stats.total) * 100) : 0}%` }}
+                  />
+                </div>
+                {group.stats.bloque > 0 && (
+                  <span className="text-[10px] text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full font-medium">
+                    🔴 {group.stats.bloque}
+                  </span>
+                )}
+              </div>
+            )}
+            {group.tasks.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-4 bg-white border border-dashed border-gray-200 rounded-xl">
+                {t('dossier.empty_month')}
+              </p>
+            ) : group.tasks.map(task => {
             const Icon = STATUS_ICONS[task.status] || Circle;
             const isExpanded = expandedTask === task.id;
             const isBlocked = task.status === 'bloque_client';
@@ -358,6 +424,11 @@ export default function OrgDossierPage() {
                   onClick={() => setExpandedTask(isExpanded ? null : task.id)}
                 >
                   <Icon size={18} className={STATUS_COLORS[task.status]?.split(' ')[0] || 'text-gray-400'} />
+                  {monthFilter === 'tous' && task.month && (
+                    <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-full">
+                      {monthShort(task.month)}
+                    </span>
+                  )}
                   {editingTaskId === task.id ? (
                     <input
                       autoFocus
@@ -497,6 +568,8 @@ export default function OrgDossierPage() {
               </div>
             );
           })}
+          </div>
+          ))}
           {/* Add task form */}
           {dossier.status === 'en_cours' && (
             <div className="mt-2">
@@ -510,6 +583,9 @@ export default function OrgDossierPage() {
                     placeholder="Libellé de la nouvelle tâche..."
                     className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
                   />
+                  <span className="text-[11px] text-gray-500 whitespace-nowrap bg-gray-50 px-2 py-1.5 rounded-lg">
+                    {typeof monthFilter === 'number' ? `📅 ${monthLabel(monthFilter)}` : `📆 ${t('dossier.filter_annual')}`}
+                  </span>
                   <button
                     onClick={addTask}
                     disabled={!newTaskLabel.trim()}
@@ -534,6 +610,45 @@ export default function OrgDossierPage() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Tab: Year overview */}
+      {tab === 'year' && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <CalendarDays size={16} className="text-purple-600" />
+            <h3 className="text-sm font-semibold text-gray-700">{t('dossier.year_overview')} {dossier.exercice}</h3>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {groupTasksByMonth(allTasks).map(group => {
+              const pct = group.stats.total ? Math.round((group.stats.fait / group.stats.total) * 100) : 0;
+              return (
+                <button
+                  key={String(group.month)}
+                  onClick={() => { setMonthFilter(group.month ?? 'annuel'); setTab('checklist'); }}
+                  className="bg-white border border-gray-200 rounded-xl p-3 text-left hover:border-purple-300 hover:shadow-sm transition-all"
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className={`text-sm font-semibold ${group.month === currentMonth() ? 'text-purple-700' : 'text-gray-800'}`}>
+                      {group.month ? monthLabel(group.month) : t('dossier.filter_annual')}
+                    </span>
+                    <span className="text-xs font-bold text-gray-600">{pct}%</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#10b981' : group.stats.bloque > 0 ? '#ef4444' : '#8b5cf6' }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-gray-400">
+                    <span>{group.stats.fait}/{group.stats.total} {t('dossier.month_tasks')}</span>
+                    {group.stats.bloque > 0 && <span className="text-red-500 font-medium">🔴 {group.stats.bloque}</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

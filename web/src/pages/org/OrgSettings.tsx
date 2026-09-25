@@ -17,6 +17,7 @@ export default function OrgSettings() {
   const [newLabel, setNewLabel] = useState('');
   const [newRequiresDoc, setNewRequiresDoc] = useState(false);
   const [newAssignedComp, setNewAssignedComp] = useState('');
+  const [newFrequency, setNewFrequency] = useState<'mensuelle' | 'annuelle'>('annuelle');
   const [newCompName, setNewCompName] = useState('');
   const [newCompEmail, setNewCompEmail] = useState('');
   const [newCompPassword, setNewCompPassword] = useState('');
@@ -31,7 +32,7 @@ export default function OrgSettings() {
   const addTemplate = async () => {
     if (!newLabel.trim()) return;
     try {
-      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc, newAssignedComp || null);
+      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc, newAssignedComp || null, newFrequency);
       setNewLabel('');
       setNewRequiresDoc(false);
       setNewAssignedComp('');
@@ -43,10 +44,19 @@ export default function OrgSettings() {
 
   const assignTemplate = async (id: string, comptableId: string | null) => {
     try {
-      await orgApi.updateTemplate(id, comptableId);
+      await orgApi.updateTemplate(id, { assigned_comptable_id: comptableId });
       setTemplates(templates.map(t => t.id === id
         ? { ...t, assigned_comptable_id: comptableId, assigned_comptable_name: comptables.find(c => c.id === comptableId)?.full_name || null }
         : t));
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const changeFrequency = async (id: string, frequency: 'mensuelle' | 'annuelle') => {
+    try {
+      await orgApi.updateTemplate(id, { frequency });
+      setTemplates(templates.map(t => t.id === id ? { ...t, frequency } : t));
     } catch (err: any) {
       alert(err.message);
     }
@@ -143,6 +153,15 @@ export default function OrgSettings() {
                 {t('templates.requires_doc')}
               </label>
               <select
+                value={newFrequency}
+                onChange={e => setNewFrequency(e.target.value as 'mensuelle' | 'annuelle')}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                title={t('templates.frequency')}
+              >
+                <option value="annuelle">{t('templates.freq_annual')}</option>
+                <option value="mensuelle">{t('templates.freq_monthly')}</option>
+              </select>
+              <select
                 value={newAssignedComp}
                 onChange={e => setNewAssignedComp(e.target.value)}
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
@@ -165,6 +184,20 @@ export default function OrgSettings() {
             <div key={tmpl.id} className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3">
               <span className="text-gray-300 text-sm">#{tmpl.order_index}</span>
               <span className="flex-1 text-sm font-medium text-gray-700">{tmpl.label}</span>
+              <select
+                value={tmpl.frequency || 'annuelle'}
+                onChange={e => changeFrequency(tmpl.id, e.target.value as 'mensuelle' | 'annuelle')}
+                onClick={e => e.stopPropagation()}
+                className={`border rounded-lg px-2 py-1 text-[11px] font-medium focus:ring-2 focus:ring-purple-500 outline-none cursor-pointer ${
+                  tmpl.frequency === 'mensuelle'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-gray-200 bg-gray-50 text-gray-600'
+                }`}
+                title={t('templates.frequency')}
+              >
+                <option value="mensuelle">{t('templates.freq_monthly')}</option>
+                <option value="annuelle">{t('templates.freq_annual')}</option>
+              </select>
               {tmpl.requires_document ? (
                 <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[11px] font-medium">📄 Doc requis</span>
               ) : null}

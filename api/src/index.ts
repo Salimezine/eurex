@@ -1810,15 +1810,21 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (existing) return json({ error: 'Un dossier existe déjà pour cet exercice' }, 409);
         const dossierId = genId();
         await env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(dossierId, orgClientDossiersMatch[1], exercice).run();
-        // Apply template
+        // Apply template — tâches mensuelles ×12 mois + annuelles ×1
+        const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
         const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
         for (const tmpl of templates as any[]) {
-          const taskId = genId();
-          await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null).run();
-          if (tmpl.requires_document) {
-            await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, tmpl.label).run();
+          const months: (number | null)[] = tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : [null];
+          for (const m of months) {
+            const taskId = genId();
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m).run();
+            if (tmpl.requires_document) {
+              const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exercice}` : tmpl.label;
+              await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, docLabel).run();
+            }
           }
         }
+        await orgRecalcProgress(dossierId);
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_created\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, dossierId, JSON.stringify({ exercice, client_id: orgClientDossiersMatch[1] })).run();
         return json({ id: dossierId, exercice, status: 'en_cours' }, 201);
       }
@@ -1831,7 +1837,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
         const { results: notes } = await env.DB.prepare('SELECT n.*, u.full_name as author_name FROM org_notes n LEFT JOIN org_users u ON n.user_id = u.id WHERE n.dossier_id = ? ORDER BY n.created_at DESC').bind(orgDossierGetMatch[1]).all();
         // Time entries breakdown
@@ -2003,8 +2009,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
-        const { label, assigned_comptable_id } = await request.json() as any;
+        const { label, assigned_comptable_id, month } = await request.json() as any;
         if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
+        const taskMonth = month === null || month === undefined ? null : (Number(month) >= 1 && Number(month) <= 12 ? Number(month) : null);
         if (assigned_comptable_id) {
           if (user.role !== 'expert') return json({ error: 'Seul un expert peut affecter une tâche' }, 403);
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
@@ -2016,9 +2023,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
         const taskId = genId();
-        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id) VALUES (?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null).run();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth).run();
         const progress = await orgRecalcProgress(dossierId);
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, assigned_comptable_id: assigned_comptable_id || null })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, month: taskMonth, assigned_comptable_id: assigned_comptable_id || null })).run();
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
       }
 
@@ -2210,22 +2217,23 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { label, requires_document, assigned_comptable_id } = await request.json() as any;
+        const { label, requires_document, assigned_comptable_id, frequency } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
+        const tmplFreq = frequency === 'mensuelle' ? 'mensuelle' : 'annuelle';
         if (assigned_comptable_id) {
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
           if (!comp) return json({ error: 'Comptable introuvable' }, 400);
         }
         const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id) VALUES (?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null).run();
-        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null }, 201);
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq).run();
+        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq }, 201);
       }
       const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
       if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { assigned_comptable_id, label, requires_document } = await request.json() as any;
+        const { assigned_comptable_id, label, requires_document, frequency } = await request.json() as any;
         const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
         if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
         if (assigned_comptable_id !== undefined && assigned_comptable_id !== null) {
@@ -2237,10 +2245,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (assigned_comptable_id !== undefined) { updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
         if (requires_document !== undefined) { updates.push('requires_document = ?'); binds.push(requires_document ? 1 : 0); }
+        if (frequency !== undefined) {
+          if (frequency !== 'mensuelle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
+          updates.push('frequency = ?'); binds.push(frequency);
+        }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         binds.push(orgTmplMatch[1], user.organization_id);
         await env.DB.prepare(`UPDATE org_task_templates SET ${updates.join(', ')} WHERE id = ? AND organization_id = ?`).bind(...binds).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document, frequency })).run();
         return json({ ok: true });
       }
       if (orgTmplMatch && method === 'DELETE') {
@@ -2277,20 +2289,20 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 
-        // Task templates
+        // Task templates (order, requiresDoc, frequency)
         const templates = [
-          ['Réception relevés bancaires', 1, 1],
-          ['Saisie achats', 2, 0],
-          ['Saisie ventes', 3, 0],
-          ['Rapprochement bancaire', 4, 0],
-          ['Déclaration TVA mensuelle', 5, 0],
-          ['Déclaration CNSS mensuelle', 6, 0],
-          ['Révision balance', 7, 0],
-          ['Établissement états financiers', 8, 0],
-          ['Liasse fiscale / déclaration IS', 9, 0],
+          ['Réception relevés bancaires', 1, 1, 'mensuelle'],
+          ['Saisie achats', 2, 0, 'mensuelle'],
+          ['Saisie ventes', 3, 0, 'mensuelle'],
+          ['Rapprochement bancaire', 4, 0, 'mensuelle'],
+          ['Déclaration TVA mensuelle', 5, 0, 'mensuelle'],
+          ['Déclaration CNSS mensuelle', 6, 0, 'mensuelle'],
+          ['Révision balance', 7, 0, 'annuelle'],
+          ['Établissement états financiers', 8, 0, 'annuelle'],
+          ['Liasse fiscale / déclaration IS', 9, 0, 'annuelle'],
         ] as const;
-        for (const [label, order, requiresDoc] of templates) {
-          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document) VALUES (?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc).run();
+        for (const [label, order, requiresDoc, freq] of templates) {
+          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq).run();
         }
 
         // Clients
@@ -2318,7 +2330,18 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           for (let i = 0; i < dd.tasks.length; i++) {
             const status = dd.tasks[i];
             const reason = (dd.blocked && dd.blocked.includes(i)) ? 'Document manquant — en attente client' : null;
-            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+            const isMonthly = templates[i][3] === 'mensuelle';
+            if (isMonthly) {
+              // Tâche mensuelle : le statut du seed se place sur le mois courant (Septembre),
+              // les 11 autres mois restent à faire.
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month) VALUES (?, ?, ?, ?, ?, ?, 9)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+              for (let m = 1; m <= 12; m++) {
+                if (m === 9) continue;
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month) VALUES (?, ?, ?, \'a_faire\', ?, ?)').bind(genId(), dd.id, templates[i][0], i + 1, m).run();
+              }
+            } else {
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+            }
           }
         }
         // Update cached progress
