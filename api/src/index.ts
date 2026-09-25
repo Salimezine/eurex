@@ -2291,7 +2291,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgAlertMatch = path.match(/^\/api\/org\/alerts\/([^/]+)$/);
 
       // Pack d'échéances type — seed auto-correctif (id déterministe, upsert seulement si écart)
-      const ensureAlertPack = async (db: any, orgId: string) => {
+      // Variante dossier : chaque dossier reçoit son propre pack (ids _d<id>, dossier_id rempli)
+      const ensureAlertPack = async (db: any, orgId: string, dossierId: string | null = null) => {
         const y = new Date().getUTCFullYear();
         const pack = [
           { key: 'pm_mensuelle', title: 'Déclaration mensuelle — TVA, retenues, TFP, FOPROLOS (personne morale)', due_date: `${y}-12-28`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, note: 'Personnes morales : au plus tard le 28 du mois suivant (télédéclaration TEJ ; PP : 15) — report au 1er jour ouvrable si férié/dimanche' },
@@ -2313,14 +2314,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const byId = new Map((existing as any[]).map(r => [r.id, r]));
         const stmts: any[] = [];
         for (const p of pack) {
-          const id = `pack_${p.key}_${orgId}`;
+          const id = `pack_${p.key}_${dossierId ? `d${dossierId}` : orgId}`;
           const cur = byId.get(id);
           const same = cur && cur.title === p.title && cur.due_date === p.due_date && cur.lead_days === p.lead_days
             && cur.recurrence === p.recurrence && (cur.months || null) === p.months
             && (cur.category || null) === p.category && (cur.note || null) === p.note;
           if (!same) {
-            stmts.push(db.prepare('INSERT OR REPLACE INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, months, category, note, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-              .bind(id, orgId, p.title, p.due_date, p.lead_days, p.recurrence, p.months, p.category, p.note, 'Type EUREX'));
+            stmts.push(db.prepare('INSERT OR REPLACE INTO org_fiscal_alerts (id, organization_id, dossier_id, title, due_date, lead_days, recurrence, months, category, note, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+              .bind(id, orgId, dossierId || null, p.title, p.due_date, p.lead_days, p.recurrence, p.months, p.category, p.note, 'Type EUREX'));
           }
         }
         if (stmts.length > 0) await db.batch(stmts);
@@ -2363,6 +2364,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         await ensureAlertPack(env.DB, user.organization_id);
         const dossierId = new URL(request.url).searchParams.get('dossier_id');
+        if (dossierId) {
+          const dOk = await env.DB.prepare('SELECT 1 AS x FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first();
+          if (dOk) await ensureAlertPack(env.DB, user.organization_id, dossierId);
+        }
 
         let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.recurrence, a.months, a.category, a.dossier_id, a.created_by_name, a.created_at,
           CASE WHEN a.dossier_id IS NOT NULL THEN (SELECT c.name || ' (' || d.exercice || ')' FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = a.dossier_id) ELSE NULL END AS dossier_label
