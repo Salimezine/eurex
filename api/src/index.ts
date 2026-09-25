@@ -1711,6 +1711,34 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ...user, organization: org?.name || '' });
       }
 
+      // --- ORG: UPDATE MY PROFILE (nom / email) ---
+      if (path === '/api/org/auth/me' && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const { full_name, email } = await request.json() as any;
+        const updates: string[] = [];
+        const binds: any[] = [];
+        if (full_name !== undefined) {
+          const name = String(full_name).trim();
+          if (!name) return json({ error: 'Nom requis' }, 400);
+          updates.push('full_name = ?');
+          binds.push(name);
+        }
+        if (email !== undefined) {
+          const mail = String(email).trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return json({ error: 'Email invalide' }, 400);
+          const existing = await env.DB.prepare('SELECT id FROM org_users WHERE email = ? AND id != ?').bind(mail, user.id).first();
+          if (existing) return json({ error: 'Cet email est déjà utilisé' }, 409);
+          updates.push('email = ?');
+          binds.push(mail);
+        }
+        if (updates.length === 0) return json({ error: 'Aucun champ à mettre à jour' }, 400);
+        await env.DB.prepare(`UPDATE org_users SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, user.id).run();
+        const updated = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, must_change_password, is_active FROM org_users WHERE id = ?').bind(user.id).first() as any;
+        const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
+        return json({ ...updated, organization: org?.name || '' });
+      }
+
       // --- ORG: CHANGE PASSWORD ---
       if (path === '/api/org/auth/change-password' && method === 'POST') {
         const user = await verifyOrgToken(request);
@@ -2270,8 +2298,36 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (orgCompToggleMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { is_active } = await request.json() as any;
-        await env.DB.prepare('UPDATE org_users SET is_active = ? WHERE id = ? AND organization_id = ?').bind(is_active ? 1 : 0, orgCompToggleMatch[1], user.organization_id).run();
+        const { is_active, full_name, email, password } = await request.json() as any;
+        const target = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = \'comptable\'').bind(orgCompToggleMatch[1], user.organization_id).first();
+        if (!target) return json({ error: 'Comptable non trouvé' }, 404);
+        const sets: string[] = [];
+        const binds: any[] = [];
+        if (is_active !== undefined) { sets.push('is_active = ?'); binds.push(is_active ? 1 : 0); }
+        if (full_name !== undefined) {
+          const name = String(full_name).trim();
+          if (!name) return json({ error: 'Nom requis' }, 400);
+          sets.push('full_name = ?');
+          binds.push(name);
+        }
+        if (email !== undefined) {
+          const mail = String(email).trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return json({ error: 'Email invalide' }, 400);
+          const existing = await env.DB.prepare('SELECT id FROM org_users WHERE email = ? AND id != ?').bind(mail, orgCompToggleMatch[1]).first();
+          if (existing) return json({ error: 'Cet email est déjà utilisé' }, 409);
+          sets.push('email = ?');
+          binds.push(mail);
+        }
+        if (password !== undefined && password !== null && password !== '') {
+          if (password.length < 12) return json({ error: 'Le mot de passe doit faire au moins 12 caractères' }, 400);
+          const salt = crypto.randomUUID().slice(0, 16);
+          const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + password));
+          const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+          sets.push('password_hash = ?', 'must_change_password = 1');
+          binds.push(salt + ':' + hashHex);
+        }
+        if (sets.length === 0) return json({ error: 'Aucun champ à mettre à jour' }, 400);
+        await env.DB.prepare(`UPDATE org_users SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, orgCompToggleMatch[1]).run();
         return json({ ok: true });
       }
 

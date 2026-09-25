@@ -4,6 +4,7 @@ import { orgApi, OrgComptable, OrgDossier, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
+import OrgAccountButton from '../../components/OrgAccount';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
@@ -149,13 +150,16 @@ export default function OrgDashboardExpert() {
           </button>
         ))}
         </div>
-        <button
-          onClick={() => setShowNewDossier(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
-        >
-          <Plus size={16} />
-          Nouveau dossier
-        </button>
+        <div className="flex items-center gap-2">
+          <OrgAccountButton />
+          <button
+            onClick={() => setShowNewDossier(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
+          >
+            <Plus size={16} />
+            Nouveau dossier
+          </button>
+        </div>
       </div>
 
       {/* Tab: Comptables */}

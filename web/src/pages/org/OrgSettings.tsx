@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import { orgApi, OrgTemplate, OrgComptable, OrgFrequency } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
+import { isValidEmail, isValidPassword } from '../../lib/orgValidate';
 import { SkeletonSection } from '../../components/Skeleton';
-import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw, Pencil, Check, X } from 'lucide-react';
 
 type Tab = 'templates' | 'comptables';
 
@@ -21,6 +22,10 @@ export default function OrgSettings() {
   const [newCompName, setNewCompName] = useState('');
   const [newCompEmail, setNewCompEmail] = useState('');
   const [newCompPassword, setNewCompPassword] = useState('');
+  const [editCompId, setEditCompId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editPwd, setEditPwd] = useState('');
 
   useEffect(() => {
     Promise.all([orgApi.getTemplates(), orgApi.getComptables()])
@@ -89,10 +94,35 @@ export default function OrgSettings() {
     }
   };
 
+  const startEditComp = (c: OrgComptable) => {
+    setEditCompId(c.id);
+    setEditName(c.full_name);
+    setEditEmail(c.email);
+    setEditPwd('');
+  };
+
+  const saveEditComp = async (id: string) => {
+    if (!editName.trim()) { alert('Nom requis'); return; }
+    if (!isValidEmail(editEmail)) { alert('Email invalide'); return; }
+    if (editPwd && !isValidPassword(editPwd)) { alert('Mot de passe : 12 caractères minimum'); return; }
+    try {
+      const patch: { full_name?: string; email?: string; password?: string } = {
+        full_name: editName.trim(),
+        email: editEmail.trim(),
+      };
+      if (editPwd) patch.password = editPwd;
+      await orgApi.updateComptable(id, patch);
+      setComptables(await orgApi.getComptables());
+      setEditCompId(null);
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const toggleComptable = async (id: string, current: number) => {
     try {
       await orgApi.toggleComptable(id, !current);
-      setComptables(comptables.map(c => c.id === id ? { ...c, is_active: current ? 0 : 1 } : c));
+      setComptables(await orgApi.getComptables());
     } catch (err: any) {
       alert(err.message);
     }
@@ -267,22 +297,77 @@ export default function OrgSettings() {
 
           {comptables.map(c => (
             <div key={c.id} className={`bg-white border rounded-xl p-4 flex items-center gap-4 ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
-              <div className="flex-1">
-                <p className="font-semibold text-sm text-gray-800">{c.full_name}</p>
-                <p className="text-xs text-gray-500">{c.email}</p>
-                <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
-                  <span>{c.client_count} clients</span>
-                  <span>•</span>
-                  <span>{c.avg_progress}% avancement</span>
+              {editCompId === c.id ? (
+                <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    placeholder="Nom complet"
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                  />
+                  <input
+                    type="email"
+                    value={editEmail}
+                    onChange={e => setEditEmail(e.target.value)}
+                    placeholder="Email"
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                  />
+                  <input
+                    type="password"
+                    value={editPwd}
+                    onChange={e => setEditPwd(e.target.value)}
+                    placeholder="Nouveau mdp (vide = inchangé)"
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                  />
                 </div>
-              </div>
-              <button
-                onClick={() => toggleComptable(c.id, c.is_active)}
-                className={`p-2 rounded-lg transition-colors ${c.is_active ? 'text-emerald-500 hover:bg-emerald-50' : 'text-gray-400 hover:bg-gray-100'}`}
-                title={c.is_active ? 'Désactiver' : 'Activer'}
-              >
-                {c.is_active ? <Eye size={18} /> : <EyeOff size={18} />}
-              </button>
+              ) : (
+                <div className="flex-1">
+                  <p className="font-semibold text-sm text-gray-800">{c.full_name}</p>
+                  <p className="text-xs text-gray-500">{c.email}</p>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                    <span>{c.client_count} clients</span>
+                    <span>•</span>
+                    <span>{c.avg_progress}% avancement</span>
+                  </div>
+                </div>
+              )}
+
+              {editCompId === c.id ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => saveEditComp(c.id)}
+                    className="p-2 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors"
+                    title={t('account.save')}
+                  >
+                    <Check size={18} />
+                  </button>
+                  <button
+                    onClick={() => setEditCompId(null)}
+                    className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 transition-colors"
+                    title="Annuler"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => startEditComp(c)}
+                    className="p-2 rounded-lg text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+                    title="Modifier nom / email / mot de passe"
+                  >
+                    <Pencil size={18} />
+                  </button>
+                  <button
+                    onClick={() => toggleComptable(c.id, c.is_active)}
+                    className={`p-2 rounded-lg transition-colors ${c.is_active ? 'text-emerald-500 hover:bg-emerald-50' : 'text-gray-400 hover:bg-gray-100'}`}
+                    title={c.is_active ? 'Désactiver' : 'Activer'}
+                  >
+                    {c.is_active ? <Eye size={18} /> : <EyeOff size={18} />}
+                  </button>
+                </>
+              )}
             </div>
           ))}
         </div>

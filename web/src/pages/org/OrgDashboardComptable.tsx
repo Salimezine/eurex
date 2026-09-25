@@ -4,6 +4,7 @@ import { orgApi, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
+import OrgAccountButton from '../../components/OrgAccount';
 import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search, Plus, X } from 'lucide-react';
 
 type SortKey = 'name' | 'progress' | 'blocked';
@@ -76,6 +77,7 @@ export default function OrgDashboardComptable() {
         <h2 className="text-xl font-bold text-gray-800">{t('dash.my_clients')}</h2>
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">{clients.length} client{clients.length > 1 ? 's' : ''}</span>
+          <OrgAccountButton />
           <button
             onClick={() => setShowNewDossier(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"

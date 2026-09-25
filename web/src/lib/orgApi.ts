@@ -216,6 +216,10 @@ export const orgApi = {
   createComptable: (d: any) => req<any>('/org/comptables', { method: 'POST', body: JSON.stringify(d) }),
   toggleComptable: (id: string, isActive: boolean) =>
     req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify({ is_active: isActive }) }),
+  updateComptable: (id: string, patch: { full_name?: string; email?: string; password?: string }) =>
+    req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  updateProfile: (patch: { full_name?: string; email?: string }) =>
+    req<any>('/org/auth/me', { method: 'PATCH', body: JSON.stringify(patch) }),
   getAllDossiers: () => req<any[]>('/org/dossiers'),
 
   // Templates
