@@ -5,6 +5,7 @@ import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
+import OrgAlerts from '../../components/OrgAlerts';
 import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search, Plus, X } from 'lucide-react';
 
 type SortKey = 'name' | 'progress' | 'blocked';
@@ -87,6 +88,9 @@ export default function OrgDashboardComptable() {
           </button>
         </div>
       </div>
+
+      {/* Échéances fiscales — alertes dates butoirs */}
+      <OrgAlerts />
 
       {/* Search + Sort */}
       <div className="flex items-center gap-3">

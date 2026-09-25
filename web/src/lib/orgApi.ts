@@ -70,6 +70,35 @@ export interface OrgTask {
   updated_by_name: string | null;
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
+  due_date: string | null;
+}
+
+export interface OrgAlert {
+  id: string;
+  title: string;
+  due_date: string;
+  lead_days: number;
+  done: number;
+  note: string | null;
+  dossier_id: string | null;
+  dossier_label: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+export interface OrgAlertTask {
+  id: string;
+  label: string;
+  due_date: string;
+  status: string;
+  dossier_id: string;
+  dossier_label: string;
+  assigned_comptable_id: string | null;
+}
+
+export interface OrgAlertFeed {
+  alerts: OrgAlert[];
+  tasks: OrgAlertTask[];
 }
 
 export interface OrgDocument {
@@ -153,6 +182,18 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'DELETE' }),
   addTask: (dossierId: string, label: string, assignedComptableId?: string | null, month?: number | null) =>
     req<any>(`/org/dossiers/${dossierId}/tasks`, { method: 'POST', body: JSON.stringify({ label, assigned_comptable_id: assignedComptableId || null, month: month ?? null }) }),
+  setTaskDue: (dossierId: string, taskId: string, dueDate: string | null) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ due_date: dueDate }) }),
+
+  // Fiscal alerts (échéances)
+  getAlerts: (dossierId?: string) =>
+    req<OrgAlertFeed>(`/org/alerts${dossierId ? `?dossier_id=${dossierId}` : ''}`),
+  createAlert: (data: { title: string; due_date: string; lead_days?: number; dossier_id?: string | null; note?: string }) =>
+    req<OrgAlert>('/org/alerts', { method: 'POST', body: JSON.stringify(data) }),
+  updateAlert: (id: string, patch: { title?: string; due_date?: string; lead_days?: number; done?: boolean; note?: string }) =>
+    req<OrgAlert>(`/org/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteAlert: (id: string) =>
+    req<{ ok: boolean }>(`/org/alerts/${id}`, { method: 'DELETE' }),
 
   // Documents
   updateDocument: (dossierId: string, docId: string, received: boolean, note?: string) =>

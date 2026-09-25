@@ -23,6 +23,7 @@ function makeTask(id: string, month: number | null, status: OrgTask['status'] = 
     updated_by_name: null,
     assigned_comptable_id: null,
     assigned_comptable_name: null,
+    due_date: null,
   };
 }
 

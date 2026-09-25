@@ -8,6 +8,8 @@ import {
   taskStats, MonthFilter, MonthGroup,
 } from '../../lib/orgMonths';
 import { groupDocsByTask, docOpenKind, docIcon, formatFileSize, DOC_ACCEPT } from '../../lib/orgDocs';
+import { alertState, formatDueDate } from '../../lib/orgAlerts';
+import OrgAlerts from '../../components/OrgAlerts';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import { SkeletonDossier } from '../../components/Skeleton';
@@ -285,6 +287,16 @@ export default function OrgDossierPage() {
     }
   };
 
+  const setTaskDueValue = async (taskId: string, value: string) => {
+    if (!dossier) return;
+    try {
+      await orgApi.setTaskDue(dossier.id, taskId, value || null);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const assignTask = async (taskId: string, comptableId: string | null) => {
     if (!dossier) return;
     try {
@@ -447,6 +459,9 @@ export default function OrgDossierPage() {
         </div>
       )}
 
+      {/* Échéances fiscales du dossier (alertes dates butoirs) */}
+      <OrgAlerts dossierId={dossier.id} />
+
       {/* Legend */}
       <DonutLegend fait={scopeStats.fait} enCours={scopeStats.enCours} bloqueClient={scopeStats.bloque} />
 
@@ -555,6 +570,20 @@ export default function OrgDossierPage() {
                       {task.label}
                     </span>
                   )}
+                  {task.due_date && editingTaskId !== task.id && (
+                    <span
+                      title={`${t('alerts.due_date')} : ${formatDueDate(task.due_date)}`}
+                      className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                        alertState(task.due_date, 7) === 'overdue'
+                          ? 'bg-red-100 text-red-700'
+                          : alertState(task.due_date, 7) === 'soon'
+                            ? 'bg-orange-100 text-orange-700'
+                            : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      📅 {formatDueDate(task.due_date)}
+                    </span>
+                  )}
                   {task.total_time_seconds > 0 && (
                     <span className="text-[11px] text-gray-400 font-mono">
                       {formatTime(task.total_time_seconds)}
@@ -637,6 +666,19 @@ export default function OrgDossierPage() {
                       >
                         ✏️ Renommer
                       </button>
+                      {/* Date butoir */}
+                      <label
+                        className="flex items-center gap-1.5 text-xs text-gray-600 bg-amber-50 px-2.5 py-1.5 rounded-lg hover:bg-amber-100 cursor-pointer"
+                        onClick={e => e.stopPropagation()}
+                      >
+                        📅 {t('alerts.due_date')}
+                        <input
+                          type="date"
+                          value={task.due_date || ''}
+                          onChange={e => setTaskDueValue(task.id, e.target.value)}
+                          className="border border-amber-200 rounded px-1.5 py-0.5 text-xs bg-white focus:ring-2 focus:ring-amber-500 outline-none"
+                        />
+                      </label>
                       {isExpert && (
                         <label className="flex items-center gap-1.5 text-xs text-gray-600" onClick={e => e.stopPropagation()}>
                           <UserRound size={12} className="text-emerald-600" />

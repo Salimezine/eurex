@@ -5,6 +5,7 @@ import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
+import OrgAlerts from '../../components/OrgAlerts';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
@@ -131,6 +132,9 @@ export default function OrgDashboardExpert() {
           );
         })}
       </div>
+
+      {/* Échéances fiscales — alertes dates butoirs */}
+      <OrgAlerts />
 
       {/* Tabs + New dossier button */}
       <div className="flex items-center justify-between">

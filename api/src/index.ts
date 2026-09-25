@@ -1980,7 +1980,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
-        const { status, blocked_reason, label, assigned_comptable_id } = body;
+        const { status, blocked_reason, label, assigned_comptable_id, due_date } = body;
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         const updates: string[] = [];
@@ -1991,6 +1991,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (blocked_reason !== undefined) { updates.push('blocked_reason = ?'); binds.push(blocked_reason || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
+        if (due_date !== undefined) {
+          const v = due_date === null ? '' : String(due_date).trim();
+          if (v && (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v)))) return json({ error: 'Date butoir invalide (AAAA-MM-JJ)' }, 400);
+          updates.push('due_date = ?'); binds.push(v || null);
+        }
         if (assigned_comptable_id !== undefined) {
           if (user.role !== 'expert') return json({ error: 'Seul un expert peut réassigner une tâche' }, 403);
           if (assigned_comptable_id !== null) {
@@ -2014,6 +2019,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (assigned_comptable_id !== undefined && (assigned_comptable_id || null) !== (task.assigned_comptable_id || null)) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_assigned', 'task', orgTaskMatch[2], JSON.stringify({ old: task.assigned_comptable_id || null, new: assigned_comptable_id || null })).run();
+        }
+        if (due_date !== undefined && (String(due_date || '').trim() || null) !== (task.due_date || null)) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_due_changed', 'task', orgTaskMatch[2], JSON.stringify({ old: task.due_date || null, new: String(due_date || '').trim() || null })).run();
         }
         return json({ ok: true, progress });
       }
@@ -2041,9 +2049,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
-        const { label, assigned_comptable_id, month } = await request.json() as any;
+        const { label, assigned_comptable_id, month, due_date } = await request.json() as any;
         if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
         const taskMonth = month === null || month === undefined ? null : (Number(month) >= 1 && Number(month) <= 12 ? Number(month) : null);
+        const taskDue = due_date === null || due_date === undefined ? null : String(due_date).trim();
+        if (taskDue && (!/^\d{4}-\d{2}-\d{2}$/.test(taskDue) || isNaN(Date.parse(taskDue)))) return json({ error: 'Date butoir invalide (AAAA-MM-JJ)' }, 400);
         if (assigned_comptable_id) {
           if (user.role !== 'expert') return json({ error: 'Seul un expert peut affecter une tâche' }, 403);
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
@@ -2055,9 +2065,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
         const taskId = genId();
-        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth).run();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month, due_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth, taskDue).run();
         const progress = await orgRecalcProgress(dossierId);
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, month: taskMonth, assigned_comptable_id: assigned_comptable_id || null })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, month: taskMonth, due_date: taskDue, assigned_comptable_id: assigned_comptable_id || null })).run();
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
       }
 
@@ -2261,6 +2271,112 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgAuditMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const { results } = await env.DB.prepare('SELECT * FROM org_audit_log WHERE target_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_expected_documents WHERE dossier_id = ?) OR target_id IN (SELECT id FROM org_notes WHERE dossier_id = ?) OR (target_type = \'dossier\' AND target_id = ?) ORDER BY created_at DESC LIMIT 200').bind(orgAuditMatch[1], orgAuditMatch[1], orgAuditMatch[1], orgAuditMatch[1]).all();
         return json(results);
+      }
+
+      // --- ORG: FISCAL ALERTS (échéances fiscales + tâches à date butoir) ---
+      const orgAlertMatch = path.match(/^\/api\/org\/alerts\/([^/]+)$/);
+
+      if (path === '/api/org/alerts' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const dossierId = new URL(request.url).searchParams.get('dossier_id');
+
+        let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.dossier_id, a.created_by_name, a.created_at,
+          CASE WHEN a.dossier_id IS NOT NULL THEN (SELECT c.name || ' (' || d.exercice || ')' FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = a.dossier_id) ELSE NULL END AS dossier_label
+          FROM org_fiscal_alerts a WHERE a.organization_id = ?`;
+        const aBinds: any[] = [user.organization_id];
+        if (user.role !== 'expert') {
+          aSql += ` AND (a.dossier_id IS NULL OR EXISTS (SELECT 1 FROM org_dossiers d2 JOIN org_clients c2 ON d2.client_id = c2.id WHERE d2.id = a.dossier_id AND c2.assigned_comptable_id = ?))`;
+          aBinds.push(user.id);
+        }
+        if (dossierId) { aSql += ' AND a.dossier_id = ?'; aBinds.push(dossierId); }
+        aSql += ' ORDER BY a.due_date ASC';
+        const { results: alerts } = await env.DB.prepare(aSql).bind(...aBinds).all();
+
+        let tSql = `SELECT t.id, t.label, t.due_date, t.status, t.dossier_id, t.assigned_comptable_id,
+          c.name || ' (' || d.exercice || ')' AS dossier_label
+          FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id
+          WHERE c.organization_id = ? AND t.due_date IS NOT NULL AND t.status != 'fait'`;
+        const tBinds: any[] = [user.organization_id];
+        if (user.role !== 'expert') { tSql += ' AND c.assigned_comptable_id = ?'; tBinds.push(user.id); }
+        if (dossierId) { tSql += ' AND t.dossier_id = ?'; tBinds.push(dossierId); }
+        tSql += ' ORDER BY t.due_date ASC';
+        const { results: tasks } = await env.DB.prepare(tSql).bind(...tBinds).all();
+
+        return json({ alerts, tasks });
+      }
+
+      if (path === '/api/org/alerts' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const body = await request.json() as any;
+        const title = (body.title || '').trim();
+        const dueDate = (body.due_date || '').trim();
+        if (!title) return json({ error: 'Libellé requis' }, 400);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || isNaN(Date.parse(dueDate))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
+        let lead = Number(body.lead_days);
+        if (!Number.isFinite(lead)) lead = 7;
+        lead = Math.max(0, Math.min(60, Math.round(lead)));
+        let dossierId: string | null = null;
+        if (body.dossier_id) {
+          const d = await env.DB.prepare('SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(body.dossier_id, user.organization_id).first();
+          if (!d) return json({ error: 'Dossier introuvable' }, 404);
+          dossierId = String(body.dossier_id);
+        }
+        const id = genId();
+        await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(id, user.organization_id, title, dueDate, lead, dossierId, (body.note || '').trim() || null, user.id, user.full_name).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_added\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ title, due_date: dueDate, lead_days: lead, dossier_id: dossierId })).run();
+        const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ?').bind(id).first();
+        return json(row, 201);
+      }
+
+      if (orgAlertMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
+        if (!row) return json({ error: 'Échéance introuvable' }, 404);
+        const body = await request.json() as any;
+        const updates: string[] = [];
+        const binds: any[] = [];
+        if (user.role !== 'expert') {
+          if (body.done === undefined) return json({ error: 'Seul un expert peut modifier cette échéance' }, 403);
+          updates.push('done = ?'); binds.push(body.done ? 1 : 0);
+        } else {
+          if (body.title !== undefined) {
+            const v = (body.title || '').trim();
+            if (!v) return json({ error: 'Libellé requis' }, 400);
+            updates.push('title = ?'); binds.push(v);
+          }
+          if (body.due_date !== undefined) {
+            const v = (body.due_date || '').trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
+            updates.push('due_date = ?'); binds.push(v);
+          }
+          if (body.lead_days !== undefined) {
+            const l = Math.max(0, Math.min(60, Math.round(Number(body.lead_days) || 0)));
+            updates.push('lead_days = ?'); binds.push(l);
+          }
+          if (body.done !== undefined) { updates.push('done = ?'); binds.push(body.done ? 1 : 0); }
+          if (body.note !== undefined) { updates.push('note = ?'); binds.push((body.note || '').trim() || null); }
+        }
+        if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
+        await env.DB.prepare(`UPDATE org_fiscal_alerts SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, orgAlertMatch[1]).run();
+        if (body.done !== undefined && (body.done ? 1 : 0) !== row.done) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_toggled\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, done: body.done ? 1 : 0 })).run();
+        }
+        const fresh = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).first();
+        return json(fresh);
+      }
+
+      if (orgAlertMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
+        if (!row) return json({ error: 'Échéance introuvable' }, 404);
+        await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_deleted\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, due_date: row.due_date })).run();
+        return json({ ok: true });
       }
 
       // --- ORG: EXPERT — COMPTABLES ---
