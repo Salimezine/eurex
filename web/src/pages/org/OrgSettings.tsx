@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { orgApi, OrgTemplate, OrgComptable } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
+import { SkeletonSection } from '../../components/Skeleton';
 import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 
 type Tab = 'templates' | 'comptables';
@@ -87,11 +88,7 @@ export default function OrgSettings() {
     }
   };
 
-  if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
-    </div>
-  );
+  if (loading) return <SkeletonSection />;
 
   if (!isExpert) return <div className="text-center py-12 text-gray-400">Accès réservé à l'expert</div>;
 

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { getLang, onLangChange, t, Lang } from '../../lib/orgI18n';
+import { SkeletonAuth } from '../../components/Skeleton';
 import OrgLogin from './OrgLogin';
 import OrgDashboardComptable from './OrgDashboardComptable';
 import OrgDashboardExpert from './OrgDashboardExpert';
@@ -18,11 +19,7 @@ function OrgInner() {
   }, []);
 
   if (state.loading) {
-    return (
-      <div className="flex-1 bg-gray-50 flex items-center justify-center py-24">
-        <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
-      </div>
-    );
+    return <SkeletonAuth />;
   }
 
   if (!state.user) return <OrgLogin />;

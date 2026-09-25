@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { orgApi, OrgComptable, OrgDossier, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
+import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
@@ -88,8 +89,9 @@ export default function OrgDashboardExpert() {
     .filter(d => !search || d.client_name?.toLowerCase().includes(search.toLowerCase()));
 
   if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
+    <div className="space-y-4">
+      <SkeletonKpiGrid count={4} />
+      <SkeletonRows rows={6} cols={5} />
     </div>
   );
 

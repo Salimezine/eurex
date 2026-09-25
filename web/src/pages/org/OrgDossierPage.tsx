@@ -5,6 +5,7 @@ import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
+import { SkeletonDossier } from '../../components/Skeleton';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, FileText, MessageSquare, ChevronDown, ChevronUp,
@@ -211,11 +212,7 @@ export default function OrgDossierPage() {
     }
   };
 
-  if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
-    </div>
-  );
+  if (loading) return <SkeletonDossier />;
 
   if (!dossier) return (
     <div className="text-center py-12 text-gray-400">Dossier non trouvé</div>

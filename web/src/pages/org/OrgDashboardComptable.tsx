@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { orgApi, OrgClient } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
+import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
 import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search, Plus, X } from 'lucide-react';
 
 type SortKey = 'name' | 'progress' | 'blocked';
@@ -59,8 +60,13 @@ export default function OrgDashboardComptable() {
     });
 
   if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full" />
+    <div className="space-y-4">
+      <Skeleton className="h-7 w-48" />
+      <div className="flex gap-3">
+        <Skeleton className="h-9 w-64" />
+        <Skeleton className="h-9 w-28" />
+      </div>
+      <SkeletonCardGrid count={6} />
     </div>
   );
 
