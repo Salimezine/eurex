@@ -312,7 +312,6 @@ export default function OrgDossierPage() {
     <div className="text-center py-12 text-gray-400">Dossier non trouvé</div>
   );
 
-  const ts = dossier.task_stats;
   const allTasks = dossier.tasks || [];
   const docsMap = groupDocsByTask(dossier.documents || []);
   const monthChips: { key: MonthFilter; label: string; count: number }[] = [
@@ -325,6 +324,13 @@ export default function OrgDossierPage() {
     })),
   ];
   const visibleTasks = filterTasksByMonth(allTasks, monthFilter);
+  const scopeStats = taskStats(visibleTasks);
+  const scopePct = scopeStats.total > 0 ? Math.round((scopeStats.fait / scopeStats.total) * 100) : 0;
+  const scopeLabel = typeof monthFilter === 'number'
+    ? monthLabel(monthFilter)
+    : monthFilter === 'tous'
+      ? t('dossier.filter_all')
+      : t('dossier.filter_annual');
   const visibleGroups: MonthGroup[] = monthFilter === 'tous'
     ? groupTasksByMonth(allTasks).filter(g => g.tasks.length > 0)
     : [{ month: typeof monthFilter === 'number' ? monthFilter : null, tasks: visibleTasks, stats: taskStats(visibleTasks) }];
@@ -351,10 +357,17 @@ export default function OrgDossierPage() {
           </p>
         </div>
         <div className="flex items-center gap-4 bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
-          <ProgressDonut fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} size={128} />
+          <ProgressDonut
+            key={String(monthFilter)}
+            fait={scopeStats.fait}
+            enCours={scopeStats.enCours}
+            bloqueClient={scopeStats.bloque}
+            size={128}
+          />
           <div className="text-right">
-            <span className="text-3xl font-extrabold text-gray-900 tracking-tight">{dossier.progress}%</span>
+            <span className="text-3xl font-extrabold text-gray-900 tracking-tight">{scopePct}%</span>
             <p className="text-xs text-gray-500 font-medium">avancement</p>
+            <p className="text-[11px] text-purple-600 font-semibold mt-0.5">📅 {scopeLabel}</p>
             <p className="text-[11px] text-gray-400 mt-1">
               ⏱ {formatTime(dossier.tasks?.reduce((s: number, t: any) => s + (t.total_time_seconds || 0), 0) || 0)}
             </p>
@@ -435,12 +448,12 @@ export default function OrgDossierPage() {
       )}
 
       {/* Legend */}
-      <DonutLegend fait={ts.fait} enCours={ts.en_cours} bloqueClient={ts.bloque_client} />
+      <DonutLegend fait={scopeStats.fait} enCours={scopeStats.enCours} bloqueClient={scopeStats.bloque} />
 
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
         {([
-          { key: 'checklist' as Tab, label: t('dossier.checklist'), count: ts.total },
+          { key: 'checklist' as Tab, label: t('dossier.checklist'), count: scopeStats.total },
           { key: 'year' as Tab, label: t('dossier.year'), icon: <CalendarDays size={14} /> },
           { key: 'documents' as Tab, label: t('dossier.documents'), count: dossier.documents.length },
           { key: 'notes' as Tab, label: t('dossier.notes'), count: dossier.notes.length },
