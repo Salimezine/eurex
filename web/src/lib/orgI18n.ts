@@ -72,6 +72,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'templates.comptable': { fr: 'Comptable assigné', ar: 'محاسب معين' },
   'templates.frequency': { fr: 'Fréquence', ar: 'التكرار' },
   'templates.freq_monthly': { fr: 'Mensuel', ar: 'شهري' },
+  'templates.freq_quarterly': { fr: 'Trimestriel', ar: 'ثلاثي' },
   'templates.freq_annual': { fr: 'Annuel', ar: 'سنوي' },
 
   // Timeline

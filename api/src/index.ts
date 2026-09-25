@@ -1810,11 +1810,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (existing) return json({ error: 'Un dossier existe déjà pour cet exercice' }, 409);
         const dossierId = genId();
         await env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(dossierId, orgClientDossiersMatch[1], exercice).run();
-        // Apply template — tâches mensuelles ×12 mois + annuelles ×1
+        // Apply template — mensuelle ×12 mois, trimestrielle ×4 (Janv/Avr/Juil/Oct), annuelle ×1
         const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
         const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
         for (const tmpl of templates as any[]) {
-          const months: (number | null)[] = tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : [null];
+          const months: (number | null)[] =
+            tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] :
+            tmpl.frequency === 'trimestrielle' ? [1, 4, 7, 10] :
+            [null];
           for (const m of months) {
             const taskId = genId();
             await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m).run();
@@ -2219,7 +2222,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
         const { label, requires_document, assigned_comptable_id, frequency } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
-        const tmplFreq = frequency === 'mensuelle' ? 'mensuelle' : 'annuelle';
+        if (frequency !== undefined && frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') {
+          return json({ error: 'Fréquence invalide' }, 400);
+        }
+        const tmplFreq = frequency === 'mensuelle' || frequency === 'trimestrielle' ? frequency : 'annuelle';
         if (assigned_comptable_id) {
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
           if (!comp) return json({ error: 'Comptable introuvable' }, 400);
@@ -2246,7 +2252,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
         if (requires_document !== undefined) { updates.push('requires_document = ?'); binds.push(requires_document ? 1 : 0); }
         if (frequency !== undefined) {
-          if (frequency !== 'mensuelle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
+          if (frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
           updates.push('frequency = ?'); binds.push(frequency);
         }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
@@ -2300,6 +2306,15 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           ['Révision balance', 7, 0, 'annuelle'],
           ['Établissement états financiers', 8, 0, 'annuelle'],
           ['Liasse fiscale / déclaration IS', 9, 0, 'annuelle'],
+          ['Déclaration TVA trimestrielle (option) — 15 du mois suivant', 10, 0, 'trimestrielle'],
+          ['CNSS déclaration trimestrielle I16 — 15 du mois suivant', 11, 0, 'trimestrielle'],
+          ['État suspension de TVA art. 18 II — 28 j après trimestre', 12, 0, 'trimestrielle'],
+          ['Déclaration annuelle IS/IRPP — 25 mars', 13, 0, 'annuelle'],
+          ['Acomptes provisionnels IS — 25 juin / 25 sept / 25 déc', 14, 0, 'annuelle'],
+          ['Déclaration annuelle employeur — 28 février', 15, 0, 'annuelle'],
+          ['Dépôt états financiers au RNE — 31 juillet', 16, 0, 'annuelle'],
+          ['Dossier AG / rapport CAC — 30 j après AG', 17, 0, 'annuelle'],
+          ['Taxe de circulation PM — 5 février', 18, 0, 'annuelle'],
         ] as const;
         for (const [label, order, requiresDoc, freq] of templates) {
           await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq).run();
@@ -2327,17 +2342,22 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         ];
         for (const dd of dossierData) {
           await env.DB.prepare('INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, 2026, ?)').bind(dd.id, dd.clientId, dd.status).run();
-          for (let i = 0; i < dd.tasks.length; i++) {
-            const status = dd.tasks[i];
+          for (let i = 0; i < templates.length; i++) {
+            const status = dd.tasks[i] || 'a_faire';
             const reason = (dd.blocked && dd.blocked.includes(i)) ? 'Document manquant — en attente client' : null;
-            const isMonthly = templates[i][3] === 'mensuelle';
-            if (isMonthly) {
+            const freq = templates[i][3];
+            if (freq === 'mensuelle') {
               // Tâche mensuelle : le statut du seed se place sur le mois courant (Septembre),
               // les 11 autres mois restent à faire.
               await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month) VALUES (?, ?, ?, ?, ?, ?, 9)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
               for (let m = 1; m <= 12; m++) {
                 if (m === 9) continue;
                 await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month) VALUES (?, ?, ?, \'a_faire\', ?, ?)').bind(genId(), dd.id, templates[i][0], i + 1, m).run();
+              }
+            } else if (freq === 'trimestrielle') {
+              // Tâche trimestrielle : Janv, Avr, Juil, Oct
+              for (const m of [1, 4, 7, 10]) {
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m).run();
               }
             } else {
               await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();

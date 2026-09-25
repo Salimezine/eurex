@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   monthLabel, monthShort, currentMonth, groupTasksByMonth,
   filterTasksByMonth, taskStats, MONTH_LABELS_FR, MONTH_LABELS_AR,
-  MonthFilter,
+  QUARTER_MONTHS, MonthFilter,
 } from '../orgMonths';
 import type { OrgTask } from '../orgApi';
 
@@ -163,5 +163,70 @@ describe('orgMonths — scénario dossier 12 mois (exercice complet)', () => {
     // progression : 75 fait → 100%
     const done = tasks.map(t => ({ ...t, status: 'fait' as const }));
     expect(taskStats(done)).toEqual({ total: 75, fait: 75, enCours: 0, bloque: 0 });
+  });
+});
+
+describe('orgMonths — fréquence trimestrielle', () => {
+  it('QUARTER_MONTHS = Janv, Avr, Juil, Oct', () => {
+    expect([...QUARTER_MONTHS]).toEqual([1, 4, 7, 10]);
+  });
+
+  it('tâche trimestrielle ×4 mois', () => {
+    const tasks: OrgTask[] = QUARTER_MONTHS.map(m => makeTask(`tva-${m}`, m));
+    expect(tasks).toHaveLength(4);
+    const groups = groupTasksByMonth(tasks);
+    for (const g of groups) {
+      if (g.month !== null && QUARTER_MONTHS.includes(g.month as 1 | 4 | 7 | 10)) {
+        expect(g.tasks).toHaveLength(1);
+      } else {
+        expect(g.tasks).toHaveLength(0);
+      }
+    }
+  });
+
+  it('groupe mixte mensuel + trimestriel + annuel', () => {
+    const tasks: OrgTask[] = [
+      makeTask('m1-1', 1, 'fait'),           // mensuelle (janv)
+      makeTask('m1-9', 9),                    // mensuelle (sept)
+      makeTask('tq-1', 1),                    // trimestrielle (janv)
+      makeTask('tq-4', 4),                    // trimestrielle (avr)
+      makeTask('an-1', null),                 // annuelle
+    ];
+    const groups = groupTasksByMonth(tasks);
+    expect(groups[0].tasks.map(t => t.id)).toEqual(['m1-1', 'tq-1']); // janv
+    expect(groups[3].tasks.map(t => t.id)).toEqual(['tq-4']);          // avr
+    expect(groups[8].tasks.map(t => t.id)).toEqual(['m1-9']);          // sept
+    expect(groups[12].tasks.map(t => t.id)).toEqual(['an-1']);         // annuel
+    expect(taskStats(tasks)).toEqual({ total: 5, fait: 1, enCours: 4, bloque: 0 });
+  });
+
+  it('exercice complet avec les 3 fréquences', () => {
+    const tasks: OrgTask[] = [];
+    // 6 mensuelles ×12 = 72
+    for (let m = 1; m <= 12; m++) for (let i = 0; i < 6; i++) tasks.push(makeTask(`men-${m}-${i}`, m));
+    // 3 trimestrielles ×4 = 12
+    for (const m of QUARTER_MONTHS) for (let i = 0; i < 3; i++) tasks.push(makeTask(`tri-${m}-${i}`, m));
+    // 9 annuelles
+    for (let i = 0; i < 9; i++) tasks.push(makeTask(`ann-${i}`, null));
+
+    expect(tasks).toHaveLength(93);
+
+    const groups = groupTasksByMonth(tasks);
+    for (let i = 0; i < 12; i++) {
+      const m = i + 1;
+      const expected = 6 + (QUARTER_MONTHS.includes(m as 1 | 4 | 7 | 10) ? 3 : 0);
+      expect(groups[i].tasks).toHaveLength(expected);
+    }
+    expect(groups[12].tasks).toHaveLength(9);
+    expect(taskStats(tasks).total).toBe(93);
+  });
+
+  it("filtre 'annuel' isole les tâches sans mois ( trimestrielle exclue )", () => {
+    const tasks: OrgTask[] = [
+      ...QUARTER_MONTHS.map(m => makeTask(`q${m}`, m)),
+      makeTask('annual', null),
+    ];
+    expect(filterTasksByMonth(tasks, 'annuel').map(t => t.id)).toEqual(['annual']);
+    expect(filterTasksByMonth(tasks, 1).map(t => t.id)).toEqual(['q1']);
   });
 });

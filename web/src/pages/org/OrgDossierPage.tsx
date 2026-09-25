@@ -627,7 +627,11 @@ export default function OrgDossierPage() {
                 <button
                   key={String(group.month)}
                   onClick={() => { setMonthFilter(group.month ?? 'annuel'); setTab('checklist'); }}
-                  className="bg-white border border-gray-200 rounded-xl p-3 text-left hover:border-purple-300 hover:shadow-sm transition-all"
+                  className={`bg-white border rounded-xl p-3 text-left transition-all ${
+                    group.stats.total === 0
+                      ? 'border-dashed border-gray-200 opacity-50'
+                      : 'border-gray-200 hover:border-purple-300 hover:shadow-sm'
+                  }`}
                 >
                   <div className="flex items-center justify-between mb-1.5">
                     <span className={`text-sm font-semibold ${group.month === currentMonth() ? 'text-purple-700' : 'text-gray-800'}`}>

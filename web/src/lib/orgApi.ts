@@ -102,12 +102,14 @@ export interface OrgComptable {
   task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
 }
 
+export type OrgFrequency = 'mensuelle' | 'trimestrielle' | 'annuelle';
+
 export interface OrgTemplate {
   id: string;
   label: string;
   order_index: number;
   requires_document: number;
-  frequency: 'mensuelle' | 'annuelle';
+  frequency: OrgFrequency;
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
 }
@@ -178,9 +180,9 @@ export const orgApi = {
 
   // Templates
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),
-  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: 'mensuelle' | 'annuelle') =>
+  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency) =>
     req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle' }) }),
-  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: 'mensuelle' | 'annuelle' }) =>
+  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency }) =>
     req<any>(`/org/templates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTemplate: (id: string) => req<any>(`/org/templates/${id}`, { method: 'DELETE' }),
 };

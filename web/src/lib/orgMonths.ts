@@ -15,6 +15,9 @@ export const MONTH_SHORT_FR = [
   'Juil.', 'Août', 'Sept.', 'Oct.', 'Nov.', 'Déc.',
 ];
 
+/** Mois où une tâche trimestrielle est créée (dépôt dans le mois suivant chaque trimestre). */
+export const QUARTER_MONTHS = [1, 4, 7, 10] as const;
+
 export function monthLabel(month: number, lang: 'fr' | 'ar' = 'fr'): string {
   if (month < 1 || month > 12) return '';
   return (lang === 'ar' ? MONTH_LABELS_AR : MONTH_LABELS_FR)[month - 1];

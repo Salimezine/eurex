@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { orgApi, OrgTemplate, OrgComptable } from '../../lib/orgApi';
+import { orgApi, OrgTemplate, OrgComptable, OrgFrequency } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import { SkeletonSection } from '../../components/Skeleton';
@@ -17,7 +17,7 @@ export default function OrgSettings() {
   const [newLabel, setNewLabel] = useState('');
   const [newRequiresDoc, setNewRequiresDoc] = useState(false);
   const [newAssignedComp, setNewAssignedComp] = useState('');
-  const [newFrequency, setNewFrequency] = useState<'mensuelle' | 'annuelle'>('annuelle');
+  const [newFrequency, setNewFrequency] = useState<OrgFrequency>('annuelle');
   const [newCompName, setNewCompName] = useState('');
   const [newCompEmail, setNewCompEmail] = useState('');
   const [newCompPassword, setNewCompPassword] = useState('');
@@ -53,7 +53,7 @@ export default function OrgSettings() {
     }
   };
 
-  const changeFrequency = async (id: string, frequency: 'mensuelle' | 'annuelle') => {
+  const changeFrequency = async (id: string, frequency: OrgFrequency) => {
     try {
       await orgApi.updateTemplate(id, { frequency });
       setTemplates(templates.map(t => t.id === id ? { ...t, frequency } : t));
@@ -154,11 +154,12 @@ export default function OrgSettings() {
               </label>
               <select
                 value={newFrequency}
-                onChange={e => setNewFrequency(e.target.value as 'mensuelle' | 'annuelle')}
+                onChange={e => setNewFrequency(e.target.value as OrgFrequency)}
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
                 title={t('templates.frequency')}
               >
                 <option value="annuelle">{t('templates.freq_annual')}</option>
+                <option value="trimestrielle">{t('templates.freq_quarterly')}</option>
                 <option value="mensuelle">{t('templates.freq_monthly')}</option>
               </select>
               <select
@@ -186,16 +187,19 @@ export default function OrgSettings() {
               <span className="flex-1 text-sm font-medium text-gray-700">{tmpl.label}</span>
               <select
                 value={tmpl.frequency || 'annuelle'}
-                onChange={e => changeFrequency(tmpl.id, e.target.value as 'mensuelle' | 'annuelle')}
+                onChange={e => changeFrequency(tmpl.id, e.target.value as OrgFrequency)}
                 onClick={e => e.stopPropagation()}
                 className={`border rounded-lg px-2 py-1 text-[11px] font-medium focus:ring-2 focus:ring-purple-500 outline-none cursor-pointer ${
                   tmpl.frequency === 'mensuelle'
                     ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : tmpl.frequency === 'trimestrielle'
+                    ? 'border-amber-200 bg-amber-50 text-amber-700'
                     : 'border-gray-200 bg-gray-50 text-gray-600'
                 }`}
                 title={t('templates.frequency')}
               >
                 <option value="mensuelle">{t('templates.freq_monthly')}</option>
+                <option value="trimestrielle">{t('templates.freq_quarterly')}</option>
                 <option value="annuelle">{t('templates.freq_annual')}</option>
               </select>
               {tmpl.requires_document ? (
