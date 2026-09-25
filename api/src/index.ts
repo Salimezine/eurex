@@ -2114,12 +2114,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
 
       // --- ORG: DOWNLOAD DOCUMENT FILE (stream depuis KV) ---
-      if (orgDocMatch && method === 'GET') {
+      const orgDocFileGetMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/documents\/([^/]+)\/file$/);
+      if (orgDocFileGetMatch && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        if (!await orgCanAccessDossier(user, orgDocMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        if (!await orgCanAccessDossier(user, orgDocFileGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         if (!env.DOCS_KV) return json({ error: 'Stockage fichier non configuré' }, 503);
-        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ? AND dossier_id = ?').bind(orgDocMatch[2], orgDocMatch[1]).first() as any;
+        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ? AND dossier_id = ?').bind(orgDocFileGetMatch[2], orgDocFileGetMatch[1]).first() as any;
         if (!doc?.file_r2_key) return json({ error: 'Fichier non trouvé' }, 404);
         const buf = await env.DOCS_KV.get(doc.file_r2_key, 'arrayBuffer');
         if (!buf) return json({ error: 'Fichier introuvable' }, 404);
