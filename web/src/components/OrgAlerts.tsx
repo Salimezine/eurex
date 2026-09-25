@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Bell, Plus, Check, Trash2, RotateCcw } from 'lucide-react';
+import { Bell, Plus, Check, Trash2, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import { orgApi, OrgAlertFeed } from '../lib/orgApi';
 import { mergeFeed, urgentCount, alertState, formatDueDate, daysUntil, FeedItem, AlertState } from '../lib/orgAlerts';
 import { t } from '../lib/orgI18n';
@@ -32,6 +32,15 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [hidden, setHidden] = useState(() => {
+    try { return localStorage.getItem('eurex_alerts_hidden') === '1'; } catch { return false; }
+  });
+
+  const toggleHidden = () => {
+    const n = !hidden;
+    setHidden(n);
+    try { localStorage.setItem('eurex_alerts_hidden', n ? '1' : '0'); } catch { /* ignore */ }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -121,8 +130,8 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
           )}
         </h3>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>
-          {isExpert && (
+          {!hidden && <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>}
+          {!hidden && isExpert && (
             <button
               onClick={() => openModal()}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all"
@@ -131,10 +140,17 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
               {t('alerts.add')}
             </button>
           )}
+          <button
+            onClick={toggleHidden}
+            title={hidden ? t('alerts.show') : t('alerts.hide')}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            {hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
         </div>
       </div>
 
-      {feed === null ? (
+      {!hidden && (feed === null ? (
         <div className="h-8 bg-gray-100 rounded-lg animate-pulse" />
       ) : items.length === 0 ? (
         <p className="text-xs text-gray-400 text-center py-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg">
@@ -221,7 +237,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
             );
           })}
         </div>
-      )}
+      ))}
 
       {open && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setOpen(false)}>

@@ -118,6 +118,8 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.cat_none': { fr: 'Non défini', ar: 'غير محدد' },
   'alerts.edit_title': { fr: "Modifier l'échéance", ar: 'تعديل الموعد' },
   'alerts.client_type': { fr: 'Type de client', ar: 'نوعية العميل' },
+  'alerts.hide': { fr: 'Masquer les échéances', ar: 'إخفاء المواعيد' },
+  'alerts.show': { fr: 'Afficher les échéances', ar: 'إظهار المواعيد' },
 
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },
