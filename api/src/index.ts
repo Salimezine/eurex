@@ -2276,12 +2276,55 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       // --- ORG: FISCAL ALERTS (échéances fiscales + tâches à date butoir) ---
       const orgAlertMatch = path.match(/^\/api\/org\/alerts\/([^/]+)$/);
 
+      // Pack d'échéances type (TVA, CNSS, IS…) — seed une fois par organisation
+      const ensureAlertPack = async (db: any, orgId: string) => {
+        const existing = await db.prepare('SELECT id FROM org_fiscal_alerts WHERE organization_id = ? AND recurrence IS NOT NULL LIMIT 1').bind(orgId).first();
+        if (existing) return;
+        const y = new Date().getUTCFullYear();
+        const pack = [
+          { title: 'TVA — déclaration et paiement', due_date: `${y}-12-26`, recurrence: 'mensuelle', lead_days: 5, note: 'Déclaration et paiement de la TVA avant le 26 du mois suivant' },
+          { title: 'TAP — déclaration et paiement', due_date: `${y}-12-26`, recurrence: 'mensuelle', lead_days: 5, note: 'TAP avant le 26 du mois suivant' },
+          { title: 'CNSS — cotisations employeur', due_date: `${y}-12-31`, recurrence: 'mensuelle', lead_days: 5, note: 'Cotisations CNSS avant le 31 du mois suivant' },
+          { title: 'IR salaires — retenue à la source', due_date: `${y}-12-31`, recurrence: 'mensuelle', lead_days: 5, note: 'Versement de l\'IR retenu sur les salaires' },
+          { title: 'Acomptes IS trimestriels', due_date: `${y}-10-26`, recurrence: 'trimestrielle', lead_days: 7, note: '26 janv. / 26 avr. / 26 juil. / 26 oct.' },
+          { title: 'IS — déclaration annuelle et paiement', due_date: `${y}-04-30`, recurrence: 'annuelle', lead_days: 30, note: 'Avant le 30 avril' },
+          { title: 'Bilan & liasse fiscale', due_date: `${y}-04-30`, recurrence: 'annuelle', lead_days: 30, note: 'Dépôt du bilan et de la liasse fiscale' },
+        ];
+        await db.batch(pack.map(p => db.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, note, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(genId(), orgId, p.title, p.due_date, p.lead_days, p.recurrence, p.note, 'Type EUREX')));
+      };
+
+      // Occurrences visibles : du 1er du mois courant à today+60j
+      const expandAlertOccurrence = (row: any, dones: Set<string>, today: Date): any[] => {
+        const base = { id: row.id, title: row.title, lead_days: row.lead_days, note: row.note, dossier_id: row.dossier_id, dossier_label: row.dossier_label, created_by_name: row.created_by_name, recurrence: row.recurrence || null };
+        if (!row.recurrence) return [{ ...base, due_date: row.due_date, done: !!row.done }];
+        const [ay, am, ad] = String(row.due_date).split('-').map(Number);
+        const months = row.recurrence === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+          : row.recurrence === 'trimestrielle' ? [1, 4, 7, 10]
+          : [am];
+        const y = today.getUTCFullYear();
+        const start = `${y}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
+        const endD = new Date(today); endD.setUTCDate(endD.getUTCDate() + 60);
+        const end = endD.toISOString().slice(0, 10);
+        const out: any[] = [];
+        for (const yy of [y, y + 1]) {
+          for (const m of months) {
+            const dim = new Date(Date.UTC(yy, m, 0)).getUTCDate();
+            const iso = `${yy}-${String(m).padStart(2, '0')}-${String(Math.min(ad, dim)).padStart(2, '0')}`;
+            if (iso < start || iso > end) continue;
+            out.push({ ...base, due_date: iso, done: dones.has(`${row.id}|${iso}`) });
+          }
+        }
+        return out;
+      };
+
       if (path === '/api/org/alerts' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
+        await ensureAlertPack(env.DB, user.organization_id);
         const dossierId = new URL(request.url).searchParams.get('dossier_id');
 
-        let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.dossier_id, a.created_by_name, a.created_at,
+        let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.recurrence, a.dossier_id, a.created_by_name, a.created_at,
           CASE WHEN a.dossier_id IS NOT NULL THEN (SELECT c.name || ' (' || d.exercice || ')' FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = a.dossier_id) ELSE NULL END AS dossier_label
           FROM org_fiscal_alerts a WHERE a.organization_id = ?`;
         const aBinds: any[] = [user.organization_id];
@@ -2291,7 +2334,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (dossierId) { aSql += ' AND a.dossier_id = ?'; aBinds.push(dossierId); }
         aSql += ' ORDER BY a.due_date ASC';
-        const { results: alerts } = await env.DB.prepare(aSql).bind(...aBinds).all();
+        const { results: rows } = await env.DB.prepare(aSql).bind(...aBinds).all();
+
+        const dones = new Set<string>();
+        if (rows.length > 0) {
+          const placeholders = rows.map(() => '?').join(',');
+          const { results: dres } = await env.DB.prepare(`SELECT alert_id, due_date FROM org_alert_dones WHERE alert_id IN (${placeholders})`).bind(...rows.map((r: any) => r.id)).all();
+          for (const d of dres as any[]) dones.add(`${d.alert_id}|${d.due_date}`);
+        }
+        const today = new Date();
+        const alerts = (rows as any[]).flatMap(r => expandAlertOccurrence(r, dones, today));
+        alerts.sort((a, b) => a.due_date.localeCompare(b.due_date));
 
         let tSql = `SELECT t.id, t.label, t.due_date, t.status, t.dossier_id, t.assigned_comptable_id,
           c.name || ' (' || d.exercice || ')' AS dossier_label
@@ -2314,6 +2367,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const dueDate = (body.due_date || '').trim();
         if (!title) return json({ error: 'Libellé requis' }, 400);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || isNaN(Date.parse(dueDate))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
+        const recurrence = ['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence) ? body.recurrence : 'once';
         let lead = Number(body.lead_days);
         if (!Number.isFinite(lead)) lead = 7;
         lead = Math.max(0, Math.min(60, Math.round(lead)));
@@ -2324,9 +2378,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           dossierId = String(body.dossier_id);
         }
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .bind(id, user.organization_id, title, dueDate, lead, dossierId, (body.note || '').trim() || null, user.id, user.full_name).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_added\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ title, due_date: dueDate, lead_days: lead, dossier_id: dossierId })).run();
+        await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(id, user.organization_id, title, dueDate, lead, recurrence === 'once' ? null : recurrence, dossierId, (body.note || '').trim() || null, user.id, user.full_name).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_added\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ title, due_date: dueDate, lead_days: lead, recurrence, dossier_id: dossierId })).run();
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ?').bind(id).first();
         return json(row, 201);
       }
@@ -2337,11 +2391,16 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
         const body = await request.json() as any;
+        const occ = body.occurrence ? String(body.occurrence).trim() : null;
+        if (occ && (!/^\d{4}-\d{2}-\d{2}$/.test(occ) || isNaN(Date.parse(occ)))) return json({ error: 'Occurrence invalide' }, 400);
         const updates: string[] = [];
         const binds: any[] = [];
+        let toggleDone: boolean | undefined;
         if (user.role !== 'expert') {
-          if (body.done === undefined) return json({ error: 'Seul un expert peut modifier cette échéance' }, 403);
-          updates.push('done = ?'); binds.push(body.done ? 1 : 0);
+          const forbidden = ['title', 'due_date', 'lead_days', 'note', 'recurrence'].filter(k => body[k] !== undefined);
+          if (forbidden.length > 0) return json({ error: 'Seul un expert peut modifier cette échéance' }, 403);
+          if (body.done === undefined) return json({ error: 'Rien à modifier' }, 400);
+          toggleDone = !!body.done;
         } else {
           if (body.title !== undefined) {
             const v = (body.title || '').trim();
@@ -2357,13 +2416,35 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             const l = Math.max(0, Math.min(60, Math.round(Number(body.lead_days) || 0)));
             updates.push('lead_days = ?'); binds.push(l);
           }
-          if (body.done !== undefined) { updates.push('done = ?'); binds.push(body.done ? 1 : 0); }
           if (body.note !== undefined) { updates.push('note = ?'); binds.push((body.note || '').trim() || null); }
+          if (body.recurrence !== undefined) {
+            if (!['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence)) return json({ error: 'Récurrence invalide' }, 400);
+            updates.push('recurrence = ?'); binds.push(body.recurrence === 'once' ? null : body.recurrence);
+          }
+          if (body.done !== undefined) toggleDone = !!body.done;
         }
-        if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
-        await env.DB.prepare(`UPDATE org_fiscal_alerts SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, orgAlertMatch[1]).run();
-        if (body.done !== undefined && (body.done ? 1 : 0) !== row.done) {
-          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_toggled\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, done: body.done ? 1 : 0 })).run();
+
+        if (toggleDone !== undefined) {
+          if (row.recurrence) {
+            if (!occ) return json({ error: 'Date d\'occurrence requise pour une échéance récurrente' }, 400);
+            if (toggleDone) {
+              await env.DB.prepare('INSERT OR REPLACE INTO org_alert_dones (alert_id, due_date, organization_id) VALUES (?, ?, ?)').bind(row.id, occ, user.organization_id).run();
+            } else {
+              await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id = ? AND due_date = ?').bind(row.id, occ).run();
+            }
+          } else {
+            updates.push('done = ?'); binds.push(toggleDone ? 1 : 0);
+          }
+        }
+
+        if (updates.length > 0) {
+          await env.DB.prepare(`UPDATE org_fiscal_alerts SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, orgAlertMatch[1]).run();
+        } else if (toggleDone === undefined) {
+          return json({ error: 'Rien à modifier' }, 400);
+        }
+
+        if (toggleDone !== undefined) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_toggled\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, done: toggleDone ? 1 : 0, occurrence: row.recurrence ? occ : null })).run();
         }
         const fresh = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).first();
         return json(fresh);
@@ -2374,6 +2455,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
+        await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_deleted\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, due_date: row.due_date })).run();
         return json({ ok: true });

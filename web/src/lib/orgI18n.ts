@@ -105,6 +105,12 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.global': { fr: 'Global', ar: 'عام' },
   'alerts.for_dossier': { fr: 'Échéances du dossier', ar: 'مواعيد هذا الملف' },
   'alerts.legend': { fr: '🟢 Traité · 🟠 À préparer · 🔴 En retard', ar: '🟢 معالج · 🟠 للتحضير · 🔴 متأخر' },
+  'alerts.recurrence': { fr: 'Récurrence', ar: 'التكرار' },
+  'alerts.once': { fr: 'Ponctuelle', ar: 'مرة واحدة' },
+  'alerts.monthly': { fr: 'Mensuelle', ar: 'شهري' },
+  'alerts.quarterly': { fr: 'Trimestrielle', ar: 'ثلاثي' },
+  'alerts.yearly': { fr: 'Annuelle', ar: 'سنوي' },
+  'alerts.recur_hint': { fr: 'Se répète automatiquement — chaque occurrence se traite séparément', ar: 'يتكرر تلقائياً — كل موعد يُعالج على حدة' },
 
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },

@@ -25,6 +25,7 @@ export default function OrgAlerts({ dossierId }: Props) {
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [lead, setLead] = useState(7);
+  const [recurrence, setRecurrence] = useState('once');
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -43,7 +44,7 @@ export default function OrgAlerts({ dossierId }: Props) {
   const urgent = feed ? urgentCount(feed) : 0;
 
   const openModal = () => {
-    setTitle(''); setDueDate(''); setLead(7); setNote(''); setErr('');
+    setTitle(''); setDueDate(''); setLead(7); setRecurrence('once'); setNote(''); setErr('');
     setOpen(true);
   };
 
@@ -53,7 +54,7 @@ export default function OrgAlerts({ dossierId }: Props) {
     if (!dueDate) { setErr(t('alerts.due_date')); return; }
     setBusy(true);
     try {
-      await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, dossier_id: dossierId || null, note: note.trim() || undefined });
+      await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, dossier_id: dossierId || null, note: note.trim() || undefined });
       setOpen(false);
       await load();
     } catch (e: any) {
@@ -64,7 +65,7 @@ export default function OrgAlerts({ dossierId }: Props) {
 
   const toggleDone = async (item: FeedItem) => {
     try {
-      await orgApi.updateAlert(item.id, { done: !item.done });
+      await orgApi.updateAlert(item.id, { done: !item.done, occurrence: item.due_date });
       await load();
     } catch (e: any) {
       alert(e.message);
@@ -125,7 +126,7 @@ export default function OrgAlerts({ dossierId }: Props) {
             const st = alertState(item.due_date, item.lead_days, item.done);
             const style = STATE_STYLE[st];
             return (
-              <div key={`${item.kind}-${item.id}`} className={`flex items-center gap-2 border rounded-lg px-2.5 py-2 ${style.row}`}>
+              <div key={`${item.kind}-${item.id}-${item.due_date}`} className={`flex items-center gap-2 border rounded-lg px-2.5 py-2 ${style.row}`}>
                 <span className="text-sm" title={st}>{style.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -135,6 +136,14 @@ export default function OrgAlerts({ dossierId }: Props) {
                     {item.kind === 'task' && (
                       <span className="text-[9px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-full uppercase">
                         {t('alerts.task_badge')}
+                      </span>
+                    )}
+                    {item.kind === 'echeance' && item.recurrence && (
+                      <span
+                        title={t('alerts.recur_hint')}
+                        className="text-[9px] font-semibold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded-full uppercase"
+                      >
+                        🔁 {t(`alerts.${item.recurrence === 'mensuelle' ? 'monthly' : item.recurrence === 'trimestrielle' ? 'quarterly' : 'yearly'}`)}
                       </span>
                     )}
                     {item.dossier_label && (
@@ -214,6 +223,22 @@ export default function OrgAlerts({ dossierId }: Props) {
                     ))}
                   </select>
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">{t('alerts.recurrence')}</label>
+                <select
+                  value={recurrence}
+                  onChange={e => setRecurrence(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+                >
+                  <option value="once">{t('alerts.once')}</option>
+                  <option value="mensuelle">{t('alerts.monthly')}</option>
+                  <option value="trimestrielle">{t('alerts.quarterly')}</option>
+                  <option value="annuelle">{t('alerts.yearly')}</option>
+                </select>
+                {recurrence !== 'once' && (
+                  <p className="text-[11px] text-teal-600 mt-1">🔁 {t('alerts.recur_hint')}</p>
+                )}
               </div>
               <textarea
                 value={note}
