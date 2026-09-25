@@ -111,6 +111,13 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.quarterly': { fr: 'Trimestrielle', ar: 'ثلاثي' },
   'alerts.yearly': { fr: 'Annuelle', ar: 'سنوي' },
   'alerts.recur_hint': { fr: 'Se répète automatiquement — chaque occurrence se traite séparément', ar: 'يتكرر تلقائياً — كل موعد يُعالج على حدة' },
+  'alerts.category': { fr: 'Catégorie', ar: 'الفئة' },
+  'alerts.cat_all': { fr: 'Tous', ar: 'الكل' },
+  'alerts.cat_morale': { fr: 'Personne morale', ar: 'شخص معنوي' },
+  'alerts.cat_physique': { fr: 'Personne physique', ar: 'شخص طبيعي' },
+  'alerts.cat_none': { fr: 'Non défini', ar: 'غير محدد' },
+  'alerts.edit_title': { fr: "Modifier l'échéance", ar: 'تعديل الموعد' },
+  'alerts.client_type': { fr: 'Type de client', ar: 'نوعية العميل' },
 
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },

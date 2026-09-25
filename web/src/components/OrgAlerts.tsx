@@ -8,6 +8,7 @@ import { useOrgAuth } from '../lib/orgAuth';
 
 interface Props {
   dossierId?: string;
+  personType?: string | null;
 }
 
 const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string }> = {
@@ -17,15 +18,17 @@ const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string 
   done: { row: 'bg-gray-50 border-gray-200 opacity-70', chip: 'bg-emerald-50 text-emerald-700', icon: '✅' },
 };
 
-export default function OrgAlerts({ dossierId }: Props) {
+export default function OrgAlerts({ dossierId, personType }: Props) {
   const { state } = useOrgAuth();
   const isExpert = state.user?.role === 'expert';
   const [feed, setFeed] = useState<OrgAlertFeed | null>(null);
   const [open, setOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [lead, setLead] = useState(7);
   const [recurrence, setRecurrence] = useState('once');
+  const [category, setCategory] = useState('');
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -40,21 +43,38 @@ export default function OrgAlerts({ dossierId }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
-  const items = feed ? mergeFeed(feed) : [];
+  const all = feed ? mergeFeed(feed) : [];
+  const items = personType ? all.filter(i => i.kind === 'task' || !i.category || i.category === personType) : all;
   const urgent = feed ? urgentCount(feed) : 0;
 
-  const openModal = () => {
-    setTitle(''); setDueDate(''); setLead(7); setRecurrence('once'); setNote(''); setErr('');
+  const openModal = (item?: FeedItem) => {
+    if (item) {
+      setEditId(item.id);
+      setTitle(item.title);
+      setDueDate(item.due_date);
+      setLead(item.lead_days);
+      setRecurrence(item.recurrence || 'once');
+      setCategory(item.category || '');
+      setNote(item.note || '');
+    } else {
+      setEditId(null);
+      setTitle(''); setDueDate(''); setLead(7); setRecurrence('once'); setCategory(''); setNote('');
+    }
+    setErr('');
     setOpen(true);
   };
 
-  const create = async () => {
+  const save = async () => {
     setErr('');
     if (!title.trim()) { setErr('Libellé requis'); return; }
     if (!dueDate) { setErr(t('alerts.due_date')); return; }
     setBusy(true);
     try {
-      await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, dossier_id: dossierId || null, note: note.trim() || undefined });
+      if (editId) {
+        await orgApi.updateAlert(editId, { title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, note: note.trim() || undefined });
+      } else {
+        await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, dossier_id: dossierId || null, note: note.trim() || undefined });
+      }
       setOpen(false);
       await load();
     } catch (e: any) {
@@ -104,7 +124,7 @@ export default function OrgAlerts({ dossierId }: Props) {
           <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>
           {isExpert && (
             <button
-              onClick={openModal}
+              onClick={() => openModal()}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all"
             >
               <Plus size={12} />
@@ -146,6 +166,14 @@ export default function OrgAlerts({ dossierId }: Props) {
                         🔁 {t(`alerts.${item.recurrence === 'mensuelle' ? 'monthly' : item.recurrence === 'trimestrielle' ? 'quarterly' : 'yearly'}`)}
                       </span>
                     )}
+                    {item.kind === 'echeance' && item.category && (
+                      <span
+                        className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${item.category === 'morale' ? 'text-blue-600 bg-blue-50' : 'text-pink-600 bg-pink-50'}`}
+                        title={t('alerts.category')}
+                      >
+                        {item.category === 'morale' ? '🏢' : '👤'} {t(`alerts.cat_${item.category}`)}
+                      </span>
+                    )}
                     {item.dossier_label && (
                       item.kind === 'task' && item.dossier_id ? (
                         <Link to={`/cabinet/dossier/${item.dossier_id}`} className="text-[10px] text-blue-600 hover:underline truncate max-w-[160px]">
@@ -172,13 +200,22 @@ export default function OrgAlerts({ dossierId }: Props) {
                   </button>
                 )}
                 {item.kind === 'echeance' && isExpert && (
-                  <button
-                    onClick={() => remove(item)}
-                    title="Supprimer"
-                    className="p-1 rounded hover:bg-white/80 text-gray-400 hover:text-red-600 transition-colors"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <>
+                    <button
+                      onClick={() => openModal(item)}
+                      title={t('alerts.edit_title')}
+                      className="p-1 rounded hover:bg-white/80 text-gray-400 hover:text-blue-600 transition-colors"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={() => remove(item)}
+                      title="Supprimer"
+                      className="p-1 rounded hover:bg-white/80 text-gray-400 hover:text-red-600 transition-colors"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </>
                 )}
               </div>
             );
@@ -190,7 +227,7 @@ export default function OrgAlerts({ dossierId }: Props) {
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setOpen(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <h3 className="font-bold text-gray-900">⏰ {t('alerts.new_title')}</h3>
+              <h3 className="font-bold text-gray-900">⏰ {editId ? t('alerts.edit_title') : t('alerts.new_title')}</h3>
               <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
             </div>
             <div className="space-y-2">
@@ -201,7 +238,7 @@ export default function OrgAlerts({ dossierId }: Props) {
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
                 autoFocus
               />
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">{t('alerts.due_date')}</label>
                   <input
@@ -210,6 +247,18 @@ export default function OrgAlerts({ dossierId }: Props) {
                     onChange={e => setDueDate(e.target.value)}
                     className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">{t('alerts.category')}</label>
+                  <select
+                    value={category}
+                    onChange={e => setCategory(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+                  >
+                    <option value="">— {t('alerts.cat_none')}</option>
+                    <option value="morale">🏢 {t('alerts.cat_morale')}</option>
+                    <option value="physique">👤 {t('alerts.cat_physique')}</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">{t('alerts.lead_days')}</label>
@@ -251,7 +300,7 @@ export default function OrgAlerts({ dossierId }: Props) {
                 <p className="text-[11px] text-gray-400">📎 {t('alerts.for_dossier')}</p>
               )}
               <button
-                onClick={create}
+                onClick={save}
                 disabled={busy}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50"
               >

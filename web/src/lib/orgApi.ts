@@ -22,6 +22,7 @@ export interface OrgClient {
   id: string;
   name: string;
   matricule_fiscal: string | null;
+  person_type?: string | null;
   assigned_comptable_id: string | null;
   comptable_name: string | null;
   contact_email: string | null;
@@ -36,6 +37,7 @@ export interface OrgDossier {
   client_id: string;
   client_name: string;
   matricule_fiscal: string | null;
+  person_type?: string | null;
   exercice: number;
   status: string;
   cached_progress: number;
@@ -81,6 +83,7 @@ export interface OrgAlert {
   done: number;
   note: string | null;
   recurrence?: string | null;
+  category?: string | null;
   dossier_id: string | null;
   dossier_label: string | null;
   created_by_name: string | null;
@@ -161,8 +164,10 @@ export const orgApi = {
   // Clients
   getClients: () => req<OrgClient[]>('/org/clients'),
   createClient: (d: any) => req<any>('/org/clients', { method: 'POST', body: JSON.stringify(d) }),
-  reassignClient: (id: string, comptableId: string) =>
-    req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
+    reassignClient: (id: string, comptableId: string) =>
+      req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
+    updateClient: (id: string, patch: { person_type?: string | null }) =>
+      req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   // Dossiers
   getClientDossiers: (clientId: string) => req<OrgDossier[]>(`/org/clients/${clientId}/dossiers`),
@@ -189,9 +194,9 @@ export const orgApi = {
   // Fiscal alerts (échéances)
   getAlerts: (dossierId?: string) =>
     req<OrgAlertFeed>(`/org/alerts${dossierId ? `?dossier_id=${dossierId}` : ''}`),
-  createAlert: (data: { title: string; due_date: string; lead_days?: number; recurrence?: string; dossier_id?: string | null; note?: string }) =>
+  createAlert: (data: { title: string; due_date: string; lead_days?: number; recurrence?: string; category?: string | null; dossier_id?: string | null; note?: string }) =>
     req<OrgAlert>('/org/alerts', { method: 'POST', body: JSON.stringify(data) }),
-  updateAlert: (id: string, patch: { title?: string; due_date?: string; lead_days?: number; done?: boolean; note?: string; recurrence?: string; occurrence?: string }) =>
+  updateAlert: (id: string, patch: { title?: string; due_date?: string; lead_days?: number; done?: boolean; note?: string; recurrence?: string; category?: string | null; occurrence?: string }) =>
     req<OrgAlert>(`/org/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteAlert: (id: string) =>
     req<{ ok: boolean }>(`/org/alerts/${id}`, { method: 'DELETE' }),

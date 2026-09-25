@@ -1789,14 +1789,28 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/clients' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        const { name, matricule_fiscal, assigned_comptable_id, contact_email, contact_phone } = await request.json() as any;
+        const { name, matricule_fiscal, assigned_comptable_id, contact_email, contact_phone, person_type } = await request.json() as any;
         if (!name) return json({ error: 'Nom requis' }, 400);
+        const pType = ['morale', 'physique'].includes(person_type) ? person_type : null;
         const id = genId();
         // Expert assigns to anyone; comptable auto-assigns to self
         const comptableId = user.role === 'expert' ? (assigned_comptable_id || null) : user.id;
-        await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, comptableId, name, matricule_fiscal || null, contact_email || null, contact_phone || null).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name })).run();
-        return json({ id, name }, 201);
+        await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone, person_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, comptableId, name, matricule_fiscal || null, contact_email || null, contact_phone || null, pType).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name, person_type: pType })).run();
+        return json({ id, name, person_type: pType }, 201);
+      }
+
+      const orgClientMatch = path.match(/^\/api\/org\/clients\/([^/]+)$/);
+      if (orgClientMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        const { person_type } = await request.json() as any;
+        if (person_type !== null && person_type !== undefined && !['morale', 'physique'].includes(person_type)) return json({ error: 'Type invalide' }, 400);
+        const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientMatch[1], user.organization_id).first() as any;
+        if (!client) return json({ error: 'Client non trouvé' }, 404);
+        await env.DB.prepare('UPDATE org_clients SET person_type = ? WHERE id = ?').bind(person_type || null, orgClientMatch[1]).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_person_type', 'client', orgClientMatch[1], JSON.stringify({ old: client.person_type || null, new: person_type || null })).run();
+        return json({ ok: true, person_type: person_type || null });
       }
 
       const orgClientReassignMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/reassign$/);
@@ -1867,7 +1881,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
+        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
@@ -2276,32 +2290,58 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       // --- ORG: FISCAL ALERTS (échéances fiscales + tâches à date butoir) ---
       const orgAlertMatch = path.match(/^\/api\/org\/alerts\/([^/]+)$/);
 
-      // Pack d'échéances type (TVA, CNSS, IS…) — seed une fois par organisation
+      // Pack d'échéances type — seed auto-correctif (id déterministe, upsert seulement si écart)
       const ensureAlertPack = async (db: any, orgId: string) => {
-        const existing = await db.prepare('SELECT id FROM org_fiscal_alerts WHERE organization_id = ? AND recurrence IS NOT NULL LIMIT 1').bind(orgId).first();
-        if (existing) return;
         const y = new Date().getUTCFullYear();
         const pack = [
-          { title: 'TVA — déclaration et paiement', due_date: `${y}-12-26`, recurrence: 'mensuelle', lead_days: 5, note: 'Déclaration et paiement de la TVA avant le 26 du mois suivant' },
-          { title: 'TAP — déclaration et paiement', due_date: `${y}-12-26`, recurrence: 'mensuelle', lead_days: 5, note: 'TAP avant le 26 du mois suivant' },
-          { title: 'CNSS — cotisations employeur', due_date: `${y}-12-31`, recurrence: 'mensuelle', lead_days: 5, note: 'Cotisations CNSS avant le 31 du mois suivant' },
-          { title: 'IR salaires — retenue à la source', due_date: `${y}-12-31`, recurrence: 'mensuelle', lead_days: 5, note: 'Versement de l\'IR retenu sur les salaires' },
-          { title: 'Acomptes IS trimestriels', due_date: `${y}-10-26`, recurrence: 'trimestrielle', lead_days: 7, note: '26 janv. / 26 avr. / 26 juil. / 26 oct.' },
-          { title: 'IS — déclaration annuelle et paiement', due_date: `${y}-04-30`, recurrence: 'annuelle', lead_days: 30, note: 'Avant le 30 avril' },
-          { title: 'Bilan & liasse fiscale', due_date: `${y}-04-30`, recurrence: 'annuelle', lead_days: 30, note: 'Dépôt du bilan et de la liasse fiscale' },
+          { key: 'pm_mensuelle', title: 'Déclaration mensuelle — TVA, retenues, TFP, FOPROLOS (personne morale)', due_date: `${y}-12-28`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, note: 'Télédéclaration (TEJ) avant le 28 du mois suivant — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pp_mensuelle', title: 'Déclaration mensuelle — TVA, retenues, TFP, FOPROLOS (personne physique)', due_date: `${y}-12-15`, recurrence: 'mensuelle', months: null, category: 'physique', lead_days: 5, note: 'Régime réel : avant le 15 du mois suivant — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'cnss_tr', title: 'CNSS — déclaration trimestrielle des salaires & cotisations', due_date: `${y}-01-15`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 5, note: '15 janv. / 15 avr. / 15 juil. / 15 oct. — BTP >50 salariés : 20 · entreprises exportatrices : 25' },
+          { key: 'cnss_das', title: 'CNSS — déclaration annuelle des salaires (DAS)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, note: 'Récapitulatif annuel des salaires (TS-02) — avant le 28 février' },
+          { key: 'employeur', title: 'Déclaration de l\'employeur (annuelle)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, note: 'Retenues à la source, salaires et pensions de l\'exercice — avant le 28 février' },
+          { key: 'acomptes_pm', title: 'Acomptes provisionnels IS — 3 × 30 % (personne morale)', due_date: `${y}-06-28`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'morale', lead_days: 7, note: '28 juin / 28 sept. / 28 déc. — art. 51 : 28 premiers jours des 6e, 9e et 12e mois' },
+          { key: 'acomptes_pp', title: 'Acomptes provisionnels IRPP BIC/BNC (personne physique)', due_date: `${y}-06-25`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'physique', lead_days: 7, note: '25 juin / 25 sept. / 25 déc. — art. 51 : 25 premiers jours des 6e, 9e et 12e mois' },
+          { key: 'is_annuelle', title: 'Déclaration annuelle & liquidation IS (personne morale)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, note: 'Art. 60 : au plus tard le 25 mars (exercice civil) — SA/audit légal : déclaration provisoire jusqu\'au 25 juin ou avant l\'AG' },
+          { key: 'irpp_capitaux', title: 'Déclaration annuelle IRPP — revenus fonciers & capitaux', due_date: `${y}-02-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Capitaux mobiliers, valeurs mobilières, revenus fonciers, source étrangère, plus-values — avant le 25 février' },
+          { key: 'irpp_bic', title: 'Déclaration annuelle IRPP — BIC (commerçants)', due_date: `${y}-04-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Commerçants (RNR, RNS ou forfait) — art. 60 : avant le 25 avril' },
+          { key: 'irpp_bnc', title: 'Déclaration annuelle IRPP — BNC, industrie & prestataires', due_date: `${y}-05-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Professions non commerciales, prestataires de services, activités industrielles, revenus mixtes — avant le 25 mai' },
+          { key: 'irpp_salaires', title: 'Déclaration annuelle IRPP — salaires & pensions', due_date: `${y}-12-05`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Salariés, bénéficiaires de pensions ou rentes viagères — avant le 5 décembre' },
+          { key: 'irpp_artisans', title: 'Déclaration annuelle IRPP — artisans', due_date: `${y}-07-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Artisans (y compris forfait) — avant le 25 juillet' },
+          { key: 'irpp_agricoles', title: 'Déclaration annuelle IRPP — agriculture & pêche', due_date: `${y}-08-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, note: 'Exploitants agricoles et pêcheurs — avant le 25 août' },
         ];
-        await db.batch(pack.map(p => db.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, note, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .bind(genId(), orgId, p.title, p.due_date, p.lead_days, p.recurrence, p.note, 'Type EUREX')));
+        const { results: existing } = await db.prepare('SELECT id, title, due_date, lead_days, recurrence, months, category, note FROM org_fiscal_alerts WHERE organization_id = ?').bind(orgId).all();
+        const byId = new Map((existing as any[]).map(r => [r.id, r]));
+        const stmts: any[] = [];
+        for (const p of pack) {
+          const id = `pack_${p.key}_${orgId}`;
+          const cur = byId.get(id);
+          const same = cur && cur.title === p.title && cur.due_date === p.due_date && cur.lead_days === p.lead_days
+            && cur.recurrence === p.recurrence && (cur.months || null) === p.months
+            && (cur.category || null) === p.category && (cur.note || null) === p.note;
+          if (!same) {
+            stmts.push(db.prepare('INSERT OR REPLACE INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, months, category, note, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+              .bind(id, orgId, p.title, p.due_date, p.lead_days, p.recurrence, p.months, p.category, p.note, 'Type EUREX'));
+          }
+        }
+        if (stmts.length > 0) await db.batch(stmts);
       };
 
       // Occurrences visibles : du 1er du mois courant à today+60j
       const expandAlertOccurrence = (row: any, dones: Set<string>, today: Date): any[] => {
-        const base = { id: row.id, title: row.title, lead_days: row.lead_days, note: row.note, dossier_id: row.dossier_id, dossier_label: row.dossier_label, created_by_name: row.created_by_name, recurrence: row.recurrence || null };
+        const base = { id: row.id, title: row.title, lead_days: row.lead_days, note: row.note, dossier_id: row.dossier_id, dossier_label: row.dossier_label, created_by_name: row.created_by_name, recurrence: row.recurrence || null, category: row.category || null };
         if (!row.recurrence) return [{ ...base, due_date: row.due_date, done: !!row.done }];
-        const [ay, am, ad] = String(row.due_date).split('-').map(Number);
-        const months = row.recurrence === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-          : row.recurrence === 'trimestrielle' ? [1, 4, 7, 10]
-          : [am];
+        const [, am, ad] = String(row.due_date).split('-').map(Number);
+        let months: number[];
+        if (row.months) {
+          try { months = JSON.parse(row.months); } catch { months = []; }
+        } else if (row.recurrence === 'mensuelle') {
+          months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        } else if (row.recurrence === 'trimestrielle') {
+          months = [am, (am + 2) % 12 + 1, (am + 5) % 12 + 1, (am + 8) % 12 + 1];
+        } else {
+          months = [am];
+        }
+        if (months.length === 0) return [];
         const y = today.getUTCFullYear();
         const start = `${y}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
         const endD = new Date(today); endD.setUTCDate(endD.getUTCDate() + 60);
@@ -2324,7 +2364,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await ensureAlertPack(env.DB, user.organization_id);
         const dossierId = new URL(request.url).searchParams.get('dossier_id');
 
-        let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.recurrence, a.dossier_id, a.created_by_name, a.created_at,
+        let aSql = `SELECT a.id, a.title, a.due_date, a.lead_days, a.done, a.note, a.recurrence, a.months, a.category, a.dossier_id, a.created_by_name, a.created_at,
           CASE WHEN a.dossier_id IS NOT NULL THEN (SELECT c.name || ' (' || d.exercice || ')' FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = a.dossier_id) ELSE NULL END AS dossier_label
           FROM org_fiscal_alerts a WHERE a.organization_id = ?`;
         const aBinds: any[] = [user.organization_id];
@@ -2368,6 +2408,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!title) return json({ error: 'Libellé requis' }, 400);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || isNaN(Date.parse(dueDate))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
         const recurrence = ['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence) ? body.recurrence : 'once';
+        const category = ['morale', 'physique'].includes(body.category) ? body.category : null;
         let lead = Number(body.lead_days);
         if (!Number.isFinite(lead)) lead = 7;
         lead = Math.max(0, Math.min(60, Math.round(lead)));
@@ -2378,9 +2419,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           dossierId = String(body.dossier_id);
         }
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .bind(id, user.organization_id, title, dueDate, lead, recurrence === 'once' ? null : recurrence, dossierId, (body.note || '').trim() || null, user.id, user.full_name).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_added\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ title, due_date: dueDate, lead_days: lead, recurrence, dossier_id: dossierId })).run();
+        await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, category, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(id, user.organization_id, title, dueDate, lead, recurrence === 'once' ? null : recurrence, category, dossierId, (body.note || '').trim() || null, user.id, user.full_name).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_added\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ title, due_date: dueDate, lead_days: lead, recurrence, category, dossier_id: dossierId })).run();
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ?').bind(id).first();
         return json(row, 201);
       }
@@ -2397,7 +2438,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const binds: any[] = [];
         let toggleDone: boolean | undefined;
         if (user.role !== 'expert') {
-          const forbidden = ['title', 'due_date', 'lead_days', 'note', 'recurrence'].filter(k => body[k] !== undefined);
+          const forbidden = ['title', 'due_date', 'lead_days', 'note', 'recurrence', 'category'].filter(k => body[k] !== undefined);
           if (forbidden.length > 0) return json({ error: 'Seul un expert peut modifier cette échéance' }, 403);
           if (body.done === undefined) return json({ error: 'Rien à modifier' }, 400);
           toggleDone = !!body.done;
@@ -2420,6 +2461,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (body.recurrence !== undefined) {
             if (!['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence)) return json({ error: 'Récurrence invalide' }, 400);
             updates.push('recurrence = ?'); binds.push(body.recurrence === 'once' ? null : body.recurrence);
+          }
+          if (body.category !== undefined) {
+            if (body.category !== null && !['morale', 'physique'].includes(body.category)) return json({ error: 'Catégorie invalide' }, 400);
+            updates.push('category = ?'); binds.push(body.category || null);
           }
           if (body.done !== undefined) toggleDone = !!body.done;
         }

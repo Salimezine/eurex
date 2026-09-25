@@ -364,9 +364,32 @@ export default function OrgDossierPage() {
         </button>
         <div className="flex-1">
           <h2 className="text-xl font-bold text-gray-800">{dossier.client_name}</h2>
-          <p className="text-sm text-gray-500">
-            Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
-          </p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5">
+            <p className="text-sm text-gray-500">
+              Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
+            </p>
+            {isExpert ? (
+              <select
+                value={dossier.person_type || ''}
+                onChange={async e => {
+                  try {
+                    await orgApi.updateClient(dossier.client_id, { person_type: e.target.value || null });
+                    setDossier({ ...dossier, person_type: e.target.value || null });
+                  } catch (err: any) { alert(err.message); }
+                }}
+                title={t('alerts.client_type')}
+                className="text-xs border border-gray-200 rounded-lg px-2 py-0.5 focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+              >
+                <option value="">— {t('alerts.cat_none')}</option>
+                <option value="morale">🏢 {t('alerts.cat_morale')}</option>
+                <option value="physique">👤 {t('alerts.cat_physique')}</option>
+              </select>
+            ) : dossier.person_type ? (
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${dossier.person_type === 'morale' ? 'text-blue-600 bg-blue-50' : 'text-pink-600 bg-pink-50'}`}>
+                {dossier.person_type === 'morale' ? '🏢' : '👤'} {t(`alerts.cat_${dossier.person_type}`)}
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="flex items-center gap-4 bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
           <ProgressDonut
@@ -460,7 +483,7 @@ export default function OrgDossierPage() {
       )}
 
       {/* Échéances fiscales du dossier (alertes dates butoirs) */}
-      <OrgAlerts dossierId={dossier.id} />
+          <OrgAlerts dossierId={dossier.id} personType={dossier.person_type} />
 
       {/* Legend */}
       <DonutLegend fait={scopeStats.fait} enCours={scopeStats.enCours} bloqueClient={scopeStats.bloque} />

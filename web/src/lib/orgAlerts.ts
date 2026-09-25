@@ -13,6 +13,7 @@ export interface FeedItem {
   dossier_label: string | null;
   note?: string | null;
   recurrence?: string | null;
+  category?: string | null;
   task_status?: string;
 }
 
@@ -49,6 +50,7 @@ export function mergeFeed(feed: OrgAlertFeed, today: Date = new Date()): FeedIte
       dossier_label: a.dossier_label,
       note: a.note,
       recurrence: a.recurrence ?? null,
+      category: a.category ?? null,
     })),
     ...(feed.tasks || []).map(t => ({
       kind: 'task' as const,
