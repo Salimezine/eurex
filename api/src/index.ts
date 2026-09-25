@@ -2032,6 +2032,27 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
       }
 
+      // --- ORG: ADD DOCUMENT (attached to a task) ---
+      const orgDocAddMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/documents$/);
+      if (orgDocAddMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgDocAddMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const { task_id, label, url, received } = await request.json() as any;
+        if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
+        const docUrl = (url || '').trim();
+        if (docUrl && !/^https?:\/\//i.test(docUrl)) return json({ error: 'URL invalide — commencez par http:// ou https://' }, 400);
+        if (task_id) {
+          const task = await env.DB.prepare('SELECT id FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(task_id, orgDocAddMatch[1]).first();
+          if (!task) return json({ error: 'Tâche introuvable dans ce dossier' }, 404);
+        }
+        const docId = genId();
+        await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received, url) VALUES (?, ?, ?, ?, ?, ?)').bind(docId, orgDocAddMatch[1], task_id || null, label.trim(), received ? 1 : 0, docUrl || null).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'document_added', docId, JSON.stringify({ label: label.trim(), dossier_id: orgDocAddMatch[1], task_id: task_id || null, url: docUrl || null })).run();
+        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ?').bind(docId).first();
+        return json(doc, 201);
+      }
+
       // --- ORG: UPDATE DOCUMENT ---
       const orgDocMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/documents\/([^/]+)$/);
       if (orgDocMatch && method === 'PATCH') {
@@ -2040,9 +2061,36 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDocMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ? AND dossier_id = ?').bind(orgDocMatch[2], orgDocMatch[1]).first() as any;
         if (!doc) return json({ error: 'Document non trouvé' }, 404);
-        const { received, received_note } = await request.json() as any;
-        await env.DB.prepare("UPDATE org_expected_documents SET received = ?, received_at = datetime('now'), received_note = ?, updated_by = ? WHERE id = ?").bind(received ? 1 : 0, received_note || null, user.id, orgDocMatch[2]).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, received ? 'document_received' : 'document_unreceived', orgDocMatch[2], JSON.stringify({ label: doc.label, received, received_note })).run();
+        const { received, received_note, url } = await request.json() as any;
+        if (url !== undefined && url && !/^https?:\/\//i.test(String(url).trim())) return json({ error: 'URL invalide — commencez par http:// ou https://' }, 400);
+        const sets: string[] = [];
+        const binds: any[] = [];
+        if (received !== undefined) {
+          sets.push('received = ?');
+          binds.push(received ? 1 : 0);
+          if (received) sets.push("received_at = datetime('now')");
+        }
+        if (received_note !== undefined) { sets.push('received_note = ?'); binds.push(received_note || null); }
+        if (url !== undefined) { sets.push('url = ?'); binds.push(url ? String(url).trim() : null); }
+        if (sets.length === 0) return json({ error: 'Aucun champ à mettre à jour' }, 400);
+        sets.push('updated_by = ?');
+        binds.push(user.id);
+        await env.DB.prepare(`UPDATE org_expected_documents SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, orgDocMatch[2]).run();
+        if (received !== undefined) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, received ? 'document_received' : 'document_unreceived', orgDocMatch[2], JSON.stringify({ label: doc.label, received, received_note })).run();
+        }
+        return json({ ok: true });
+      }
+
+      // --- ORG: DELETE DOCUMENT ---
+      if (orgDocMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgDocMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ? AND dossier_id = ?').bind(orgDocMatch[2], orgDocMatch[1]).first() as any;
+        if (!doc) return json({ error: 'Document non trouvé' }, 404);
+        await env.DB.prepare('DELETE FROM org_expected_documents WHERE id = ?').bind(orgDocMatch[2]).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'document_deleted', orgDocMatch[1], JSON.stringify({ label: doc.label, doc_id: orgDocMatch[2], task_id: doc.task_id })).run();
         return json({ ok: true });
       }
 
@@ -2075,6 +2123,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (r.action === 'task_status_changed') { if (details?.new_status === 'fait') { icon = '🟢'; label = 'Tâche terminée'; } else if (details?.new_status === 'bloque_client') { icon = '🔴'; label = `Tâche bloquée — ${details.blocked_reason || ''}`; } else { icon = '🔵'; label = `Statut → ${details?.new_status}`; } }
           else if (r.action === 'document_received') { icon = '📎'; label = 'Document reçu'; }
           else if (r.action === 'document_unreceived') { icon = '📄'; label = 'Document non reçu'; }
+          else if (r.action === 'document_added') { icon = '📎'; label = 'Document ajouté'; }
+          else if (r.action === 'document_deleted') { icon = '🗑️'; label = 'Document supprimé'; }
           else if (r.action === 'dossier_closed') { icon = '🔒'; label = 'Clôture exercice'; }
           else if (r.action === 'dossier_created') { icon = '🆕'; label = 'Nouvel exercice'; }
           else if (r.action === 'note_added') { icon = '💬'; label = 'Note interne'; }

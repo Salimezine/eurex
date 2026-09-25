@@ -81,6 +81,7 @@ export interface OrgDocument {
   received_at: string | null;
   received_note: string | null;
   file_r2_key: string | null;
+  url: string | null;
 }
 
 export interface OrgNote {
@@ -152,7 +153,13 @@ export const orgApi = {
 
   // Documents
   updateDocument: (dossierId: string, docId: string, received: boolean, note?: string) =>
-    req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ received, received_note: note }) }),
+    req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ received, received_note: note ?? null }) }),
+  setDocumentUrl: (dossierId: string, docId: string, url: string | null) =>
+    req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ url }) }),
+  addDocument: (dossierId: string, data: { task_id?: string | null; label: string; url?: string | null; received?: boolean }) =>
+    req<OrgDocument>(`/org/dossiers/${dossierId}/documents`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteDocument: (dossierId: string, docId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'DELETE' }),
 
   // Notes
   addNote: (dossierId: string, content: string) =>

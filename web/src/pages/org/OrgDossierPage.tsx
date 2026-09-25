@@ -7,6 +7,7 @@ import {
   monthLabel, monthShort, currentMonth, groupTasksByMonth, filterTasksByMonth,
   taskStats, MonthFilter, MonthGroup,
 } from '../../lib/orgMonths';
+import { groupDocsByTask, countTaskDocs } from '../../lib/orgDocs';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import { SkeletonDossier } from '../../components/Skeleton';
@@ -54,6 +55,9 @@ export default function OrgDossierPage() {
   const [editTaskLabel, setEditTaskLabel] = useState('');
   const [comptables, setComptables] = useState<OrgComptable[]>([]);
   const [monthFilter, setMonthFilter] = useState<MonthFilter>(currentMonth());
+  const [showAddDocFor, setShowAddDocFor] = useState<string | null>(null);
+  const [newDocLabel, setNewDocLabel] = useState('');
+  const [newDocUrl, setNewDocUrl] = useState('');
 
   const load = () => {
     if (!id) return;
@@ -100,6 +104,51 @@ export default function OrgDossierPage() {
     if (!dossier) return;
     try {
       await orgApi.updateDocument(dossier.id, docId, received, note);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const addDocument = async (taskId: string | null) => {
+    if (!dossier || !newDocLabel.trim()) return;
+    try {
+      await orgApi.addDocument(dossier.id, {
+        task_id: taskId,
+        label: newDocLabel.trim(),
+        url: newDocUrl.trim() || null,
+      });
+      setNewDocLabel('');
+      setNewDocUrl('');
+      setShowAddDocFor(null);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const deleteDocument = async (docId: string) => {
+    if (!dossier) return;
+    if (!window.confirm(t('dossier.delete_doc') + ' ?')) return;
+    try {
+      await orgApi.deleteDocument(dossier.id, docId);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const editDocUrl = async (doc: OrgDocument) => {
+    if (!dossier) return;
+    const url = window.prompt(t('dossier.doc_url'), doc.url || '');
+    if (url === null) return;
+    const trimmed = url.trim();
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      alert('URL invalide — commencez par http:// ou https://');
+      return;
+    }
+    try {
+      await orgApi.setDocumentUrl(dossier.id, doc.id, trimmed || null);
       load();
     } catch (err: any) {
       alert(err.message);
@@ -226,6 +275,7 @@ export default function OrgDossierPage() {
 
   const ts = dossier.task_stats;
   const allTasks = dossier.tasks || [];
+  const docsMap = groupDocsByTask(dossier.documents || []);
   const monthChips: { key: MonthFilter; label: string; count: number }[] = [
     { key: 'tous', label: t('dossier.filter_all'), count: allTasks.length },
     { key: 'annuel', label: t('dossier.filter_annual'), count: filterTasksByMonth(allTasks, 'annuel').length },
@@ -416,6 +466,7 @@ export default function OrgDossierPage() {
             const Icon = STATUS_ICONS[task.status] || Circle;
             const isExpanded = expandedTask === task.id;
             const isBlocked = task.status === 'bloque_client';
+            const taskDocs = docsMap[task.id] || [];
 
             return (
               <div key={task.id} className={`bg-white border rounded-xl overflow-hidden transition-all ${isBlocked ? 'border-red-200' : 'border-gray-200'}`}>
@@ -463,6 +514,16 @@ export default function OrgDossierPage() {
                   {isBlocked && (
                     <span className="text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full font-medium">
                       {task.blocked_reason || t('status.bloque_client')}
+                    </span>
+                  )}
+                  {taskDocs.length > 0 && (
+                    <span
+                      title={t('dossier.documents')}
+                      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                        taskDocs.some(d => d.received) ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'
+                      }`}
+                    >
+                      📎 {taskDocs.length}
                     </span>
                   )}
                   {isExpanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
@@ -562,6 +623,110 @@ export default function OrgDossierPage() {
                           {t('status.bloque_client')}
                         </button>
                       )}
+                    </div>
+
+                    {/* Documents de la tâche */}
+                    <div className="mt-3 border-t border-gray-100 pt-2.5">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                          📎 {t('dossier.documents')}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (showAddDocFor === task.id) { setShowAddDocFor(null); } else { setShowAddDocFor(task.id); setNewDocLabel(''); setNewDocUrl(''); }
+                          }}
+                          className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                            showAddDocFor === task.id
+                              ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                              : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                          }`}
+                        >
+                          {showAddDocFor === task.id ? '✕' : `+ ${t('dossier.add_document')}`}
+                        </button>
+                      </div>
+
+                      {showAddDocFor === task.id && (
+                        <div className="flex flex-col gap-2 mb-2 p-2.5 bg-blue-50/60 rounded-lg border border-blue-100" onClick={e => e.stopPropagation()}>
+                          <input
+                            autoFocus
+                            value={newDocLabel}
+                            onChange={e => setNewDocLabel(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && newDocLabel.trim()) addDocument(task.id);
+                              if (e.key === 'Escape') setShowAddDocFor(null);
+                            }}
+                            placeholder={t('dossier.doc_label')}
+                            className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                          />
+                          <div className="flex gap-2">
+                            <input
+                              value={newDocUrl}
+                              onChange={e => setNewDocUrl(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && newDocLabel.trim()) addDocument(task.id);
+                                if (e.key === 'Escape') setShowAddDocFor(null);
+                              }}
+                              placeholder={t('dossier.doc_url')}
+                              className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                            />
+                            <button
+                              onClick={() => addDocument(task.id)}
+                              disabled={!newDocLabel.trim()}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-all whitespace-nowrap"
+                            >
+                              {t('dossier.save')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {taskDocs.length === 0 && showAddDocFor !== task.id && (
+                        <p className="text-[11px] text-gray-400 italic py-1">{t('dossier.no_task_docs')}</p>
+                      )}
+                      {taskDocs.map(doc => (
+                        <div key={doc.id} className="flex items-center gap-2 py-1.5 text-xs border-b border-gray-50 last:border-0">
+                          <span title={doc.received ? 'Reçu' : 'Attendu'}>
+                            {doc.received ? '✅' : '📎'}
+                          </span>
+                          <span className={`flex-1 min-w-0 truncate ${doc.received ? 'text-gray-400 line-through' : 'text-gray-700'}`} title={doc.label}>
+                            {doc.label}
+                          </span>
+                          {doc.url && (
+                            <a
+                              href={doc.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline font-medium whitespace-nowrap"
+                            >
+                              {t('dossier.open_link')} <ExternalLink size={10} />
+                            </a>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); editDocUrl(doc); }}
+                            title={t('dossier.edit_link')}
+                            className="text-gray-400 hover:text-blue-600 transition-colors"
+                          >
+                            🔗
+                          </button>
+                          {!doc.received && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleDocument(doc.id, true); }}
+                              title={t('dossier.mark_received')}
+                              className="text-gray-400 hover:text-emerald-600 transition-colors"
+                            >
+                              ✓
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteDocument(doc.id); }}
+                            title={t('dossier.delete_doc')}
+                            className="text-gray-400 hover:text-red-600 transition-colors"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -671,6 +836,16 @@ export default function OrgDossierPage() {
                 <p className={`text-sm font-medium ${doc.received ? 'text-gray-500' : 'text-gray-800'}`}>
                   {doc.label}
                 </p>
+                {doc.url && (
+                  <a
+                    href={doc.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline mt-0.5"
+                  >
+                    {t('dossier.open_link')} <ExternalLink size={10} />
+                  </a>
+                )}
                 {doc.received_at && (
                   <p className="text-[11px] text-gray-400">
                     Reçu le {new Date(doc.received_at).toLocaleDateString('fr-FR')}
@@ -705,6 +880,22 @@ export default function OrgDossierPage() {
                   </button>
                 </div>
               )}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => editDocUrl(doc)}
+                  title={t('dossier.edit_link')}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-all"
+                >
+                  🔗
+                </button>
+                <button
+                  onClick={() => deleteDocument(doc.id)}
+                  title={t('dossier.delete_doc')}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                >
+                  🗑
+                </button>
+              </div>
             </div>
           ))}
         </div>
