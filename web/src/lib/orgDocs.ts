@@ -28,9 +28,16 @@ export function docOpenKind(doc: OrgDocument): 'file' | 'link' | null {
   return null;
 }
 
-/** Icône du document : 📄 PDF, 🖼️ image, 🔗 lien, 📎 pièce. */
+/** Icône du document : 📄 PDF, 🖼️ image, 📝 Word, 📊 Excel, 📦 archive, 🔗 lien, 📎 pièce. */
 export function docIcon(doc: OrgDocument): string {
-  if (doc.file_r2_key) return doc.file_type?.startsWith('image/') ? '🖼️' : '📄';
+  if (doc.file_r2_key) {
+    const ft = doc.file_type || '';
+    if (ft.startsWith('image/')) return '🖼️';
+    if (ft.includes('word')) return '📝';
+    if (ft.includes('sheet') || ft.includes('excel')) return '📊';
+    if (ft.includes('zip') || ft.includes('rar')) return '📦';
+    return '📄';
+  }
   if (doc.url) return '🔗';
   return '📎';
 }
@@ -40,3 +47,7 @@ export function formatFileSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} Mo`;
   return `${Math.max(1, Math.round(bytes / 1024))} Ko`;
 }
+
+/** Attribut accept du sélecteur de fichier (aligné sur l'API). */
+export const DOC_ACCEPT =
+  '.pdf,.jpg,.jpeg,.png,.webp,.gif,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip,.rar,application/pdf,image/*';

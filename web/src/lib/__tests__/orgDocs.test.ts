@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupDocsByTask, docsForTask, countTaskDocs, docOpenKind, docIcon, formatFileSize } from '../orgDocs';
+import { groupDocsByTask, docsForTask, countTaskDocs, docOpenKind, docIcon, formatFileSize, DOC_ACCEPT } from '../orgDocs';
 import { OrgDocument } from '../orgApi';
 
 const doc = (id: string, task_id: string | null, received = 0, patch: Partial<OrgDocument> = {}): OrgDocument => ({
@@ -47,11 +47,20 @@ describe('orgDocs — ouverture & icônes', () => {
     expect(docOpenKind(doc('c', 't1'))).toBeNull();
   });
 
-  it('docIcon : image / pdf / lien / pièce', () => {
+  it('docIcon : image / pdf / word / excel / archive / lien / pièce', () => {
     expect(docIcon(doc('a', null, 0, { file_r2_key: 'k', file_type: 'image/png' }))).toBe('🖼️');
     expect(docIcon(doc('b', null, 0, { file_r2_key: 'k', file_type: 'application/pdf' }))).toBe('📄');
-    expect(docIcon(doc('c', null, 0, { url: 'https://x' }))).toBe('🔗');
-    expect(docIcon(doc('d', null))).toBe('📎');
+    expect(docIcon(doc('c', null, 0, { file_r2_key: 'k', file_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }))).toBe('📝');
+    expect(docIcon(doc('d', null, 0, { file_r2_key: 'k', file_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))).toBe('📊');
+    expect(docIcon(doc('e', null, 0, { file_r2_key: 'k', file_type: 'application/zip' }))).toBe('📦');
+    expect(docIcon(doc('f', null, 0, { url: 'https://x' }))).toBe('🔗');
+    expect(docIcon(doc('g', null))).toBe('📎');
+  });
+
+  it('DOC_ACCEPT couvre les formats API (pdf, images, office, csv, zip)', () => {
+    for (const ext of ['.pdf', '.png', '.docx', '.xlsx', '.csv', '.zip']) {
+      expect(DOC_ACCEPT).toContain(ext);
+    }
   });
 
   it('formatFileSize : Mo / Ko', () => {

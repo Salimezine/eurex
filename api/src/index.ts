@@ -2064,24 +2064,54 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const ctHeader = request.headers.get('content-type') || '';
         if (!ctHeader.includes('multipart/form-data')) return json({ error: 'Form-data requis' }, 400);
         const form = await request.formData();
-        const file = form.get('file');
-        if (!(file instanceof File)) return json({ error: 'Fichier requis' }, 400);
+        const incoming = form.getAll('file').filter((f): f is File => f instanceof File);
+        if (incoming.length === 0) return json({ error: 'Fichier requis' }, 400);
         const taskId = String(form.get('task_id') || '').trim() || null;
-        const ALLOWED: Record<string, string> = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
-        const ext = ALLOWED[file.type];
-        if (!ext) return json({ error: 'Type non autorisé — PDF, JPEG, PNG, WEBP ou GIF uniquement' }, 400);
-        if (file.size > 10 * 1024 * 1024) return json({ error: 'Fichier trop volumineux (10 Mo max)' }, 400);
+        const ALLOWED_MIME: Record<string, string> = {
+          'application/pdf': 'pdf',
+          'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+          'application/msword': 'doc',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+          'application/vnd.ms-excel': 'xls',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+          'text/csv': 'csv', 'text/plain': 'txt',
+          'application/zip': 'zip', 'application/x-zip-compressed': 'zip',
+          'application/vnd.rar': 'rar',
+        };
+        const ALLOWED_EXT: Record<string, string> = {
+          pdf: 'pdf', jpg: 'jpg', jpeg: 'jpg', png: 'png', webp: 'webp', gif: 'gif',
+          doc: 'doc', docx: 'docx', xls: 'xls', xlsx: 'xlsx',
+          csv: 'csv', txt: 'txt', zip: 'zip', rar: 'rar',
+        };
+        const EXT_MIME: Record<string, string> = {
+          pdf: 'application/pdf', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+          doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          csv: 'text/csv', txt: 'text/plain', zip: 'application/zip', rar: 'application/vnd.rar',
+        };
+        const pickExt = (file: File): string | null => {
+          const byMime = ALLOWED_MIME[file.type];
+          if (byMime) return byMime;
+          const nameExt = (file.name.includes('.') ? file.name.split('.').pop() : '').toLowerCase();
+          return ALLOWED_EXT[nameExt] || null;
+        };
         if (taskId) {
           const task = await env.DB.prepare('SELECT id FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, orgDocFileMatch[1]).first();
           if (!task) return json({ error: 'Tâche introuvable dans ce dossier' }, 404);
         }
-        const docId = genId();
-        const key = `org/${user.organization_id}/${orgDocFileMatch[1]}/${docId}.${ext}`;
-        await env.DOCS_KV.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
-        await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received, file_r2_key, file_name, file_type, file_size) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)').bind(docId, orgDocFileMatch[1], taskId, file.name, key, file.name, file.type, file.size).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'document_added', docId, JSON.stringify({ label: file.name, dossier_id: orgDocFileMatch[1], task_id: taskId, file: file.name, file_size: file.size })).run();
-        const doc = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ?').bind(docId).first();
-        return json(doc, 201);
+        const created: any[] = [];
+        for (const file of incoming) {
+          if (file.size > 10 * 1024 * 1024) return json({ error: `${file.name} — trop volumineux (10 Mo max)` }, 400);
+          const ext = pickExt(file);
+          if (!ext) return json({ error: `Type non autorisé : ${file.name}` }, 400);
+          const docId = genId();
+          const key = `org/${user.organization_id}/${orgDocFileMatch[1]}/${docId}.${ext}`;
+          await env.DOCS_KV.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: EXT_MIME[ext] } });
+          await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received, file_r2_key, file_name, file_type, file_size) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)').bind(docId, orgDocFileMatch[1], taskId, file.name, key, file.name, EXT_MIME[ext], file.size).run();
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, \'document\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'document_added', docId, JSON.stringify({ label: file.name, dossier_id: orgDocFileMatch[1], task_id: taskId, file: file.name, file_size: file.size })).run();
+          created.push(await env.DB.prepare('SELECT * FROM org_expected_documents WHERE id = ?').bind(docId).first());
+        }
+        return json(created, 201);
       }
 
       // --- ORG: UPDATE DOCUMENT ---

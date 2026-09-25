@@ -7,7 +7,7 @@ import {
   monthLabel, monthShort, currentMonth, groupTasksByMonth, filterTasksByMonth,
   taskStats, MonthFilter, MonthGroup,
 } from '../../lib/orgMonths';
-import { groupDocsByTask, docOpenKind, docIcon, formatFileSize } from '../../lib/orgDocs';
+import { groupDocsByTask, docOpenKind, docIcon, formatFileSize, DOC_ACCEPT } from '../../lib/orgDocs';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import { SkeletonDossier } from '../../components/Skeleton';
@@ -163,16 +163,16 @@ export default function OrgDossierPage() {
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files || []);
     const taskId = fileTargetTask.current;
     e.target.value = '';
-    if (!file || !dossier) return;
+    if (!files.length || !dossier) return;
     try {
-      await orgApi.uploadDocument(dossier.id, taskId, file);
-      load();
+      await orgApi.uploadDocument(dossier.id, taskId, files);
     } catch (err: any) {
       alert(err.message);
     }
+    load();
   };
 
   const openDoc = async (doc: OrgDocument) => {
@@ -334,7 +334,8 @@ export default function OrgDossierPage() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,image/gif"
+        multiple
+        accept={DOC_ACCEPT}
         className="hidden"
         onChange={handleFileChange}
       />
@@ -693,7 +694,7 @@ export default function OrgDossierPage() {
                         <button
                           onClick={(e) => { e.stopPropagation(); pickFile(task.id); }}
                           className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-all"
-                          title="PDF, JPEG, PNG, WEBP ou GIF — 10 Mo max"
+                          title="PDF, images, Word, Excel, CSV, TXT, ZIP — 10 Mo max par fichier — plusieurs fichiers possibles"
                         >
                           📤 {t('dossier.attach_file')}
                         </button>

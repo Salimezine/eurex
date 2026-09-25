@@ -161,9 +161,9 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ url }) }),
   addDocument: (dossierId: string, data: { task_id?: string | null; label: string; url?: string | null; received?: boolean }) =>
     req<OrgDocument>(`/org/dossiers/${dossierId}/documents`, { method: 'POST', body: JSON.stringify(data) }),
-  uploadDocument: async (dossierId: string, taskId: string | null, file: File): Promise<OrgDocument> => {
+  uploadDocument: async (dossierId: string, taskId: string | null, files: File[]): Promise<OrgDocument[]> => {
     const fd = new FormData();
-    fd.append('file', file);
+    for (const f of files) fd.append('file', f);
     if (taskId) fd.append('task_id', taskId);
     const headers: Record<string, string> = {};
     const token = getToken();
