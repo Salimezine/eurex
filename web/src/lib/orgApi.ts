@@ -81,6 +81,9 @@ export interface OrgDocument {
   received_at: string | null;
   received_note: string | null;
   file_r2_key: string | null;
+  file_name: string | null;
+  file_type: string | null;
+  file_size: number | null;
   url: string | null;
 }
 
@@ -158,6 +161,31 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ url }) }),
   addDocument: (dossierId: string, data: { task_id?: string | null; label: string; url?: string | null; received?: boolean }) =>
     req<OrgDocument>(`/org/dossiers/${dossierId}/documents`, { method: 'POST', body: JSON.stringify(data) }),
+  uploadDocument: async (dossierId: string, taskId: string | null, file: File): Promise<OrgDocument> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (taskId) fd.append('task_id', taskId);
+    const headers: Record<string, string> = {};
+    const token = getToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const r = await fetch(`${BASE}/org/dossiers/${dossierId}/documents/file`, { method: 'POST', headers, body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Erreur ${r.status}`);
+    }
+    return r.json();
+  },
+  fetchDocumentBlob: async (dossierId: string, docId: string): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    const token = getToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const r = await fetch(`${BASE}/org/dossiers/${dossierId}/documents/${docId}/file`, { headers });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Erreur ${r.status}`);
+    }
+    return r.blob();
+  },
   deleteDocument: (dossierId: string, docId: string) =>
     req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'DELETE' }),
 

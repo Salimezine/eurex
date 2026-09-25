@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
@@ -7,13 +7,13 @@ import {
   monthLabel, monthShort, currentMonth, groupTasksByMonth, filterTasksByMonth,
   taskStats, MonthFilter, MonthGroup,
 } from '../../lib/orgMonths';
-import { groupDocsByTask, countTaskDocs } from '../../lib/orgDocs';
+import { groupDocsByTask, docOpenKind, docIcon, formatFileSize } from '../../lib/orgDocs';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
 import { SkeletonDossier } from '../../components/Skeleton';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
-  Send, FileText, MessageSquare, ChevronDown, ChevronUp,
+  Send, MessageSquare, ChevronDown, ChevronUp,
   ExternalLink, Eye, Users, UserRound, CalendarDays,
 } from 'lucide-react';
 
@@ -58,6 +58,8 @@ export default function OrgDossierPage() {
   const [showAddDocFor, setShowAddDocFor] = useState<string | null>(null);
   const [newDocLabel, setNewDocLabel] = useState('');
   const [newDocUrl, setNewDocUrl] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileTargetTask = useRef<string | null>(null);
 
   const load = () => {
     if (!id) return;
@@ -152,6 +154,43 @@ export default function OrgDossierPage() {
       load();
     } catch (err: any) {
       alert(err.message);
+    }
+  };
+
+  const pickFile = (taskId: string) => {
+    fileTargetTask.current = taskId;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const taskId = fileTargetTask.current;
+    e.target.value = '';
+    if (!file || !dossier) return;
+    try {
+      await orgApi.uploadDocument(dossier.id, taskId, file);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const openDoc = async (doc: OrgDocument) => {
+    if (!dossier) return;
+    const kind = docOpenKind(doc);
+    if (kind === 'link' && doc.url) {
+      window.open(doc.url, '_blank', 'noopener');
+      return;
+    }
+    if (kind === 'file') {
+      try {
+        const blob = await orgApi.fetchDocumentBlob(dossier.id, doc.id);
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, '_blank', 'noopener');
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      } catch (err: any) {
+        alert(err.message);
+      }
     }
   };
 
@@ -292,6 +331,13 @@ export default function OrgDossierPage() {
 
   return (
     <div className="space-y-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,image/gif"
+        className="hidden"
+        onChange={handleFileChange}
+      />
       {/* Header */}
       <div className="flex items-center gap-3">
         <button onClick={() => navigate('/cabinet')} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
@@ -644,6 +690,13 @@ export default function OrgDossierPage() {
                         >
                           {showAddDocFor === task.id ? '✕' : `+ ${t('dossier.add_document')}`}
                         </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); pickFile(task.id); }}
+                          className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-all"
+                          title="PDF, JPEG, PNG, WEBP ou GIF — 10 Mo max"
+                        >
+                          📤 {t('dossier.attach_file')}
+                        </button>
                       </div>
 
                       {showAddDocFor === task.id && (
@@ -684,49 +737,54 @@ export default function OrgDossierPage() {
                       {taskDocs.length === 0 && showAddDocFor !== task.id && (
                         <p className="text-[11px] text-gray-400 italic py-1">{t('dossier.no_task_docs')}</p>
                       )}
-                      {taskDocs.map(doc => (
-                        <div key={doc.id} className="flex items-center gap-2 py-1.5 text-xs border-b border-gray-50 last:border-0">
-                          <span title={doc.received ? 'Reçu' : 'Attendu'}>
-                            {doc.received ? '✅' : '📎'}
-                          </span>
-                          <span className={`flex-1 min-w-0 truncate ${doc.received ? 'text-gray-400 line-through' : 'text-gray-700'}`} title={doc.label}>
-                            {doc.label}
-                          </span>
-                          {doc.url && (
-                            <a
-                              href={doc.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline font-medium whitespace-nowrap"
-                            >
-                              {t('dossier.open_link')} <ExternalLink size={10} />
-                            </a>
-                          )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); editDocUrl(doc); }}
-                            title={t('dossier.edit_link')}
-                            className="text-gray-400 hover:text-blue-600 transition-colors"
-                          >
-                            🔗
-                          </button>
-                          {!doc.received && (
+                      {taskDocs.map(doc => {
+                        const kind = docOpenKind(doc);
+                        return (
+                          <div key={doc.id} className="flex items-center gap-2 py-1.5 text-xs border-b border-gray-50 last:border-0">
+                            <span title={doc.received ? 'Reçu' : 'Attendu'}>
+                              {doc.received ? '✅' : docIcon(doc)}
+                            </span>
+                            <span className={`flex-1 min-w-0 truncate ${doc.received ? 'text-gray-400 line-through' : 'text-gray-700'}`} title={doc.label}>
+                              {doc.label}
+                              {doc.file_size != null && (
+                                <span className="text-gray-400 ml-1.5">({formatFileSize(doc.file_size)})</span>
+                              )}
+                            </span>
+                            {kind && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); openDoc(doc); }}
+                                title={kind === 'file' ? t('dossier.open_file') : doc.url || ''}
+                                className="inline-flex items-center gap-0.5 text-blue-600 hover:underline font-medium whitespace-nowrap"
+                              >
+                                {kind === 'file' ? t('dossier.open_file') : t('dossier.open_link')} <ExternalLink size={10} />
+                              </button>
+                            )}
                             <button
-                              onClick={(e) => { e.stopPropagation(); toggleDocument(doc.id, true); }}
-                              title={t('dossier.mark_received')}
-                              className="text-gray-400 hover:text-emerald-600 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); editDocUrl(doc); }}
+                              title={t('dossier.edit_link')}
+                              className="text-gray-400 hover:text-blue-600 transition-colors"
                             >
-                              ✓
+                              🔗
                             </button>
-                          )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); deleteDocument(doc.id); }}
-                            title={t('dossier.delete_doc')}
-                            className="text-gray-400 hover:text-red-600 transition-colors"
-                          >
-                            🗑
-                          </button>
-                        </div>
-                      ))}
+                            {!doc.received && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleDocument(doc.id, true); }}
+                                title={t('dossier.mark_received')}
+                                className="text-gray-400 hover:text-emerald-600 transition-colors"
+                              >
+                                ✓
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteDocument(doc.id); }}
+                              title={t('dossier.delete_doc')}
+                              className="text-gray-400 hover:text-red-600 transition-colors"
+                            >
+                              🗑
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -827,24 +885,28 @@ export default function OrgDossierPage() {
           {dossier.documents.length === 0 && (
             <p className="text-sm text-gray-400 text-center py-8">Aucun document attendu</p>
           )}
-          {dossier.documents.map(doc => (
+          {dossier.documents.map(doc => {
+            const kind = docOpenKind(doc);
+            return (
             <div key={doc.id} className={`bg-white border rounded-xl p-3 flex items-center gap-3 ${
               doc.received ? 'border-emerald-200 bg-emerald-50/30' : 'border-gray-200'
             }`}>
-              <FileText size={18} className={doc.received ? 'text-emerald-500' : 'text-gray-400'} />
+              <span className="text-lg leading-none">{docIcon(doc)}</span>
               <div className="flex-1 min-w-0">
                 <p className={`text-sm font-medium ${doc.received ? 'text-gray-500' : 'text-gray-800'}`}>
                   {doc.label}
+                  {doc.file_size != null && (
+                    <span className="text-gray-400 font-normal ml-1.5">({formatFileSize(doc.file_size)})</span>
+                  )}
                 </p>
-                {doc.url && (
-                  <a
-                    href={doc.url}
-                    target="_blank"
-                    rel="noreferrer"
+                {kind && (
+                  <button
+                    onClick={() => openDoc(doc)}
                     className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline mt-0.5"
+                    title={kind === 'file' ? t('dossier.open_file') : doc.url || ''}
                   >
-                    {t('dossier.open_link')} <ExternalLink size={10} />
-                  </a>
+                    {kind === 'file' ? t('dossier.open_file') : t('dossier.open_link')} <ExternalLink size={10} />
+                  </button>
                 )}
                 {doc.received_at && (
                   <p className="text-[11px] text-gray-400">
@@ -897,7 +959,8 @@ export default function OrgDossierPage() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

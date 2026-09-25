@@ -11,6 +11,12 @@
       "database_id": "6505a544-f2d2-4010-9f7b-2da31edd9e93"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "DOCS_BUCKET",
+      "bucket_name": "eurex-docs"
+    }
+  ],
   "ai": {
     "binding": "AI"
   },

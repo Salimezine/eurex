@@ -56,6 +56,8 @@ const translations: Record<string, Record<Lang, string>> = {
   'dossier.delete_doc': { fr: 'Supprimer le document', ar: 'حذف الوثيقة' },
   'dossier.no_task_docs': { fr: 'Aucun document', ar: 'لا وثائق' },
   'dossier.save': { fr: 'Enregistrer', ar: 'حفظ' },
+  'dossier.attach_file': { fr: 'Joindre PDF/Image', ar: 'إرفاق PDF/صورة' },
+  'dossier.open_file': { fr: 'Ouvrir le fichier', ar: 'فتح الملف' },
   'dossier.year': { fr: 'Année', ar: 'السنة' },
   'dossier.filter_all': { fr: 'Tous', ar: 'الكل' },
   'dossier.filter_annual': { fr: 'Annuel', ar: 'سنوي' },
