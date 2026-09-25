@@ -179,12 +179,17 @@ export const orgApi = {
     const headers: Record<string, string> = {};
     const token = getToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const r = await fetch(`${BASE}/org/dossiers/${dossierId}/documents/${docId}/file`, { headers });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.error || `Erreur ${r.status}`);
+    // KV : propagation possible après écriture → 2 nouvelles tentatives sur 404
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = await fetch(`${BASE}/org/dossiers/${dossierId}/documents/${docId}/file`, { headers });
+      if (r.ok) return r.blob();
+      if (r.status !== 404 || attempt === 2) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || `Erreur ${r.status}`);
+      }
+      await new Promise(res => setTimeout(res, 1200 * (attempt + 1)));
     }
-    return r.blob();
+    throw new Error('Fichier introuvable');
   },
   deleteDocument: (dossierId: string, docId: string) =>
     req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'DELETE' }),

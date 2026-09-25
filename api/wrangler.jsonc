@@ -11,10 +11,10 @@
       "database_id": "6505a544-f2d2-4010-9f7b-2da31edd9e93"
     }
   ],
-  "r2_buckets": [
+  "kv_namespaces": [
     {
-      "binding": "DOCS_BUCKET",
-      "bucket_name": "eurex-docs"
+      "binding": "DOCS_KV",
+      "id": "9becacff0b9a4a07ab859e91e4208d92"
     }
   ],
   "ai": {
