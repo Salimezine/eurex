@@ -2129,6 +2129,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           'Content-Type': doc.file_type || 'application/octet-stream',
           'Content-Disposition': `inline; filename="${fileName}"`,
           'Cache-Control': 'private, max-age=3600',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Expose-Headers': 'Content-Disposition, Content-Type',
         });
         return new Response(buf, { headers });
       }
