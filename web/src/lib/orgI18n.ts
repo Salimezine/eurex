@@ -91,7 +91,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.due_date': { fr: 'Date butoir', ar: 'تاريخ الاستحقاق' },
   'alerts.lead_days': { fr: 'Prévenir', ar: 'تنبيه قبل' },
   'alerts.days_before': { fr: 'jours avant', ar: 'أيام' },
-  'alerts.note': { fr: 'Note (optionnel)', ar: 'ملاحظة (اختياري)' },
+  'alerts.note': { fr: 'Ex : versement e-jibaya, pièces à joindre, responsable, relancer avant le 20…', ar: 'مثال: الدفع عبر e-jibaya، وثائق مرفقة، المسؤول، التذكير قبل 20…' },
   'alerts.save': { fr: 'Enregistrer', ar: 'حفظ' },
   'alerts.cancel': { fr: 'Annuler', ar: 'إلغاء' },
   'alerts.overdue': { fr: 'En retard', ar: 'متأخر' },
