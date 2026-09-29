@@ -165,7 +165,7 @@ export default function OrgComptableDetail() {
             {time_by_dossier.length === 0 && <p className="text-xs text-gray-400">Aucun temps enregistré</p>}
             {time_by_dossier.map((td: any, i: number) => {
               const sumDossiers = time_by_dossier.reduce((s: number, x: any) => s + (x.seconds || 0), 0);
-              const pct = sumDossiers > 0 ? Math.round(td.seconds / sumDossiers * 100) : 0;
+              const pct = sumDossiers > 0 ? Math.min(100, Math.max(0, Math.round(td.seconds / sumDossiers * 100))) : 0;
               return (
                 <div key={i} className="space-y-1">
                   <div className="flex justify-between text-xs">
