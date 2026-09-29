@@ -1940,7 +1940,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         for (const at of activeTimers as any[]) {
           const elapsed = Math.floor((Date.now() - new Date(at.started_at + 'Z').getTime()) / 1000);
           await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, at.id).run();
-          await env.DB.prepare("UPDATE org_tasks SET timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(at.task_id).run();
+          await env.DB.prepare("UPDATE org_tasks SET total_time_seconds = COALESCE(total_time_seconds, 0) + ?, timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(elapsed, at.task_id).run();
         }
         // Create time entry
         const entryId = genId();
