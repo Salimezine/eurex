@@ -395,9 +395,10 @@ export default function OrgDossierPage() {
               <select
                 value={dossier.person_type || ''}
                 onChange={async e => {
+                  const personType = e.target.value || null;
                   try {
-                    await orgApi.updateClient(dossier.client_id, { person_type: e.target.value || null });
-                    setDossier({ ...dossier, person_type: e.target.value || null });
+                    await orgApi.updateClient(dossier.client_id, { person_type: personType });
+                    setDossier({ ...dossier, person_type: personType });
                   } catch (err: any) { alert(err.message); }
                 }}
                 title={t('alerts.client_type')}
