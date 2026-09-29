@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
+import PwdField from './components/PwdField';
 
 const CODE_HASH = 'ca560b598ac2c3e4c8147ef1285731434381873dbc3d7c1e6f3eff64de153b20';
 // Clé publique Cloudflare Turnstile
@@ -117,10 +118,9 @@ export default function AccessGate({ onAuthorized }: AccessGateProps) {
         </div>
 
         <label className="block text-xs font-semibold text-gray-700 mb-1">Code d'accès</label>
-        <input
-          type="password"
+        <PwdField
           value={code}
-          onChange={e => setCode(e.target.value)}
+          onChange={setCode}
           onKeyDown={e => { if (e.key === 'Enter') submit(); }}
           placeholder="••••••••"
           autoFocus

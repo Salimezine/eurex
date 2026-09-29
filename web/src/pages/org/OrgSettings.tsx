@@ -4,6 +4,7 @@ import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import { isValidEmail, isValidPassword } from '../../lib/orgValidate';
 import { SkeletonSection } from '../../components/Skeleton';
+import PwdField from '../../components/PwdField';
 import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw, Pencil, Check, X } from 'lucide-react';
 
 type Tab = 'templates' | 'comptables';
@@ -278,10 +279,9 @@ export default function OrgSettings() {
                 placeholder="Email"
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
-              <input
-                type="password"
+              <PwdField
                 value={newCompPassword}
-                onChange={e => setNewCompPassword(e.target.value)}
+                onChange={setNewCompPassword}
                 placeholder="Mot de passe (12+ car.)"
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
@@ -313,11 +313,10 @@ export default function OrgSettings() {
                     placeholder="Email"
                     className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
                   />
-                  <input
-                    type="password"
+                  <PwdField
                     value={editPwd}
-                    onChange={e => setEditPwd(e.target.value)}
-                    placeholder="Nouveau mdp (vide = inchangé)"
+                    onChange={setEditPwd}
+                    placeholder="Nouveau mdp (vide = inchangǸ)"
                     className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
                   />
                 </div>

@@ -41,6 +41,7 @@ export default function OrgDossierPage() {
   const { state } = useOrgAuth();
   const isExpert = state.user?.role === 'expert';
   const [dossier, setDossier] = useState<OrgDossier | null>(null);
+  const canEditType = isExpert || (state.user?.role === 'comptable' && !!dossier && dossier.client_comptable_id === state.user.id);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('checklist');
   const [timeline, setTimeline] = useState<any[]>([]);
@@ -368,7 +369,7 @@ export default function OrgDossierPage() {
             <p className="text-sm text-gray-500">
               Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
             </p>
-            {isExpert ? (
+            {canEditType ? (
               <select
                 value={dossier.person_type || ''}
                 onChange={async e => {

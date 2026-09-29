@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { getLang, onLangChange, t, Lang } from '../../lib/orgI18n';
 import { SkeletonAuth } from '../../components/Skeleton';
+import PwdField from '../../components/PwdField';
 import OrgLogin from './OrgLogin';
 import OrgDashboardComptable from './OrgDashboardComptable';
 import OrgDashboardExpert from './OrgDashboardExpert';
@@ -76,13 +77,13 @@ function ChangePasswordScreen() {
         <p className="text-sm text-gray-500 mb-6">Vous devez changer votre mot de passe par défaut.</p>
         <form onSubmit={submit}>
           <label className="block text-xs font-semibold text-gray-700 mb-1">Mot de passe actuel</label>
-          <input type="password" value={current} onChange={e => setCurrent(e.target.value)} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
+          <PwdField value={current} onChange={setCurrent} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
 
           <label className="block text-xs font-semibold text-gray-700 mb-1">{t('auth.new_password')}</label>
-          <input type="password" value={newPwd} onChange={e => setNewPwd(e.target.value)} placeholder="12 caractères minimum" className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
+          <PwdField value={newPwd} onChange={setNewPwd} placeholder="12 caractères minimum" className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
 
           <label className="block text-xs font-semibold text-gray-700 mb-1">Confirmer</label>
-          <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
+          <PwdField value={confirm} onChange={setConfirm} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:ring-2 focus:ring-purple-500 outline-none" />
 
           {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 

@@ -37,8 +37,9 @@ export interface OrgDossier {
   client_id: string;
   client_name: string;
   matricule_fiscal: string | null;
-  person_type?: string | null;
-  exercice: number;
+    person_type?: string | null;
+    client_comptable_id?: string | null;
+    exercice: number;
   status: string;
   cached_progress: number;
   opened_at: string;

@@ -3,6 +3,7 @@ import { useOrgAuth } from '../lib/orgAuth';
 import { orgApi } from '../lib/orgApi';
 import { t } from '../lib/orgI18n';
 import { isValidEmail, isValidPassword } from '../lib/orgValidate';
+import PwdField from './PwdField';
 
 export default function OrgAccountButton() {
   const { state, changePassword, refreshMe } = useOrgAuth();
@@ -110,24 +111,21 @@ export default function OrgAccountButton() {
             {/* Mot de passe */}
             <div className="space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{t('auth.change_password')}</p>
-              <input
-                type="password"
+              <PwdField
                 value={cur}
-                onChange={e => setCur(e.target.value)}
+                onChange={setCur}
                 placeholder={t('account.current_password')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
-              <input
-                type="password"
+              <PwdField
                 value={pwd}
-                onChange={e => setPwd(e.target.value)}
+                onChange={setPwd}
                 placeholder={t('account.new_password_hint')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
-              <input
-                type="password"
+              <PwdField
                 value={pwd2}
-                onChange={e => setPwd2(e.target.value)}
+                onChange={setPwd2}
                 placeholder={t('account.confirm_password')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />

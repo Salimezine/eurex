@@ -1803,11 +1803,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgClientMatch = path.match(/^\/api\/org\/clients\/([^/]+)$/);
       if (orgClientMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || (user.role !== 'expert' && user.role !== 'comptable')) return json({ error: 'Non autorisé' }, 403);
         const { person_type } = await request.json() as any;
         if (person_type !== null && person_type !== undefined && !['morale', 'physique'].includes(person_type)) return json({ error: 'Type invalide' }, 400);
         const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientMatch[1], user.organization_id).first() as any;
         if (!client) return json({ error: 'Client non trouvé' }, 404);
+        if (user.role === 'comptable' && client.assigned_comptable_id !== user.id) return json({ error: 'Réservé au comptable assigné' }, 403);
         await env.DB.prepare('UPDATE org_clients SET person_type = ? WHERE id = ?').bind(person_type || null, orgClientMatch[1]).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_person_type', 'client', orgClientMatch[1], JSON.stringify({ old: client.person_type || null, new: person_type || null })).run();
         return json({ ok: true, person_type: person_type || null });
@@ -1881,7 +1882,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
+        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();

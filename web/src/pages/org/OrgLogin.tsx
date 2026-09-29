@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import { LogIn, RefreshCw, Building2 } from 'lucide-react';
+import PwdField from '../../components/PwdField';
 
 export default function OrgLogin() {
   const { login } = useOrgAuth();
@@ -47,10 +48,9 @@ export default function OrgLogin() {
           />
 
           <label className="block text-xs font-semibold text-gray-700 mb-1">{t('auth.password')}</label>
-          <input
-            type="password"
+          <PwdField
             value={password}
-            onChange={e => setPassword(e.target.value)}
+            onChange={setPassword}
             placeholder="••••••••••••"
             className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-purple-500"
           />
