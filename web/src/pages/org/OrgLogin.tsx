@@ -40,6 +40,8 @@ export default function OrgLogin() {
           <label className="block text-xs font-semibold text-gray-700 mb-1">{t('auth.email')}</label>
           <input
             type="email"
+            name="email"
+            autoComplete="username"
             value={email}
             onChange={e => setEmail(e.target.value)}
             placeholder="expert@eurex.tn"
@@ -51,6 +53,8 @@ export default function OrgLogin() {
           <PwdField
             value={password}
             onChange={setPassword}
+            name="password"
+            autoComplete="current-password"
             placeholder="••••••••••••"
             className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-purple-500"
           />

@@ -8,10 +8,11 @@ interface PwdFieldProps {
   placeholder?: string;
   autoFocus?: boolean;
   autoComplete?: string;
+  name?: string;
   onKeyDown?: (e: React.KeyboardEvent) => void;
 }
 
-export default function PwdField({ value, onChange, className = '', placeholder, autoFocus, autoComplete, onKeyDown }: PwdFieldProps) {
+export default function PwdField({ value, onChange, className = '', placeholder, autoFocus, autoComplete, name, onKeyDown }: PwdFieldProps) {
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
@@ -22,6 +23,7 @@ export default function PwdField({ value, onChange, className = '', placeholder,
         placeholder={placeholder}
         autoFocus={autoFocus}
         autoComplete={autoComplete}
+        name={name}
         onKeyDown={onKeyDown}
         className={`${className} pr-10`}
       />

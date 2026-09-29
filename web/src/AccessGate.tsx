@@ -117,29 +117,32 @@ export default function AccessGate({ onAuthorized }: AccessGateProps) {
           </div>
         </div>
 
-        <label className="block text-xs font-semibold text-gray-700 mb-1">Code d'accès</label>
-        <PwdField
-          value={code}
-          onChange={setCode}
-          onKeyDown={e => { if (e.key === 'Enter') submit(); }}
-          placeholder="••••••••"
-          autoFocus
-          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+        <form onSubmit={e => { e.preventDefault(); submit(); }}>
+          <label className="block text-xs font-semibold text-gray-700 mb-1">Code d'accès</label>
+          <PwdField
+            value={code}
+            onChange={setCode}
+            name="access-code"
+            autoComplete="current-password"
+            placeholder="••••••••"
+            autoFocus
+            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
 
-        {TURNSTILE_SITE_KEY && (
-          <div id="cf-turnstile-widget" className="mb-4 flex justify-center" />
-        )}
+          {TURNSTILE_SITE_KEY && (
+            <div id="cf-turnstile-widget" className="mb-4 flex justify-center" />
+          )}
 
-        {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+          {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
-        <button
-          onClick={submit}
-          disabled={loading}
-          className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5 text-sm flex items-center justify-center gap-2"
-        >
-          {loading ? <RefreshCw size={15} className="animate-spin" /> : 'Entrer'}
-        </button>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5 text-sm flex items-center justify-center gap-2"
+          >
+            {loading ? <RefreshCw size={15} className="animate-spin" /> : 'Entrer'}
+          </button>
+        </form>
 
         <p className="text-[11px] text-gray-400 mt-5 text-center">Created by EUREX</p>
       </div>
