@@ -1848,10 +1848,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessClient(user, orgClientDossiersMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const { exercice } = await request.json() as any;
         if (!exercice) return json({ error: 'Exercice requis' }, 400);
-        const prev = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC LIMIT 1').bind(orgClientDossiersMatch[1]).first() as any;
-        if (prev && prev.status !== 'cloture') return json({ error: 'Le dossier précédent doit être clôturé' }, 400);
         const existing = await env.DB.prepare('SELECT id FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(orgClientDossiersMatch[1], exercice).first();
         if (existing) return json({ error: 'Un dossier existe déjà pour cet exercice' }, 409);
+        const prev = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC LIMIT 1').bind(orgClientDossiersMatch[1]).first() as any;
+        if (prev && prev.status !== 'cloture') return json({ error: 'Le dossier précédent doit être clôturé' }, 400);
         const dossierId = genId();
         await env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(dossierId, orgClientDossiersMatch[1], exercice).run();
         // Apply template — mensuelle ×12 mois, trimestrielle ×4 (Janv/Avr/Juil/Oct), annuelle ×1
@@ -1934,7 +1934,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         // Check no active timer on this task
-        if (task.timer_started_at) return json({ error: 'Timer déjà en cours', active: true, started_at: task.timer_started_at, user_id: task.timer_user_id });
+        if (task.timer_started_at) return json({ error: 'Timer déjà en cours', active: true, started_at: task.timer_started_at, user_id: task.timer_user_id }, 400);
         // Stop any other active timer for this user
         const { results: activeTimers } = await env.DB.prepare('SELECT id, task_id, started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(user.id).all();
         for (const at of activeTimers as any[]) {
@@ -2293,6 +2293,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           else if (r.action === 'note_added') { icon = '💬'; label = 'Note interne'; }
           else if (r.action === 'timer_started') { icon = '▶️'; label = 'Chrono démarré'; }
           else if (r.action === 'timer_stopped') { icon = '⏹️'; label = `Chrono arrêté — ${details ? formatDur(details.duration_seconds) : ''}`; }
+          else if (r.action === 'time_manual') { icon = '⏱️'; label = `Temps ajouté — ${details ? formatDur(details.duration_seconds) : ''}`; }
+          else if (r.action === 'task_added') { icon = '➕'; label = `Tâche ajoutée — ${details?.label || ''}`; }
+          else if (r.action === 'task_renamed') { icon = '✏️'; label = `Tâche renommée — ${details?.new_label || ''}`; }
+          else if (r.action === 'task_deleted') { icon = '🗑️'; label = `Tâche supprimée — ${details?.label || ''}`; }
+          else if (r.action === 'task_due_changed') { icon = '📅'; label = `Date butoir modifiée — ${details?.new || 'aucune'}`; }
           else if (r.action === 'client_reassigned') { icon = '👤'; label = 'Client réassigné'; }
           else if (r.action === 'task_assigned') { icon = '👤'; label = 'Tâche réassignée'; }
           else if (r.action === 'template_updated') { icon = '📝'; label = 'Modèle de tâche modifié'; }
