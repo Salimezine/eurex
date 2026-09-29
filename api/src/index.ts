@@ -1976,6 +1976,29 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true, duration_seconds: elapsed, total_seconds: newTotal });
       }
 
+      // --- ORG: ADD TIME MANUELLEMENT ---
+      const orgAddTimeMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/time$/);
+      if (orgAddTimeMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgAddTimeMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const [dossierId, taskId] = [orgAddTimeMatch[1], orgAddTimeMatch[2]];
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        if (task.timer_started_at) return json({ error: 'Arrêtez le chrono d\'abord' }, 400);
+        const { seconds } = await request.json() as any;
+        const secs = Math.floor(Number(seconds));
+        if (!Number.isFinite(secs) || secs <= 0) return json({ error: 'Durée invalide' }, 400);
+        if (secs > 86400) return json({ error: 'Durée maximale : 24 h par saisie' }, 400);
+        const newTotal = (task.total_time_seconds || 0) + secs;
+        await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ? WHERE id = ?').bind(newTotal, taskId).run();
+        // Entrée de temps cohérente : time_by_user / time_by_dossier comptent aussi la saisie manuelle
+        const entryId = genId();
+        await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at, stopped_at, duration_seconds) VALUES (?, ?, ?, ?, datetime('now', ?), datetime('now'), ?)").bind(entryId, dossierId, taskId, user.id, `-${secs} seconds`, secs).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'time_manual', 'task', taskId, JSON.stringify({ dossier_id: dossierId, duration_seconds: secs, total_seconds: newTotal })).run();
+        return json({ ok: true, duration_seconds: secs, total_seconds: newTotal });
+      }
+
       // --- ORG: GET TIMERS FOR DOSSIER ---
       const orgTimerListMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/timers$/);
       if (orgTimerListMatch && method === 'GET') {

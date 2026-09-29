@@ -251,6 +251,28 @@ export default function OrgDossierPage() {
     }
   };
 
+  const [timeTaskId, setTimeTaskId] = useState<string | null>(null);
+  const [timeH, setTimeH] = useState('');
+  const [timeM, setTimeM] = useState('');
+
+  const addManualTime = async (taskId: string) => {
+    if (!dossier) return;
+    const h = parseInt(timeH || '0', 10) || 0;
+    const m = parseInt(timeM || '0', 10) || 0;
+    const seconds = h * 3600 + m * 60;
+    if (seconds <= 0) { alert('Indiquez une durée : heures et/ou minutes'); return; }
+    if (seconds > 86400) { alert('Durée maximale : 24 h par saisie'); return; }
+    try {
+      await orgApi.addTaskTime(dossier.id, taskId, seconds);
+      setTimeTaskId(null);
+      setTimeH('');
+      setTimeM('');
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const formatTime = (seconds: number) => {
     if (!seconds || seconds <= 0) return '00:00:00';
     const h = Math.floor(seconds / 3600);
@@ -672,15 +694,61 @@ export default function OrgDossierPage() {
                             )}
                           </span>
                           <button
+                            onClick={(e) => { e.stopPropagation(); setTimeTaskId(timeTaskId === task.id ? null : task.id); setTimeH(''); setTimeM(''); }}
+                            disabled={task.status === 'fait'}
+                            title="Ajouter du temps passé manuellement"
+                            className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                          >
+                            ➕ Temps
+                          </button>
+                          <button
                             onClick={() => startTimer(task.id)}
                             disabled={task.status === 'fait'}
-                            className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                           >
                             ▶ Commencer
                           </button>
                         </>
                       )}
                     </div>
+
+                    {timeTaskId === task.id && (
+                      <div
+                        className="flex items-center gap-2 mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg"
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <span className="text-xs font-medium text-purple-700">Temps passé :</span>
+                        <input
+                          value={timeH}
+                          onChange={e => setTimeH(e.target.value.replace(/[^0-9]/g, ''))}
+                          placeholder="hh"
+                          maxLength={2}
+                          autoFocus
+                          className="w-12 text-center border border-purple-200 rounded-lg px-2 py-1 text-sm font-mono focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+                        />
+                        <span className="text-xs text-purple-600 font-semibold">h</span>
+                        <input
+                          value={timeM}
+                          onChange={e => setTimeM(e.target.value.replace(/[^0-9]/g, ''))}
+                          placeholder="mm"
+                          maxLength={2}
+                          className="w-12 text-center border border-purple-200 rounded-lg px-2 py-1 text-sm font-mono focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+                        />
+                        <span className="text-xs text-purple-600 font-semibold">m</span>
+                        <button
+                          onClick={() => addManualTime(task.id)}
+                          className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-700 transition-all"
+                        >
+                          ✓ Ajouter
+                        </button>
+                        <button
+                          onClick={() => setTimeTaskId(null)}
+                          className="px-2 py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:bg-purple-100 transition-all"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap gap-2">
                       {/* Edit label button */}

@@ -249,8 +249,10 @@ export const orgApi = {
   // Timer
   startTimer: (dossierId: string, taskId: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/start`, { method: 'POST' }),
-  stopTimer: (dossierId: string, taskId: string) =>
-    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/stop`, { method: 'POST' }),
+    stopTimer: (dossierId: string, taskId: string) =>
+      req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/stop`, { method: 'POST' }),
+    addTaskTime: (dossierId: string, taskId: string, seconds: number) =>
+      req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/time`, { method: 'POST', body: JSON.stringify({ seconds }) }),
   getTimers: (dossierId: string) =>
     req<{ entries: any[]; tasks: any[] }>(`/org/dossiers/${dossierId}/timers`),
 
