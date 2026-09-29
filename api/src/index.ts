@@ -2628,12 +2628,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         // Time entries breakdown
         const { results: timeEntries } = await env.DB.prepare('SELECT te.*, t.label as task_label, d.exercice, c.name as client_name FROM org_time_entries te JOIN org_tasks t ON te.task_id = t.id JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE te.user_id = ? ORDER BY te.started_at DESC').bind(compId).all();
         const totalTimeEntries = timeEntries.reduce((sum: number, te: any) => sum + (te.duration_seconds || 0), 0);
-        // Time by dossier
+        // Time by dossier : temps TOTAL cumulé sur chaque dossier (toutes personnes — chrono, auto-stop, saisie manuelle)
         const timeByDossier: Record<string, { client_name: string; exercice: number; seconds: number }> = {};
-        for (const te of timeEntries as any[]) {
-          const key = te.dossier_id;
-          if (!timeByDossier[key]) timeByDossier[key] = { client_name: te.client_name, exercice: te.exercice, seconds: 0 };
-          timeByDossier[key].seconds += te.duration_seconds || 0;
+        const { results: taskTimes } = await env.DB.prepare('SELECT t.dossier_id, COALESCE(SUM(t.total_time_seconds), 0) as seconds, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? GROUP BY t.dossier_id HAVING COALESCE(SUM(t.total_time_seconds), 0) > 0').bind(compId, user.organization_id).all();
+        for (const tt of taskTimes as any[]) {
+          timeByDossier[tt.dossier_id] = { client_name: tt.client_name, exercice: tt.exercice, seconds: tt.seconds };
         }
         // Audit log (last 50 actions)
         const { results: auditLog } = await env.DB.prepare('SELECT * FROM org_audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(compId).all();

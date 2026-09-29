@@ -164,7 +164,8 @@ export default function OrgComptableDetail() {
             <h3 className="text-sm font-semibold text-gray-700">{t('comp.time_by_dossier')}</h3>
             {time_by_dossier.length === 0 && <p className="text-xs text-gray-400">Aucun temps enregistré</p>}
             {time_by_dossier.map((td: any, i: number) => {
-              const pct = total_time_seconds > 0 ? Math.round(td.seconds / total_time_seconds * 100) : 0;
+              const sumDossiers = time_by_dossier.reduce((s: number, x: any) => s + (x.seconds || 0), 0);
+              const pct = sumDossiers > 0 ? Math.round(td.seconds / sumDossiers * 100) : 0;
               return (
                 <div key={i} className="space-y-1">
                   <div className="flex justify-between text-xs">
