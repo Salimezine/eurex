@@ -43,3 +43,7 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+
+# Modeles OCR locaux
+tools/pdf-factures/fra.traineddata
+*.traineddata

@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Upload, Plus, Trash2, Download, ArrowLeft, FileText, Zap, Loader2, AlertTriangle, FileSpreadsheet } from 'lucide-react';
+import { Upload, Plus, Trash2, Download, ArrowLeft, FileText, Zap, Loader2, AlertTriangle, FileSpreadsheet, Scissors } from 'lucide-react';
 import { api } from '../lib/api';
 import { extractTextFromPDF, extractTextItemsFromPDF } from '../lib/pdf';
 import { parseDMIItems, validateFISC } from '../lib/fisc';
+import SplitPdfTool from '../components/SplitPdfTool';
 
 let XLSXModule: typeof import('xlsx') | null = null;
 async function loadXLSX() {
@@ -241,6 +242,7 @@ export default function DossierPage() {
   const [aiReport, setAiReport] = useState<any>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [splitOpen, setSplitOpen] = useState(false);
 
   const [fDate, setFDate] = useState(new Date().toISOString().split('T')[0]);
   const [fNum, setFNum] = useState('');
@@ -491,7 +493,20 @@ export default function DossierPage() {
             {ecrituresVTC.length > 0 && <button onClick={() => { setJournal('VT C'); exportXLSX(); }} className="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-teal-700 flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" /> XLSX VT C</button>}
             {ecrituresFISC.length > 0 && <button onClick={() => { setJournal('FISC'); exportXLSX(); }} className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" /> XLSX FISC</button>}
           </div>
+          <div className="bg-white rounded-xl border p-4 flex items-center justify-between gap-3 text-left">
+            <div className="flex items-center gap-3">
+              <span className="bg-indigo-100 text-indigo-700 rounded-lg p-2"><Scissors size={18} /></span>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">Scinder un PDF</h3>
+                <p className="text-xs text-gray-500">Un PDF multi-pages &rarr; une facture par page, nommee fournisseur_date.pdf (OCR)</p>
+              </div>
+            </div>
+            <button onClick={() => setSplitOpen(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg shrink-0">
+              Choisir un PDF
+            </button>
+          </div>
         </div>
+        {splitOpen && <SplitPdfTool onClose={() => setSplitOpen(false)} />}
       </div>
     );
   }
