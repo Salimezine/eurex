@@ -125,7 +125,7 @@ export default function BaudSocietes() {
                 className="flex items-center justify-between py-2 hover:bg-gray-50 px-2 rounded">
                 <div className="flex items-center gap-2">
                   <FolderOpen size={16} className="text-purple-500" />
-                  <span className="text-sm font-medium">{d.fichier_navette_nom || `Dossier ${String(d.mois).padStart(2, '0')}/${d.annee}`}</span>
+                    <span className="text-sm font-medium">{d.nom || d.fichier_navette_nom || `Dossier ${String(d.mois).padStart(2, '0')}/${d.annee}`}</span>
                   <span className={`px-2 py-0.5 rounded text-xs ${d.statut === 'valide' ? 'bg-green-100 text-green-700' : d.statut === 'controle' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
                     {d.statut}
                   </span>

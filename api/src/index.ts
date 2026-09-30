@@ -169,7 +169,7 @@ export default {
       // --- DASHBOARD ---
       if (path === '/api/dashboard' && method === 'GET') {
         const recent = await env.DB.prepare('SELECT d.*, s.raison_sociale FROM dossiers d LEFT JOIN societes s ON d.societe_id = s.id ORDER BY d.created_at DESC LIMIT 10').all();
-        const animal = await env.DB.prepare('SELECT id FROM dossiers WHERE nom = ?').bind('ANIMAL').first() as any;
+        const animal = await env.DB.prepare('SELECT id FROM dossiers WHERE id = ?').bind('dossier_animal').first() as any;
         // BAUD dossiers
         const baudSocs = await env.DB.prepare('SELECT * FROM societes_paie ORDER BY nom').all();
         const baudDossiers: any[] = [];
@@ -232,6 +232,14 @@ export default {
       if (dossierGetMatch && method === 'DELETE') {
         await env.DB.prepare('DELETE FROM dossiers WHERE id = ?').bind(dossierGetMatch[1]).run();
         return json({ ok: true });
+      }
+      if (dossierGetMatch && method === 'PATCH') {
+        const b = await request.json() as any;
+        const nom = String(b.nom || '').trim();
+        if (!nom) return json({ error: 'Nom vide' }, 400);
+        const r = await env.DB.prepare('UPDATE dossiers SET nom = ? WHERE id = ?').bind(nom, dossierGetMatch[1]).run();
+        if (!r.meta.changes) return json({ error: 'Non trouve' }, 404);
+        return json({ ok: true, nom });
       }
 
       // --- PIECES ---
@@ -783,6 +791,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"name":"detail","status":"
         await env.DB.prepare('DELETE FROM dossiers_paie WHERE id = ?').bind(did).run();
         return json({ ok: true });
       }
+      if (baudDossierGetMatch && method === 'PATCH') {
+        const b = await request.json() as any;
+        const nom = String(b.nom || '').trim();
+        if (!nom) return json({ error: 'Nom vide' }, 400);
+        const r = await env.DB.prepare('UPDATE dossiers_paie SET nom = ? WHERE id = ?').bind(nom, baudDossierGetMatch[1]).run();
+        if (!r.meta.changes) return json({ error: 'Non trouve' }, 404);
+        return json({ ok: true, nom });
+      }
 
       // --- BAUD: UPLOAD FICHE NAVETTE (auto-extract) ---
       const baudUploadMatch = path.match(/^\/api\/baud\/dossiers\/([^/]+)\/upload$/);
@@ -1248,6 +1264,14 @@ Reponds en JSON:
         await env.DB.prepare('DELETE FROM ecritures_scan WHERE dossier_id = ?').bind(scanDossierGetMatch[1]).run();
         await env.DB.prepare('DELETE FROM dossiers_scan WHERE id = ?').bind(scanDossierGetMatch[1]).run();
         return json({ ok: true });
+      }
+      if (scanDossierGetMatch && method === 'PATCH') {
+        const b = await request.json() as any;
+        const nom = String(b.nom || '').trim();
+        if (!nom) return json({ error: 'Nom vide' }, 400);
+        const r = await env.DB.prepare('UPDATE dossiers_scan SET nom = ? WHERE id = ?').bind(nom, scanDossierGetMatch[1]).run();
+        if (!r.meta.changes) return json({ error: 'Non trouve' }, 404);
+        return json({ ok: true, nom });
       }
 
       // --- SCANFLASH: FACTURES ---
