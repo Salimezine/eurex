@@ -253,3 +253,18 @@ export async function splitPdfFile(file: File, onProgress: (msg: string) => void
   onProgress('');
   return results;
 }
+
+// Recalcule les noms de fichiers apres edition manuelle fournisseur/date.
+export function rebuildSplitNames(results: SplitResult[]): SplitResult[] {
+  const used = new Set<string>();
+  return results.map(r => {
+    const supplier = r.supplier && r.supplier !== '(introuvable)' ? r.supplier : '';
+    const date = r.date && r.date !== '(pas de date)' ? r.date : '';
+    const base = `${String(r.page).padStart(3, '0')}_${slug(supplier) || 'fournisseur-inconnu'}_${date || 'sans-date'}`;
+    let name = base + '.pdf';
+    let n = 2;
+    while (used.has(name.toLowerCase())) name = `${base}-${n++}.pdf`;
+    used.add(name.toLowerCase());
+    return { ...r, name };
+  });
+}

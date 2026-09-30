@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
-import { Scissors, Download, FileArchive, Loader2, X, FileText, AlertTriangle } from 'lucide-react';
-import { splitPdfFile, type SplitResult } from '../lib/splitFactures';
+import { Scissors, Download, FileArchive, Loader2, X, FileText, AlertTriangle, Eye } from 'lucide-react';
+import { splitPdfFile, rebuildSplitNames, type SplitResult } from '../lib/splitFactures';
+import PdfViewer from './PdfViewer';
 
 interface Props { onClose: () => void; }
 
@@ -9,6 +10,7 @@ export default function SplitPdfTool({ onClose }: Props) {
   const [progress, setProgress] = useState('');
   const [results, setResults] = useState<SplitResult[]>([]);
   const [error, setError] = useState('');
+  const [preview, setPreview] = useState<SplitResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const run = async (file: File) => {
@@ -23,6 +25,10 @@ export default function SplitPdfTool({ onClose }: Props) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const updateResult = (page: number, patch: Partial<SplitResult>) => {
+    setResults(prev => rebuildSplitNames(prev.map(r => (r.page === page ? { ...r, ...patch } : r))));
   };
 
   const downloadOne = (r: SplitResult) => {
@@ -46,6 +52,7 @@ export default function SplitPdfTool({ onClose }: Props) {
   };
 
   return (
+    <>
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => { if (!busy) onClose(); }}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b">
@@ -100,11 +107,29 @@ export default function SplitPdfTool({ onClose }: Props) {
                 {results.map(r => (
                   <div key={r.page} className="flex items-center gap-3 px-3 py-2 text-sm">
                     <span className="text-xs text-gray-400 w-6 shrink-0">{String(r.page).padStart(2, '0')}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-gray-800 truncate font-medium">{r.supplier}</p>
-                      <p className="text-xs text-gray-400 truncate">{r.date}</p>
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <input
+                        value={r.supplier === '(introuvable)' ? '' : r.supplier}
+                        onChange={e => updateResult(r.page, { supplier: e.target.value })}
+                        placeholder="Fournisseur introuvable"
+                        title="Cliquer pour corriger le fournisseur"
+                        className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-1.5 py-0.5 text-sm font-medium text-gray-800 focus:outline-none focus:bg-indigo-50/40"
+                      />
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="date"
+                          value={r.date === '(pas de date)' ? '' : r.date}
+                          onChange={e => updateResult(r.page, { date: e.target.value })}
+                          title="Cliquer pour corriger la date"
+                          className="bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-1.5 py-0.5 text-xs text-gray-500 focus:outline-none focus:bg-indigo-50/40 shrink-0"
+                        />
+                        <span className="text-[11px] font-mono text-gray-400 truncate" title={r.name}>{r.name}</span>
+                      </div>
                     </div>
-                    <button onClick={() => downloadOne(r)} title="Telecharger" className="text-indigo-600 hover:text-indigo-800 p-1.5">
+                    <button onClick={() => setPreview(r)} title="Apercu" className="text-gray-400 hover:text-indigo-600 p-1.5 shrink-0">
+                      <Eye size={16} />
+                    </button>
+                    <button onClick={() => downloadOne(r)} title="Telecharger" className="text-indigo-600 hover:text-indigo-800 p-1.5 shrink-0">
                       <Download size={16} />
                     </button>
                   </div>
@@ -124,5 +149,15 @@ export default function SplitPdfTool({ onClose }: Props) {
         )}
       </div>
     </div>
+
+    {preview && (
+      <PdfViewer
+        blob={preview.blob}
+        title={`${String(preview.page).padStart(2, '0')} - ${preview.supplier}`}
+        filename={preview.name}
+        onClose={() => setPreview(null)}
+      />
+    )}
+    </>
   );
 }
