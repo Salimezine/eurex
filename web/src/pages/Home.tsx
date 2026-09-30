@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { FolderOpen, Trash2, BarChart3, ShoppingCart } from 'lucide-react';
+import { FolderOpen, Trash2, BarChart3, ShoppingCart, Scissors } from 'lucide-react';
+import SplitPdfTool from '../components/SplitPdfTool';
 
 export default function Home() {
   const [dossiers, setDossiers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [splitOpen, setSplitOpen] = useState(false);
   const icons: Record<string, any> = { animal: FolderOpen, baud: FolderOpen, scanflash: FolderOpen, achats: ShoppingCart };
 
   const load = async () => {
@@ -60,7 +62,13 @@ export default function Home() {
 
   return (
     <div className="space-y-4 mt-4">
-      <h2 className="text-xl font-semibold">Dossiers</h2>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-xl font-semibold">Dossiers</h2>
+        <button onClick={() => setSplitOpen(true)}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2">
+          <Scissors size={16} /> Scinder un PDF
+        </button>
+      </div>
 
       {dossiers.length === 0 && (
         <div className="bg-white border rounded-lg p-8 text-center text-gray-400 text-sm">
@@ -118,6 +126,7 @@ export default function Home() {
           );
         })}
       </div>
+      {splitOpen && <SplitPdfTool onClose={() => setSplitOpen(false)} />}
     </div>
   );
 }
