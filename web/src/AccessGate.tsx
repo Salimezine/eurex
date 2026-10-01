@@ -144,7 +144,7 @@ export default function AccessGate({ onAuthorized }: AccessGateProps) {
           </button>
         </form>
 
-        <p className="text-[11px] text-gray-400 mt-5 text-center">Created by EUREX</p>
+        <p className="text-[11px] text-gray-400 mt-5 text-center">Created by med salim ezzine</p>
       </div>
     </div>
   );
