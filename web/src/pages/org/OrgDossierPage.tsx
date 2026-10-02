@@ -530,7 +530,7 @@ export default function OrgDossierPage() {
       )}
 
       {/* Échéances fiscales du dossier (alertes dates butoirs) */}
-          <OrgAlerts dossierId={dossier.id} personType={dossier.person_type} />
+          <OrgAlerts dossierId={dossier.id} personType={dossier.person_type} exportStatus={dossier.export_status} />
 
       {/* Legend */}
       <DonutLegend fait={scopeStats.fait} enCours={scopeStats.enCours} bloqueClient={scopeStats.bloque} />

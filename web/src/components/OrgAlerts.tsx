@@ -9,6 +9,7 @@ import { t } from '../lib/orgI18n';
 interface Props {
   dossierId?: string;
   personType?: string | null;
+  exportStatus?: string | null;
 }
 
 const EXPORT_STATUSES = ['exportatrice', 'semi_exportatrice', 'non_exportatrice'];
@@ -21,7 +22,7 @@ const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string 
   done: { row: 'bg-gray-50 border-gray-200 opacity-70', chip: 'bg-emerald-50 text-emerald-700', icon: '✅' },
 };
 
-export default function OrgAlerts({ dossierId, personType }: Props) {
+export default function OrgAlerts({ dossierId, personType, exportStatus }: Props) {
   const { state } = useOrgAuth();
   const isExpert = state.user?.role === 'expert';
   const [feed, setFeed] = useState<OrgAlertFeed | null>(null);
@@ -52,7 +53,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
     } catch {
       setFeed({ alerts: [], tasks: [] });
     }
-  }, [dossierId]);
+  }, [dossierId, exportStatus]);
 
   useEffect(() => { load(); }, [load]);
 
