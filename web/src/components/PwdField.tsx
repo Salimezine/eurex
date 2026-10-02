@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 
 interface PwdFieldProps {
@@ -14,9 +14,26 @@ interface PwdFieldProps {
 
 export default function PwdField({ value, onChange, className = '', placeholder, autoFocus, autoComplete, name, onKeyDown }: PwdFieldProps) {
   const [show, setShow] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Le gestionnaire de mots de passe du navigateur ignore un champ affiche en
+  // clair : on force type="password" (synchronement) au moment exact du submit.
+  useEffect(() => {
+    const form = inputRef.current?.closest('form');
+    if (!form) return;
+    const onSubmit = () => {
+      const i = inputRef.current;
+      if (i && i.type !== 'password') i.type = 'password';
+      setShow(false);
+    };
+    form.addEventListener('submit', onSubmit);
+    return () => form.removeEventListener('submit', onSubmit);
+  }, []);
+
   return (
     <div className="relative">
       <input
+        ref={inputRef}
         type={show ? 'text' : 'password'}
         value={value}
         onChange={e => onChange(e.target.value)}

@@ -109,34 +109,40 @@ export default function OrgAccountButton() {
             <hr className="border-gray-100" />
 
             {/* Mot de passe */}
-            <div className="space-y-2">
+            <form onSubmit={e => { e.preventDefault(); savePassword(); }} className="space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{t('auth.change_password')}</p>
               <PwdField
                 value={cur}
                 onChange={setCur}
+                name="current-password"
+                autoComplete="current-password"
                 placeholder={t('account.current_password')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
               <PwdField
                 value={pwd}
                 onChange={setPwd}
+                name="new-password"
+                autoComplete="new-password"
                 placeholder={t('account.new_password_hint')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
               <PwdField
                 value={pwd2}
                 onChange={setPwd2}
+                name="confirm-password"
+                autoComplete="new-password"
                 placeholder={t('account.confirm_password')}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
               <button
-                onClick={savePassword}
+                type="submit"
                 disabled={busy}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 {t('account.save')}
               </button>
-            </div>
+            </form>
 
             {msg && <p className="text-sm text-emerald-600">{msg}</p>}
             {err && <p className="text-sm text-red-600">{err}</p>}

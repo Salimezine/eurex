@@ -62,6 +62,13 @@ export function OrgAuthProvider({ children }: { children: ReactNode }) {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Erreur de connexion');
+    // Demander au navigateur d'enregistrer les identifiants (gestionnaire de mots de passe)
+    try {
+      const w = window as any;
+      if (typeof w.PasswordCredential === 'function' && navigator.credentials?.store) {
+        await navigator.credentials.store(new w.PasswordCredential({ id: email, password }));
+      }
+    } catch { /* API non supportee ou refusee par le navigateur */ }
     localStorage.setItem('eurex_org_token', data.token);
     localStorage.setItem('eurex_org_user', JSON.stringify(data.user));
     setState({ token: data.token, user: data.user, loading: false });
