@@ -21,6 +21,8 @@ function makeTask(id: string, month: number | null, status: OrgTask['status'] = 
     timer_started_at: null,
     timer_user_id: null,
     updated_by_name: null,
+    verified_by_name: null,
+    verified_by_role: null,
     assigned_comptable_id: null,
     assigned_comptable_name: null,
     due_date: null,

@@ -10,6 +10,11 @@ function genId(): string {
   return crypto.randomUUID();
 }
 
+// Rôles superviseurs : vérification des tâches + tous les privilèges expert.
+function isSupervisor(role: string): boolean {
+  return role === 'expert' || role === 'manager';
+}
+
 // Quota Workers AI épuisé (tous les modèles partagent les 10 000 neurons/jour du compte).
 function isQuotaExhausted(e: any): boolean {
   const msg = String((e && (e.message || e)) || '').toLowerCase();
@@ -1666,7 +1671,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/auth/login' && method === 'POST') {
         const { email, password } = await request.json() as any;
         if (!email || !password) return json({ error: 'Email et mot de passe requis' }, 400);
-        const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, password_hash, role, must_change_password, is_active FROM org_users WHERE email = ?').bind(email).first() as any;
+        const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, password_hash, role, role_label, must_change_password, is_active FROM org_users WHERE email = ?').bind(email).first() as any;
         if (!user) return json({ error: 'Identifiants incorrects' }, 401);
         if (!user.is_active) return json({ error: 'Compte désactivé' }, 403);
         // Verify password (SHA-256 with salt)
@@ -1676,13 +1681,15 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
         if (hashHex !== expectedHash) return json({ error: 'Identifiants incorrects' }, 401);
         const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
+        // Rôle affiché : role_label ('manager') prime sur le rôle stocké ('expert')
+        const effRole = user.role_label || user.role;
         // Create token
-        const tokenPayload = JSON.stringify({ user_id: user.id, organization_id: user.organization_id, role: user.role, exp: Date.now() + 86400000 });
+        const tokenPayload = JSON.stringify({ user_id: user.id, organization_id: user.organization_id, role: effRole, exp: Date.now() + 86400000 });
         const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('eurex_org_secret_2026'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
         const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(tokenPayload));
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
         const token = btoa(tokenPayload).replace(/=/g, '') + '.' + sigHex;
-        return json({ token, user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role, must_change_password: user.must_change_password, organization: org?.name || '' } });
+        return json({ token, user: { id: user.id, full_name: user.full_name, email: user.email, role: effRole, must_change_password: user.must_change_password, organization: org?.name || '' } });
       }
 
       // --- ORG: Verify token helper (inline) ---
@@ -1700,20 +1707,21 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (!valid) return null;
           const payload = JSON.parse(data);
           if (payload.exp < Date.now()) return null;
-          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
+          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
           if (!user || !user.is_active) return null;
+          if (user.role_label) user.role = user.role_label;
           return user;
         } catch { return null; }
       }
 
       async function orgCanAccessDossier(user: any, dossierId: string): Promise<boolean> {
-        if (user.role === 'expert') return true;
+        if (isSupervisor(user.role)) return true;
         const d = await env.DB.prepare(`SELECT c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?`).bind(dossierId, user.organization_id).first() as any;
         return d?.assigned_comptable_id === user.id;
       }
 
       async function orgCanAccessClient(user: any, clientId: string): Promise<boolean> {
-        if (user.role === 'expert') return true;
+        if (isSupervisor(user.role)) return true;
         const c = await env.DB.prepare('SELECT assigned_comptable_id FROM org_clients WHERE id = ? AND organization_id = ?').bind(clientId, user.organization_id).first() as any;
         return c?.assigned_comptable_id === user.id;
       }
@@ -1778,9 +1786,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (updates.length === 0) return json({ error: 'Aucun champ à mettre à jour' }, 400);
         await env.DB.prepare(`UPDATE org_users SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, user.id).run();
-        const updated = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, must_change_password, is_active FROM org_users WHERE id = ?').bind(user.id).first() as any;
+        const updated = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, must_change_password, is_active FROM org_users WHERE id = ?').bind(user.id).first() as any;
         const org = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(user.organization_id).first() as any;
-        return json({ ...updated, organization: org?.name || '' });
+        return json({ ...updated, role: updated.role_label || updated.role, organization: org?.name || '' });
       }
 
       // --- ORG: CHANGE PASSWORD ---
@@ -1807,7 +1815,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         let clients;
-        if (user.role === 'expert') {
+        if (isSupervisor(user.role)) {
           const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY c.name').bind(user.organization_id).all();
           clients = r.results;
         } else {
@@ -1823,7 +1831,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             const { results: tasks } = await env.DB.prepare('SELECT status, export_scope FROM org_tasks WHERE dossier_id = ?').bind(d.id).all();
             for (const t of tasks as any[]) {
               if (!exportScopeKeeps(t.export_scope, c.export_status)) continue;
-              taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
+              taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
             }
             const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
             if (ds) { docStats.total = ds.total || 0; docStats.received = ds.received || 0; }
@@ -1836,7 +1844,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/clients' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        if (user.role !== 'expert') return json({ error: 'La création de clients est réservée à l\'expert' }, 403);
+        if (!isSupervisor(user.role)) return json({ error: 'La création de clients est réservée à l\'expert' }, 403);
         const { name, matricule_fiscal, assigned_comptable_id, contact_email, contact_phone, person_type, export_status } = await request.json() as any;
         if (!name) return json({ error: 'Nom requis' }, 400);
         const pType = ['morale', 'physique'].includes(person_type) ? person_type : null;
@@ -1851,7 +1859,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgClientMatch = path.match(/^\/api\/org\/clients\/([^/]+)$/);
       if (orgClientMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
-        if (!user || (user.role !== 'expert' && user.role !== 'comptable')) return json({ error: 'Non autorisé' }, 403);
+        if (!user || (!isSupervisor(user.role) && user.role !== 'comptable')) return json({ error: 'Non autorisé' }, 403);
         const { person_type, export_status } = await request.json() as any;
         if (person_type !== null && person_type !== undefined && !['morale', 'physique'].includes(person_type)) return json({ error: 'Type invalide' }, 400);
         if (export_status !== null && export_status !== undefined && !EXPORT_STATUSES.includes(export_status)) return json({ error: 'Statut export invalide' }, 400);
@@ -1876,7 +1884,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgClientReassignMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/reassign$/);
       if (orgClientReassignMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { assigned_comptable_id } = await request.json() as any;
         if (!assigned_comptable_id) return json({ error: 'assigned_comptable_id requis' }, 400);
         const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientReassignMatch[1], user.organization_id).first() as any;
@@ -1897,7 +1905,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           for (const t of tasks as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
-            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0 };
         }));
@@ -1907,10 +1915,21 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (orgClientDossiersMatch && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        if (user.role !== 'expert') return json({ error: 'La création de dossiers est réservée à l\'expert' }, 403);
+        if (!isSupervisor(user.role)) return json({ error: 'La création de dossiers est réservée à l\'expert' }, 403);
         if (!await orgCanAccessClient(user, orgClientDossiersMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const { exercice } = await request.json() as any;
+        const { exercice, assigned_comptable_id } = await request.json() as any;
         if (!exercice) return json({ error: 'Exercice requis' }, 400);
+        // Comptable : choisi à la création (affecte le client) ou hérité du client
+        let compId: string | null = assigned_comptable_id || null;
+        if (compId) {
+          const comp = await env.DB.prepare("SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = 'comptable' AND is_active = 1").bind(compId, user.organization_id).first();
+          if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+          await env.DB.prepare('UPDATE org_clients SET assigned_comptable_id = ? WHERE id = ?').bind(compId, orgClientDossiersMatch[1]).run();
+        } else {
+          const client = await env.DB.prepare('SELECT assigned_comptable_id FROM org_clients WHERE id = ?').bind(orgClientDossiersMatch[1]).first() as any;
+          compId = client?.assigned_comptable_id || null;
+        }
+        if (!compId) return json({ error: 'Comptable requis : assignez un comptable à ce dossier' }, 400);
         const existing = await env.DB.prepare('SELECT id FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(orgClientDossiersMatch[1], exercice).first();
         if (existing) return json({ error: 'Un dossier existe déjà pour cet exercice' }, 409);
         const prev = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC LIMIT 1').bind(orgClientDossiersMatch[1]).first() as any;
@@ -1935,7 +1954,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           }
         }
         await orgRecalcProgress(dossierId);
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_created\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, dossierId, JSON.stringify({ exercice, client_id: orgClientDossiersMatch[1] })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_created\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, dossierId, JSON.stringify({ exercice, client_id: orgClientDossiersMatch[1], assigned_comptable_id: compId })).run();
         return json({ id: dossierId, exercice, status: 'en_cours' }, 201);
       }
 
@@ -1947,7 +1966,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type, c.export_status, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, vu.full_name as verified_by_name, COALESCE(vu.role_label, vu.role) as verified_by_role, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users vu ON t.verified_by = vu.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         // Filtre export : les tâches à portée hors statut du client n'apparaissent pas
         const tasks = (rawTasks as any[]).filter(t => exportScopeKeeps(t.export_scope, dossier.export_status));
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
@@ -1960,11 +1979,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           timeByUser[te.user_id].seconds += te.duration_seconds || 0;
         }
         const stats = { total: tasks.length, fait: 0, en_cours: 0, bloque_client: 0 };
-        for (const t of tasks as any[]) { if (t.status === 'fait') stats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') stats.en_cours++; else if (t.status === 'bloque_client') stats.bloque_client++; }
+        for (const t of tasks as any[]) { if (t.status === 'fait') stats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') stats.en_cours++; else if (t.status === 'bloque_client') stats.bloque_client++; }
         const docStats = { total: documents.length, received: documents.filter((d: any) => d.received).length };
         const canClose = stats.bloque_client === 0 && stats.en_cours === 0;
         const blockReasons = (tasks as any[]).filter(t => t.status !== 'fait').map(t => t.label);
-        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: user.role === 'expert', block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
+        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: isSupervisor(user.role), block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
       }
 
       // --- ORG: CLOSE DOSSIER ---
@@ -1981,7 +2000,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const blockedTasks = (rawBlocked as any[]).filter(t => exportScopeKeeps(t.export_scope, clt?.export_status));
         const { force, justification } = await request.json() as any;
         if (blockedTasks.length > 0 && !force) return json({ error: `Clôture impossible — tâches restantes : ${blockedTasks.map((t: any) => t.label).join(', ')}` }, 400);
-        if (blockedTasks.length > 0 && force && user.role !== 'expert') return json({ error: 'Seul un expert peut forcer la clôture' }, 403);
+        if (blockedTasks.length > 0 && force && !isSupervisor(user.role)) return json({ error: 'Seul un expert peut forcer la clôture' }, 403);
         await env.DB.prepare("UPDATE org_dossiers SET status = 'cloture', closed_at = datetime('now'), closed_by = ? WHERE id = ?").bind(user.id, orgDossierCloseMatch[1]).run();
         const details: any = { forced: !!force };
         if (justification) details.justification = justification;
@@ -2013,7 +2032,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const entryId = genId();
         await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at) VALUES (?, ?, ?, ?, datetime('now'))").bind(entryId, dossierId, taskId, user.id).run();
         // Update task
-        await env.DB.prepare("UPDATE org_tasks SET timer_started_at = datetime('now'), timer_user_id = ? WHERE id = ?").bind(user.id, taskId).run();
+        await env.DB.prepare("UPDATE org_tasks SET timer_started_at = datetime('now'), timer_user_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(user.id, user.id, taskId).run();
         // Audit log
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'timer_started', 'task', taskId, JSON.stringify({ dossier_id: dossierId })).run();
         return json({ ok: true, entry_id: entryId, started_at: new Date().toISOString() });
@@ -2053,17 +2072,18 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         if (task.timer_started_at) return json({ error: 'Arrêtez le chrono d\'abord' }, 400);
-        const { seconds } = await request.json() as any;
+        const { seconds, note } = await request.json() as any;
         const secs = Math.floor(Number(seconds));
         if (!Number.isFinite(secs) || secs <= 0) return json({ error: 'Durée invalide' }, 400);
         if (secs > 86400) return json({ error: 'Durée maximale : 24 h par saisie' }, 400);
+        const noteTxt = note ? String(note).trim().slice(0, 500) : null;
         const newTotal = (task.total_time_seconds || 0) + secs;
-        await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ? WHERE id = ?').bind(newTotal, taskId).run();
+        await env.DB.prepare("UPDATE org_tasks SET total_time_seconds = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(newTotal, user.id, taskId).run();
         // Entrée de temps cohérente : time_by_user / time_by_dossier comptent aussi la saisie manuelle
         const entryId = genId();
-        await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at, stopped_at, duration_seconds) VALUES (?, ?, ?, ?, datetime('now', ?), datetime('now'), ?)").bind(entryId, dossierId, taskId, user.id, `-${secs} seconds`, secs).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'time_manual', 'task', taskId, JSON.stringify({ dossier_id: dossierId, duration_seconds: secs, total_seconds: newTotal })).run();
-        return json({ ok: true, duration_seconds: secs, total_seconds: newTotal });
+        await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at, stopped_at, duration_seconds, note) VALUES (?, ?, ?, ?, datetime('now', ?), datetime('now'), ?, ?)").bind(entryId, dossierId, taskId, user.id, `-${secs} seconds`, secs, noteTxt).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'time_manual', 'task', taskId, JSON.stringify({ dossier_id: dossierId, duration_seconds: secs, total_seconds: newTotal, note: noteTxt })).run();
+        return json({ ok: true, duration_seconds: secs, total_seconds: newTotal, note: noteTxt });
       }
 
       // --- ORG: GET TIMERS FOR DOSSIER ---
@@ -2090,9 +2110,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         const updates: string[] = [];
         const binds: any[] = [];
+        let effStatus: string | undefined;
         if (status !== undefined) {
-          if (!['a_faire', 'en_cours', 'fait', 'bloque_client'].includes(status)) return json({ error: 'Status invalide' }, 400);
-          updates.push('status = ?'); binds.push(status);
+          if (!['a_faire', 'en_cours', 'fait', 'a_verifier', 'bloque_client'].includes(status)) return json({ error: 'Status invalide' }, 400);
+          // Un comptable qui marque "fait" envoie la tâche en vérification : seul un expert/manager la valide en "fait".
+          effStatus = status === 'fait' && !isSupervisor(user.role) ? 'a_verifier' : status;
+          updates.push('status = ?'); binds.push(effStatus);
+          if (effStatus === 'fait') {
+            updates.push('verified_by = ?', "verified_at = datetime('now')"); binds.push(user.id);
+          } else if (task.status === 'fait') {
+            updates.push('verified_by = NULL', 'verified_at = NULL');
+          }
         }
         if (blocked_reason !== undefined) { updates.push('blocked_reason = ?'); binds.push(blocked_reason || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
@@ -2102,7 +2130,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           updates.push('due_date = ?'); binds.push(v || null);
         }
         if (assigned_comptable_id !== undefined) {
-          if (user.role !== 'expert') return json({ error: 'Seul un expert peut réassigner une tâche' }, 403);
+          if (!isSupervisor(user.role)) return json({ error: 'Seul un expert peut réassigner une tâche' }, 403);
           if (assigned_comptable_id !== null) {
             const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
             if (!comp) return json({ error: 'Comptable introuvable' }, 400);
@@ -2120,9 +2148,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare(`UPDATE org_tasks SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
         const progress = await orgRecalcProgress(orgTaskMatch[1]);
         const oldStatus = task.status;
-        const newStatus = status || oldStatus;
-        if (status && status !== oldStatus) {
-          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: status, blocked_reason })).run();
+        const newStatus = effStatus || oldStatus;
+        if (effStatus && effStatus !== oldStatus) {
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: effStatus, blocked_reason })).run();
         }
         if (label !== undefined && label.trim() && label.trim() !== task.label) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_renamed', 'task', orgTaskMatch[2], JSON.stringify({ old_label: task.label, new_label: label.trim() })).run();
@@ -2167,7 +2195,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const taskDue = due_date === null || due_date === undefined ? null : String(due_date).trim();
         if (taskDue && (!/^\d{4}-\d{2}-\d{2}$/.test(taskDue) || isNaN(Date.parse(taskDue)))) return json({ error: 'Date butoir invalide (AAAA-MM-JJ)' }, 400);
         if (assigned_comptable_id) {
-          if (user.role !== 'expert') return json({ error: 'Seul un expert peut affecter une tâche' }, 403);
+          if (!isSupervisor(user.role)) return json({ error: 'Seul un expert peut affecter une tâche' }, 403);
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
           if (!comp) return json({ error: 'Comptable introuvable' }, 400);
         }
@@ -2399,27 +2427,30 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const ensureAlertPack = async (db: any, orgId: string, dossierId: string | null = null) => {
         const y = new Date().getUTCFullYear();
         const pack = [
-          { key: 'pm_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (personne morale)', due_date: `${y}-12-20`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'Personnes morales soumises à la télé-déclaration : au plus tard le 20 du mois suivant (télé-déclaration DGI) ; non télé-déclarantes : 28 — report au 1er jour ouvrable si férié/dimanche' },
-          { key: 'pp_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (personne physique)', due_date: `${y}-12-15`, recurrence: 'mensuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Personnes physiques au régime réel : au plus tard le 15 du mois suivant (PM télé-déclaration : 20) — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pm_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (PM télé-déclarante)', due_date: `${y}-12-20`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'Personnes morales soumises à la télé-déclaration : au plus tard le 20 du mois suivant (télé-déclaration DGI) — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pm_mensuelle_nt', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (PM non télé-déclarante)', due_date: `${y}-12-28`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'Personnes morales non soumises à la télé-déclaration : au plus tard le 28 du mois suivant — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pp_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (personne physique)', due_date: `${y}-12-15`, recurrence: 'mensuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Personnes physiques au régime réel : au plus tard le 15 du mois suivant — report au 1er jour ouvrable si férié/dimanche' },
           { key: 'cnss_tr', title: 'CNSS — déclaration trimestrielle des salaires & cotisations', due_date: `${y}-01-15`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 5, export_scope: '["semi_exportatrice","non_exportatrice"]', note: 'Régime général non agricole — droit commun : 15 du mois suivant le trimestre (15 janv/avr/juil/oct), BTP >50 salariés : 20 · entreprises totalement exportatrices : 25 (voir échéance dédiée)' },
           { key: 'cnss_tr_export', title: 'CNSS — déclaration trimestrielle (entreprises totalement exportatrices)', due_date: `${y}-01-25`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 5, export_scope: '["exportatrice"]', note: 'Entreprises totalement exportatrices (ETE) : 25 du mois suivant le trimestre — droit commun : 15 · BTP >50 : 20 (communiqué CNSS)' },
-          { key: 'cnss_das', title: 'CNSS — déclaration annuelle des salaires (DAS)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, export_scope: null, note: 'DAS CNSS (régime général, salaires) : récapitulatif annuel des salaires, form. TS-02 — avant le 28 février' },
-          { key: 'employeur', title: 'Déclaration annuelle de l\'employeur (retenues & salaires)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, export_scope: null, note: 'Employeurs : retenues à la source et salaires versés — droit commun 28 février ; cas régime forfaitaire : jusqu\'au 30 avril (DGI) — vérifier le communiqué annuel DGI' },
-          { key: 'acomptes_pm', title: 'Acomptes provisionnels IS — 3 × 30 % (personne morale)', due_date: `${y}-06-28`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'morale', lead_days: 7, export_scope: null, note: 'Art. 51 : 6e, 9e et 12e mois suivant la clôture, 28 premiers jours (exercice civil : 28 juin/sept/déc) — 3 × 30 % de l\'IS de l\'année précédente ; dus à compter de la 2e année ; hors agricole/pêche et forfait — formulaire officiel DGI/e-jibaya' },
-          { key: 'acomptes_pp', title: 'Acomptes provisionnels IRPP BIC/BNC (personne physique)', due_date: `${y}-06-25`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'physique', lead_days: 7, export_scope: null, note: 'Art. 51 : 6e, 9e et 12e mois suivant la clôture, 25 premiers jours (exercice civil : 25 juin/sept/déc) — 3 × 30 % de l\'IRPP de l\'année précédente ; hors agricole/pêche et forfait ; 1er acompte exonéré pour les artisans — formulaire officiel DGI/e-jibaya' },
-          { key: 'is_annuelle', title: 'Déclaration annuelle & liquidation IS (personne morale)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, export_scope: '["semi_exportatrice","non_exportatrice"]', note: 'Art. 60 — droit commun : PM clôturant au 31/12 → au plus tard le 25 mars (déclaration provisoire) ; SA/audit légal : déclaration définitive 25 juin ; clôture ≠ 31/12 : 25e jour du 3e mois suivant · entreprises totalement exportatrices : 30 juin (voir échéance dédiée)' },
-          { key: 'is_annuelle_export', title: 'Déclaration annuelle & liquidation IS — entreprise totalement exportatrice', due_date: `${y}-06-30`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, export_scope: '["exportatrice"]', note: 'ETE (100 % export, art. 69 loi 2017-8) : dépôt en franchise de pénalités jusqu\'au 30 juin — pénalités art. 85 CDPF à compter du 1er juillet · droit commun : 25 mars (provisoire) / 25 juin (définitive)' },
-          { key: 'is_definitive', title: 'Déclaration définitive IS (après approbation des comptes)', due_date: `${y}-06-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, export_scope: null, note: 'SA et sociétés soumises à l\'audit légal : déclaration définitive au plus tard le 25 juin ou avant l\'AG (après la provisoire du 25 mars) — ETE : 30 juin' },
-          { key: 'liasse_fiscale', title: 'Liasse fiscale — états comptables normalisés (F6001 à F6006)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, export_scope: null, note: 'CCT (LF 2017 art. 41) : mêmes délais que la déclaration annuelle IS — provisoire 25 mars / définitive 25 juin (ETE : 30 juin) — télétransmission e-jibaya' },
-          { key: 'tva_susp_ventes', title: 'CA en suspension de TVA — ventes (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Listes des factures de ventes en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 36 LF 2013) → 28 janv/avr/juil/oct' },
-          { key: 'tva_susp_achats', title: 'CA en suspension de TVA — achats (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Listes des factures d\'achats en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 35 LF 2013) → 28 janv/avr/juil/oct' },
+          { key: 'cnss_das', title: 'CNSS — déclaration annuelle des salaires (DAS)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 5, export_scope: null, note: 'DAS CNSS (régime général, salaires) : récapitulatif annuel des salaires, form. TS-02 — avant le 28 février' },
+          { key: 'employeur', title: 'Déclaration annuelle de l\'employeur (retenues & salaires)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 5, export_scope: null, note: 'Employeurs : retenues à la source et salaires versés — droit commun 28 février ; cas régime forfaitaire : jusqu\'au 30 avril (DGI) — vérifier le communiqué annuel DGI' },
+          { key: 'acomptes_pm', title: 'Acomptes provisionnels IS — 3 × 30 % (personne morale)', due_date: `${y}-06-28`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'morale', lead_days: 5, export_scope: null, note: 'Art. 51 : 6e, 9e et 12e mois suivant la clôture, 28 premiers jours (exercice civil : 28 juin/sept/déc) — 3 × 30 % de l\'IS de l\'année précédente ; dus à compter de la 2e année ; hors agricole/pêche et forfait — formulaire officiel DGI/e-jibaya' },
+          { key: 'acomptes_pp', title: 'Acomptes provisionnels IRPP BIC/BNC (personne physique)', due_date: `${y}-06-25`, recurrence: 'trimestrielle', months: '[6,9,12]', category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 51 : 6e, 9e et 12e mois suivant la clôture, 25 premiers jours (exercice civil : 25 juin/sept/déc) — 3 × 30 % de l\'IRPP de l\'année précédente ; hors agricole/pêche et forfait ; 1er acompte exonéré pour les artisans — formulaire officiel DGI/e-jibaya' },
+          { key: 'is_annuelle', title: 'Déclaration annuelle & liquidation IS (personne morale)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 5, export_scope: '["semi_exportatrice","non_exportatrice"]', note: 'Art. 60 — droit commun : PM clôturant au 31/12 → au plus tard le 25 mars (déclaration provisoire) ; SA/audit légal : déclaration définitive 25 juin ; clôture ≠ 31/12 : 25e jour du 3e mois suivant · entreprises totalement exportatrices : 30 juin (voir échéance dédiée)' },
+          { key: 'is_annuelle_export', title: 'Déclaration annuelle & liquidation IS — entreprise totalement exportatrice', due_date: `${y}-06-30`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 5, export_scope: '["exportatrice"]', note: 'ETE (100 % export, art. 69 loi 2017-8) : dépôt en franchise de pénalités jusqu\'au 30 juin — pénalités art. 85 CDPF à compter du 1er juillet · droit commun : 25 mars (provisoire) / 25 juin (définitive)' },
+          { key: 'is_definitive', title: 'Déclaration définitive IS (après approbation des comptes)', due_date: `${y}-06-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'SA et sociétés soumises à l\'audit légal : déclaration définitive au plus tard le 25 juin ou avant l\'AG (après la provisoire du 25 mars) — ETE : 30 juin' },
+          { key: 'liasse_fiscale', title: 'Liasse fiscale — états comptables normalisés (F6001 à F6006)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: null, lead_days: 5, export_scope: null, note: 'CCT (LF 2017 art. 41) : mêmes délais que la déclaration annuelle IS — provisoire 25 mars / définitive 25 juin (ETE : 30 juin) — télétransmission e-jibaya' },
+          { key: 'tva_susp_ventes_pp', title: 'CA en suspension de TVA — ventes (listes trimestrielles, PP)', due_date: `${y}-01-15`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: 'physique', lead_days: 5, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Personne physique : listes des factures de ventes en suspension, dépôt avant le 15 du mois suivant le trimestre civil — 15 janv/avr/juil/oct (art. 36 LF 2013)' },
+          { key: 'tva_susp_ventes_pm', title: 'CA en suspension de TVA — ventes (listes trimestrielles, PM)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: 'morale', lead_days: 5, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Personne morale : listes des factures de ventes en suspension, dépôt avant le 28 du mois suivant le trimestre civil — 28 janv/avr/juil/oct (art. 36 LF 2013)' },
+          { key: 'tva_susp_achats_pp', title: 'CA en suspension de TVA — achats (listes trimestrielles, PP)', due_date: `${y}-01-15`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: 'physique', lead_days: 5, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Personne physique : listes des factures d\'achats en suspension, dépôt avant le 15 du mois suivant le trimestre civil — 15 janv/avr/juil/oct (art. 35 LF 2013)' },
+          { key: 'tva_susp_achats_pm', title: 'CA en suspension de TVA — achats (listes trimestrielles, PM)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: 'morale', lead_days: 5, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Personne morale : listes des factures d\'achats en suspension, dépôt avant le 28 du mois suivant le trimestre civil — 28 janv/avr/juil/oct (art. 35 LF 2013)' },
           { key: 'certificats_tej', title: 'Certificats de retenue à la source — plateforme TEJ', due_date: `${y}-01-31`, recurrence: 'mensuelle', months: null, category: null, lead_days: 5, export_scope: null, note: 'Élaboration et remise des certificats de RS via tej.finances.gov.tn au plus tard à la fin du mois suivant le mois de paiement (arrêté MF du 10/05/2024, art. 8)' },
-          { key: 'irpp_capitaux', title: 'Déclaration annuelle IRPP — capitaux mobiliers & fonciers', due_date: `${y}-02-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : revenus de capitaux mobiliers & valeurs mobilières, revenus fonciers, source étrangère (hors salaires/pensions/rentes) et plus-values (art. 31 bis) — avant le 25 février' },
-          { key: 'irpp_bic', title: 'Déclaration annuelle IRPP — BIC (commerçants)', due_date: `${y}-04-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : commerçants — régime réel (RNR/RNS) ou régime forfaitaire — avant le 25 avril' },
-          { key: 'irpp_bnc', title: 'Déclaration annuelle IRPP — BNC, industrie & prestataires', due_date: `${y}-05-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : prestataires de services, activités industrielles, professions non commerciales et revenus mixtes (plus d\'une catégorie) — avant le 25 mai' },
-          { key: 'irpp_salaires', title: 'Déclaration annuelle IRPP — salaires & pensions', due_date: `${y}-12-05`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : uniquement salariés, bénéficiaires de pensions et rentes viagères (source tunisienne ou étrangère) — avant le 5 décembre' },
-          { key: 'irpp_artisans', title: 'Déclaration annuelle IRPP — artisans', due_date: `${y}-07-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : activités artisanales (régime réel ou forfait), y c. revenus du 25 février en plus — avant le 25 juillet' },
-          { key: 'irpp_agricoles', title: 'Déclaration annuelle IRPP — agriculture & pêche', due_date: `${y}-08-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : exploitation agricole ou pêche (y c. revenus des 25 février et 25 juillet en plus) — avant le 25 août' },
+          { key: 'irpp_capitaux', title: 'Déclaration annuelle IRPP — capitaux mobiliers & fonciers', due_date: `${y}-02-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : revenus de capitaux mobiliers & valeurs mobilières, revenus fonciers, source étrangère (hors salaires/pensions/rentes) et plus-values (art. 31 bis) — avant le 25 février' },
+          { key: 'irpp_bic', title: 'Déclaration annuelle IRPP — BIC (commerçants)', due_date: `${y}-04-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : commerçants — régime réel (RNR/RNS) ou régime forfaitaire — avant le 25 avril' },
+          { key: 'irpp_bnc', title: 'Déclaration annuelle IRPP — BNC, industrie & prestataires', due_date: `${y}-05-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : prestataires de services, activités industrielles, professions non commerciales et revenus mixtes (plus d\'une catégorie) — avant le 25 mai' },
+          { key: 'irpp_salaires', title: 'Déclaration annuelle IRPP — salaires & pensions', due_date: `${y}-12-05`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : uniquement salariés, bénéficiaires de pensions et rentes viagères (source tunisienne ou étrangère) — avant le 5 décembre' },
+          { key: 'irpp_artisans', title: 'Déclaration annuelle IRPP — artisans', due_date: `${y}-07-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : activités artisanales (régime réel ou forfait), y c. revenus du 25 février en plus — avant le 25 juillet' },
+          { key: 'irpp_agricoles', title: 'Déclaration annuelle IRPP — agriculture & pêche', due_date: `${y}-08-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Art. 60 : exploitation agricole ou pêche (y c. revenus des 25 février et 25 juillet en plus) — avant le 25 août' },
         ];
         const { results: existing } = await db.prepare('SELECT id, title, due_date, lead_days, recurrence, months, category, note, export_scope FROM org_fiscal_alerts WHERE organization_id = ?').bind(orgId).all();
         const byId = new Map((existing as any[]).map(r => [r.id, r]));
@@ -2479,7 +2510,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (dossierId) {
           const dOk = await env.DB.prepare('SELECT 1 AS x FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first();
           if (dOk) await ensureAlertPack(env.DB, user.organization_id, dossierId);
-        } else if (user.role !== 'expert') {
+        } else if (!isSupervisor(user.role)) {
           // Le comptable n'a pas de pack global : pack propre à chacun de ses dossiers en cours
           const { results: myDossiers } = await env.DB.prepare("SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? AND d.status = 'en_cours' ORDER BY d.exercice DESC LIMIT 100").bind(user.organization_id, user.id).all();
           for (const d of myDossiers as any[]) await ensureAlertPack(env.DB, user.organization_id, d.id);
@@ -2489,7 +2520,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           CASE WHEN a.dossier_id IS NOT NULL THEN (SELECT c.name || ' (' || d.exercice || ')' FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = a.dossier_id) ELSE NULL END AS dossier_label
           FROM org_fiscal_alerts a WHERE a.organization_id = ?`;
         const aBinds: any[] = [user.organization_id];
-        if (user.role !== 'expert') {
+        if (!isSupervisor(user.role)) {
           // Échéances du comptable = SES dossiers uniquement (pas le pack global)
           aSql += ` AND a.dossier_id IS NOT NULL AND EXISTS (SELECT 1 FROM org_dossiers d2 JOIN org_clients c2 ON d2.client_id = c2.id WHERE d2.id = a.dossier_id AND c2.assigned_comptable_id = ? AND d2.status = 'en_cours')`;
           aBinds.push(user.id);
@@ -2537,7 +2568,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id
           WHERE c.organization_id = ? AND t.due_date IS NOT NULL AND t.status != 'fait'`;
         const tBinds: any[] = [user.organization_id];
-        if (user.role !== 'expert') { tSql += ' AND c.assigned_comptable_id = ?'; tBinds.push(user.id); }
+        if (!isSupervisor(user.role)) { tSql += ' AND c.assigned_comptable_id = ?'; tBinds.push(user.id); }
         if (dossierId) { tSql += ' AND t.dossier_id = ?'; tBinds.push(dossierId); }
         tSql += ' ORDER BY t.due_date ASC';
         const { results: rawFeedTasks } = await env.DB.prepare(tSql).bind(...tBinds).all();
@@ -2572,7 +2603,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (!d) return json({ error: 'Dossier introuvable' }, 404);
           dossierId = String(body.dossier_id);
           if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
-        } else if (user.role !== 'expert') {
+        } else if (!isSupervisor(user.role)) {
           // Échéances du comptable = liées à ses dossiers (le pack global n'est pas visible pour lui)
           return json({ error: 'Échéance globale réservée à l\'expert — liez votre échéance à un dossier' }, 403);
         }
@@ -2591,7 +2622,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
         // Comptable : uniquement les échéances liées à ses dossiers (les globales sont réservées à l'expert)
-        if (user.role !== 'expert' && (!row.dossier_id || !await orgCanAccessDossier(user, row.dossier_id))) return json({ error: 'Accès refusé' }, 403);
+        if (!isSupervisor(user.role) && (!row.dossier_id || !await orgCanAccessDossier(user, row.dossier_id))) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
         const occ = body.occurrence ? String(body.occurrence).trim() : null;
         if (occ && (!/^\d{4}-\d{2}-\d{2}$/.test(occ) || isNaN(Date.parse(occ)))) return json({ error: 'Occurrence invalide' }, 400);
@@ -2659,7 +2690,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
-        if (user.role !== 'expert' && (!row.dossier_id || !await orgCanAccessDossier(user, row.dossier_id))) return json({ error: 'Accès refusé' }, 403);
+        if (!isSupervisor(user.role) && (!row.dossier_id || !await orgCanAccessDossier(user, row.dossier_id))) return json({ error: 'Accès refusé' }, 403);
         await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_deleted\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, due_date: row.due_date })).run();
@@ -2669,7 +2700,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       // --- ORG: EXPERT — COMPTABLES ---
       if (path === '/api/org/comptables' && method === 'GET') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
         const enriched = await Promise.all(results.map(async (c: any) => {
           const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
@@ -2677,7 +2708,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           for (const t of taskStats as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
-            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s };
         }));
@@ -2686,7 +2717,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
       if (path === '/api/org/comptables' && method === 'POST') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { full_name, email, password } = await request.json() as any;
         if (!full_name || !email || !password) return json({ error: 'Nom, email et mot de passe requis' }, 400);
         if (password.length < 12) return json({ error: 'Le mot de passe doit faire au moins 12 caractères' }, 400);
@@ -2703,7 +2734,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgCompToggleMatch = path.match(/^\/api\/org\/comptables\/([^/]+)$/);
       if (orgCompToggleMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { is_active, full_name, email, password } = await request.json() as any;
         const target = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = \'comptable\'').bind(orgCompToggleMatch[1], user.organization_id).first();
         if (!target) return json({ error: 'Comptable non trouvé' }, 404);
@@ -2741,7 +2772,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path.match(/^\/api\/org\/comptables\/([^/]+)\/detail$/) && method === 'GET') {
         const compId = path.match(/^\/api\/org\/comptables\/([^/]+)\/detail$/)![1];
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         // Comptable info
         const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
         if (!comptable) return json({ error: 'Comptable non trouvé' }, 404);
@@ -2754,7 +2785,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           let totalTime = 0;
           for (const t of tasks as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
-            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
         }));
@@ -2799,7 +2830,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       // --- ORG: EXPERT — ALL DOSSIERS ---
       if (path === '/api/org/dossiers' && method === 'GET') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { results } = await env.DB.prepare('SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(user.organization_id).all();
         const enriched = await Promise.all(results.map(async (d: any) => {
           const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.dossier_id = ?').bind(d.id).all();
@@ -2807,7 +2838,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           let totalTime = 0;
           for (const t of tasks as any[]) {
             if (!exportScopeKeeps(t.export_scope, d.export_status)) continue;
-            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
         }));
@@ -2823,7 +2854,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { label, requires_document, assigned_comptable_id, frequency, export_scope } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
         if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
@@ -2844,7 +2875,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
       if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const { assigned_comptable_id, label, requires_document, frequency, export_scope } = await request.json() as any;
         const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
         if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
@@ -2872,7 +2903,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
       if (orgTmplMatch && method === 'DELETE') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         await env.DB.prepare('DELETE FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).run();
         return json({ ok: true });
       }
@@ -2897,40 +2928,38 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
         // Users
         const expertHash = await makeHash('expert1234567');
+        const managerHash = await makeHash('manager1234567');
         const comp1Hash = await makeHash('comptable1234567');
         const comp2Hash = await makeHash('comptable1234567');
 
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'EUREX', 'expert@eurex.tn', expertHash, 'expert').run();
+        // Manager : rôle expert stocké (CHECK DB) + role_label 'manager' pour l'affichage
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, role_label) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('user_manager_001', orgId, 'Karim Mansour', 'manager@eurex.tn', managerHash, 'expert', 'manager').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 
         // Task templates (order, requiresDoc, frequency, exportScope)
         const templates = [
-          ['Réception relevés bancaires', 1, 1, 'mensuelle', null],
-          ['Saisie achats', 2, 0, 'mensuelle', null],
-          ['Saisie ventes', 3, 0, 'mensuelle', null],
-          ['Rapprochement bancaire', 4, 0, 'mensuelle', null],
-          ['Déclaration mensuelle d\'impôts (DMI) — 15 (PP) / 20 (PM) du mois suivant', 5, 0, 'mensuelle', null],
-          ['Préparation des certificats de retenue à la source (TEJ)', 6, 0, 'mensuelle', null],
-          ['Déclaration CNSS mensuelle', 7, 0, 'mensuelle', null],
-          ['Révision balance', 8, 0, 'annuelle', null],
-          ['Établissement états financiers', 9, 0, 'annuelle', null],
-          ['Liasse fiscale / déclaration IS', 10, 0, 'annuelle', null],
-          ['Déclaration TVA trimestrielle (option) — 15 du mois suivant', 11, 0, 'trimestrielle', null],
-          ['CNSS déclaration trimestrielle I16 — 15 du mois suivant', 12, 0, 'trimestrielle', null],
-          ['Listes des factures de ventes en suspension TVA (art. 36 LF 2013) — 28 j après trimestre', 13, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
-          ['Listes des factures d\'achats en suspension TVA (art. 35 LF 2013) — 28 j après trimestre', 14, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
-          ['Déclaration annuelle IS/IRPP — 25 mars', 15, 0, 'annuelle', null],
-          ['Acomptes provisionnels IS — 28 juin / 28 sept / 28 déc (personnes morales)', 16, 0, 'annuelle', null],
-          ['Déclaration annuelle employeur — 28 février', 17, 0, 'annuelle', null],
-          ['Dépôt états financiers au RNE — 31 juillet', 18, 0, 'annuelle', null],
-          ['Dossier AG / rapport CAC — 30 j après AG', 19, 0, 'annuelle', null],
-          ['Vignette des voitures particulières (PM) — 5 février', 20, 0, 'annuelle', null],
-          ['Reporting mensuel — édition & envoi client', 21, 0, 'mensuelle', null],
-          ['Élaboration de la paie mensuelle', 22, 0, 'mensuelle', null],
-          ['Préparation PV AGO — approbation EF n-1', 23, 0, 'annuelle', null],
-          ['Renouvellement autorisation achat en suspension TVA', 24, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
-          ['Visa des bons de commande en suspension TVA', 25, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
+          ['SAISIE Comptable et ERB', 1, 1, 'mensuelle', null],
+          ['Dépôt DMI', 2, 0, 'mensuelle', null],
+          ['Reporting mensuel', 3, 0, 'mensuelle', null],
+          ['Préparation paie du mois', 4, 0, 'mensuelle', null],
+          ['Préparation des certificats TEJ', 5, 0, 'mensuelle', null],
+          ['Préparation déclaration CNSS trimestrielle', 6, 0, 'trimestrielle', null],
+          ['Préparation et dépôt déclaration chiffre d\'affaire en suspension de TVA', 7, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
+          ['Préparation et dépôt déclaration des achats en suspension de TVA', 8, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
+          ['Préparation Etats financiers annuels', 9, 0, 'annuelle', null],
+          ['Dépôt AP 1', 10, 0, 'annuelle', null],
+          ['Dépôt AP 2', 11, 0, 'annuelle', null],
+          ['Dépôt AP 3', 12, 0, 'annuelle', null],
+          ['Dépôt IS provisoire', 13, 0, 'annuelle', null],
+          ['Dépôt IS définitive', 14, 0, 'annuelle', null],
+          ['Dépôt de la déclaration employeur', 15, 0, 'annuelle', null],
+          ['Préparation et dépôt de la liasse fiscale', 16, 0, 'annuelle', null],
+          ['Renouvellement Autorisation d\'achat en suspension de TVA', 17, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
+          ['Visa bon de commande en suspension de TVA', 18, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
+          ['Préparation PV AGO approbation EF n-1', 19, 0, 'annuelle', null],
+          ['Dépôt des EF n-1 et du PV AGO au RNE', 20, 0, 'annuelle', null],
         ] as const;
         for (const [label, order, requiresDoc, freq, scope] of templates) {
           await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq, scope).run();
@@ -2989,7 +3018,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           await orgRecalcProgress(dd.id);
         }
 
-        return json({ ok: true, msg: 'Seeded', credentials: { expert: 'expert@eurex.tn / expert1234567', comptable1: 'ahmed@eurex.tn / comptable1234567', comptable2: 'fatma@eurex.tn / comptable1234567' } });
+        return json({ ok: true, msg: 'Seeded', credentials: { expert: 'expert@eurex.tn / expert1234567', manager: 'manager@eurex.tn / manager1234567', comptable1: 'ahmed@eurex.tn / comptable1234567', comptable2: 'fatma@eurex.tn / comptable1234567' } });
       }
 
       return json({ error: 'Not found: ' + path }, 404);

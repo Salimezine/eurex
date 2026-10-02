@@ -24,6 +24,7 @@ type Tab = 'checklist' | 'documents' | 'notes' | 'timeline' | 'year';
 const STATUS_ICONS: Record<string, any> = {
   a_faire: Circle,
   en_cours: Circle,
+  a_verifier: Eye,
   fait: CheckCircle2,
   bloque_client: AlertTriangle,
 };
@@ -31,6 +32,7 @@ const STATUS_ICONS: Record<string, any> = {
 const STATUS_COLORS: Record<string, string> = {
   a_faire: 'text-gray-500 bg-gray-50',
   en_cours: 'text-gray-500 bg-gray-50',
+  a_verifier: 'text-amber-600 bg-amber-50',
   fait: 'text-emerald-600 bg-emerald-50',
   bloque_client: 'text-red-600 bg-red-50',
 };
@@ -39,7 +41,7 @@ export default function OrgDossierPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { state } = useOrgAuth();
-  const isExpert = state.user?.role === 'expert';
+  const isExpert = state.user?.role === 'expert' || state.user?.role === 'manager';
   const [dossier, setDossier] = useState<OrgDossier | null>(null);
   const canEditType = isExpert || (state.user?.role === 'comptable' && !!dossier && dossier.client_comptable_id === state.user.id);
   const [loading, setLoading] = useState(true);
@@ -51,6 +53,7 @@ export default function OrgDossierPage() {
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [showNewDossierModal, setShowNewDossierModal] = useState(false);
   const [newExercice, setNewExercice] = useState(new Date().getFullYear());
+  const [newDossierComp, setNewDossierComp] = useState('');
   const [timerNow, setTimerNow] = useState(Date.now());
   const [newTaskLabel, setNewTaskLabel] = useState('');
   const [showAddTask, setShowAddTask] = useState(false);
@@ -222,8 +225,9 @@ export default function OrgDossierPage() {
 
   const openNextExercice = async () => {
     if (!dossier) return;
+    if (!newDossierComp) { alert('Comptable requis : sélectionnez le comptable du dossier'); return; }
     try {
-      await orgApi.createDossier(dossier.client_id, newExercice);
+      await orgApi.createDossier(dossier.client_id, newExercice, newDossierComp);
       setShowNewDossierModal(false);
       navigate('/cabinet');
     } catch (err: any) {
@@ -254,6 +258,7 @@ export default function OrgDossierPage() {
   const [timeTaskId, setTimeTaskId] = useState<string | null>(null);
   const [timeH, setTimeH] = useState('');
   const [timeM, setTimeM] = useState('');
+  const [timeNote, setTimeNote] = useState('');
 
   const addManualTime = async (taskId: string) => {
     if (!dossier) return;
@@ -263,10 +268,11 @@ export default function OrgDossierPage() {
     if (seconds <= 0) { alert('Indiquez une durée : heures et/ou minutes'); return; }
     if (seconds > 86400) { alert('Durée maximale : 24 h par saisie'); return; }
     try {
-      await orgApi.addTaskTime(dossier.id, taskId, seconds);
+      await orgApi.addTaskTime(dossier.id, taskId, seconds, timeNote.trim() || undefined);
       setTimeTaskId(null);
       setTimeH('');
       setTimeM('');
+      setTimeNote('');
       load();
     } catch (err: any) {
       alert(err.message);
@@ -487,7 +493,7 @@ export default function OrgDossierPage() {
         )}
         {isExpert && dossier.status === 'cloture' && (
           <button
-            onClick={() => setShowNewDossierModal(true)}
+            onClick={() => { setNewDossierComp(dossier?.client_comptable_id || ''); setShowNewDossierModal(true); }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 transition-all"
           >
             {t('dossier.open_next')}
@@ -671,6 +677,14 @@ export default function OrgDossierPage() {
                       {task.updated_by_name}
                     </span>
                   )}
+                  {task.status === 'fait' && task.verified_by_name && (
+                    <span
+                      className="text-[10px] text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded-full font-medium"
+                      title="Vérifié par"
+                    >
+                      ✓ {task.verified_by_name} ({task.verified_by_role || 'expert'})
+                    </span>
+                  )}
                   {isBlocked && (
                     <span className="text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full font-medium">
                       {task.blocked_reason || t('status.bloque_client')}
@@ -719,7 +733,7 @@ export default function OrgDossierPage() {
                             )}
                           </span>
                           <button
-                            onClick={(e) => { e.stopPropagation(); setTimeTaskId(timeTaskId === task.id ? null : task.id); setTimeH(''); setTimeM(''); }}
+                            onClick={(e) => { e.stopPropagation(); setTimeTaskId(timeTaskId === task.id ? null : task.id); setTimeH(''); setTimeM(''); setTimeNote(''); }}
                             disabled={task.status === 'fait'}
                             title="Ajouter du temps passé manuellement"
                             className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
@@ -760,6 +774,13 @@ export default function OrgDossierPage() {
                           className="w-12 text-center border border-purple-200 rounded-lg px-2 py-1 text-sm font-mono focus:ring-2 focus:ring-purple-500 outline-none bg-white"
                         />
                         <span className="text-xs text-purple-600 font-semibold">m</span>
+                        <input
+                          value={timeNote}
+                          onChange={e => setTimeNote(e.target.value)}
+                          placeholder="Note : sur quoi porte ce temps ?"
+                          maxLength={200}
+                          className="flex-1 min-w-[140px] border border-purple-200 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+                        />
                         <button
                           onClick={() => addManualTime(task.id)}
                           className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-700 transition-all"
@@ -826,10 +847,20 @@ export default function OrgDossierPage() {
                           {t('status.a_faire')}
                         </button>
                       )}
-                      {task.status !== 'fait' && (
+                      {task.status !== 'fait' && task.status !== 'a_verifier' && (
                         <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-3 py-1.5 rounded-lg text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200">
                           {t('status.fait')}
                         </button>
+                      )}
+                      {task.status === 'a_verifier' && isExpert && (
+                        <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-3 py-1.5 rounded-lg text-xs bg-amber-100 text-amber-800 hover:bg-amber-200 font-semibold">
+                          ✅ {t('status.a_verifier_ok')}
+                        </button>
+                      )}
+                      {task.status === 'a_verifier' && !isExpert && (
+                        <span className="px-3 py-1.5 rounded-lg text-xs bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+                          ⏳ {t('status.a_verifier_pending')}
+                        </span>
                       )}
                       {task.status !== 'bloque_client' && task.status !== 'fait' && (
                         <button
@@ -1237,6 +1268,19 @@ export default function OrgDossierPage() {
               onChange={e => setNewExercice(parseInt(e.target.value) || new Date().getFullYear())}
               className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
             />
+            <label className="block text-xs font-semibold text-gray-700 mb-1 mt-3">
+              Comptable <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={newDossierComp}
+              onChange={e => setNewDossierComp(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+            >
+              <option value="">— Sélectionner un comptable —</option>
+              {comptables.filter(c => c.is_active).map(c => (
+                <option key={c.id} value={c.id}>{c.full_name}</option>
+              ))}
+            </select>
             <div className="flex gap-2 justify-end mt-4">
               <button onClick={() => setShowNewDossierModal(false)} className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">
                 Annuler

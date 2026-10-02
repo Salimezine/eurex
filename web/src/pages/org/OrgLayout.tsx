@@ -25,7 +25,7 @@ function OrgInner() {
 
   if (!state.user) return <OrgLogin />;
 
-  const isExpert = state.user.role === 'expert';
+  const isExpert = state.user.role === 'expert' || state.user.role === 'manager';
 
   // Must change password screen
   if (state.user.must_change_password) {

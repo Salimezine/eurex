@@ -29,6 +29,7 @@ export default function OrgDashboardExpert() {
   const [newClientMF, setNewClientMF] = useState('');
   const [newClientType, setNewClientType] = useState('');
   const [newClientExport, setNewClientExport] = useState('');
+  const [newDossierComp, setNewDossierComp] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -67,13 +68,15 @@ export default function OrgDashboardExpert() {
         clientId = newClient.id;
       }
       if (!clientId) return;
-      await orgApi.createDossier(clientId, newExercice);
+      if (!newDossierComp) { alert('Comptable requis : sélectionnez le comptable du dossier'); setCreating(false); return; }
+      await orgApi.createDossier(clientId, newExercice, newDossierComp);
       setShowNewDossier(false);
       setSelectedClient('');
       setNewClientName('');
       setNewClientMF('');
       setNewClientType('');
       setNewClientExport('');
+      setNewDossierComp('');
       setNewExercice(new Date().getFullYear());
       load();
     } catch (err: any) {
@@ -322,7 +325,7 @@ export default function OrgDashboardExpert() {
                 <Plus size={20} className="text-purple-600" />
                 Nouveau dossier
               </h3>
-              <button onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); setNewClientType(''); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+              <button onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); setNewClientType(''); setNewDossierComp(''); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
                 <X size={18} className="text-gray-500" />
               </button>
             </div>
@@ -337,9 +340,12 @@ export default function OrgDashboardExpert() {
                     onChange={e => {
                       if (e.target.value === '__new__') {
                         setSelectedClient('__new__');
+                        setNewDossierComp('');
                       } else {
                         setSelectedClient(e.target.value);
                         setNewClientName('');
+                        const cl = allClients.find(c => c.id === e.target.value);
+                        setNewDossierComp(cl?.assigned_comptable_id || '');
                       }
                     }}
                     className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
@@ -416,12 +422,29 @@ export default function OrgDashboardExpert() {
                   </button>
                 </div>
               </div>
+
+              {/* Comptable assigné (obligatoire) */}
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">
+                  Comptable <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={newDossierComp}
+                  onChange={e => setNewDossierComp(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
+                >
+                  <option value="">— Sélectionner un comptable —</option>
+                  {comptables.filter(c => c.is_active).map(c => (
+                    <option key={c.id} value={c.id}>{c.full_name}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="flex gap-3 pt-2">
               <button
                 onClick={createDossier}
-                disabled={(!selectedClient && !newClientName.trim()) || creating}
+                disabled={(!selectedClient && !newClientName.trim()) || !newDossierComp || creating}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
               >
                 {creating ? 'Création...' : 'Créer le dossier'}

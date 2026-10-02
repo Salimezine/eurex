@@ -36,6 +36,9 @@ const translations: Record<string, Record<Lang, string>> = {
   'status.fait': { fr: 'Fait', ar: 'منجز' },
   'status.bloque_client': { fr: 'Bloqué client', ar: 'محجوز لدى العميل' },
   'status.en_cours': { fr: 'À faire', ar: 'للقيام' },
+  'status.a_verifier': { fr: 'À vérifier', ar: 'في انتظار التحقق' },
+  'status.a_verifier_ok': { fr: 'Valider la vérification', ar: 'تأكيد التحقق' },
+  'status.a_verifier_pending': { fr: 'En attente de vérification (expert/manager)', ar: 'في انتظار تحقق الخبير/المدير' },
 
   // Dossier
   'dossier.checklist': { fr: 'Checklist des tâches', ar: 'قائمة المهام' },

@@ -62,9 +62,9 @@ function GlobalNav({ path }: { path: string }) {
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${path === '/cabinet' ? 'bg-purple-50 text-purple-700' : 'text-gray-600 hover:bg-gray-50'}`}
               >
                 <LayoutDashboard size={14} className="inline mr-1.5" />
-                {cabUser.role === 'expert' ? 'Dashboard' : t('dash.my_clients')}
+                {cabUser.role === 'expert' || cabUser.role === 'manager' ? 'Dashboard' : t('dash.my_clients')}
               </Link>
-              {cabUser.role === 'expert' && (
+              {(cabUser.role === 'expert' || cabUser.role === 'manager') && (
                 <Link
                   to="/cabinet/settings"
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${path.includes('/settings') ? 'bg-purple-50 text-purple-700' : 'text-gray-600 hover:bg-gray-50'}`}

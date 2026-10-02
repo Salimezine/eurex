@@ -6,7 +6,7 @@ export interface OrgUser {
   id: string;
   full_name: string;
   email: string;
-  role: 'expert' | 'comptable';
+  role: 'expert' | 'manager' | 'comptable';
   must_change_password: number;
   organization: string;
 }

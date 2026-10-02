@@ -288,6 +288,11 @@ export default function OrgComptableDetail() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-800">{te.task_label}</p>
                 <p className="text-[11px] text-gray-400">{te.client_name} (ex. {te.exercice})</p>
+                {te.note && (
+                  <p className="text-[11px] text-purple-600 italic truncate" title={te.note}>
+                    📝 {te.note}
+                  </p>
+                )}
               </div>
               <span className="text-sm font-mono font-bold text-gray-700">{formatTime(te.duration_seconds || 0)}</span>
               <span className="text-[10px] text-gray-400">{formatDateTime(te.started_at)}</span>

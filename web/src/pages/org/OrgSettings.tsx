@@ -11,7 +11,7 @@ type Tab = 'templates' | 'comptables';
 
 export default function OrgSettings() {
   const { state } = useOrgAuth();
-  const isExpert = state.user?.role === 'expert';
+  const isExpert = state.user?.role === 'expert' || state.user?.role === 'manager';
   const [tab, setTab] = useState<Tab>('templates');
   const [templates, setTemplates] = useState<OrgTemplate[]>([]);
   const [comptables, setComptables] = useState<OrgComptable[]>([]);

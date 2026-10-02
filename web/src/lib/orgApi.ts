@@ -63,7 +63,7 @@ export interface OrgTask {
   id: string;
   dossier_id: string;
   label: string;
-  status: 'a_faire' | 'en_cours' | 'fait' | 'bloque_client';
+  status: 'a_faire' | 'en_cours' | 'a_verifier' | 'fait' | 'bloque_client';
   blocked_reason: string | null;
   requires_document: number;
   order_index: number;
@@ -73,6 +73,8 @@ export interface OrgTask {
   timer_started_at: string | null;
   timer_user_id: string | null;
   updated_by_name: string | null;
+  verified_by_name: string | null;
+  verified_by_role: string | null;
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
   due_date: string | null;
@@ -177,8 +179,8 @@ export const orgApi = {
   // Dossiers
   getClientDossiers: (clientId: string) => req<OrgDossier[]>(`/org/clients/${clientId}/dossiers`),
   getDossier: (id: string) => req<OrgDossier>(`/org/dossiers/${id}`),
-  createDossier: (clientId: string, exercice: number) =>
-    req<any>(`/org/clients/${clientId}/dossiers`, { method: 'POST', body: JSON.stringify({ exercice }) }),
+  createDossier: (clientId: string, exercice: number, assignedComptableId?: string) =>
+    req<any>(`/org/clients/${clientId}/dossiers`, { method: 'POST', body: JSON.stringify({ exercice, assigned_comptable_id: assignedComptableId || null }) }),
   closeDossier: (id: string, force?: boolean, justification?: string) =>
     req<any>(`/org/dossiers/${id}/close`, { method: 'PATCH', body: JSON.stringify({ force, justification }) }),
 
@@ -255,8 +257,8 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/start`, { method: 'POST' }),
     stopTimer: (dossierId: string, taskId: string) =>
       req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/timer/stop`, { method: 'POST' }),
-    addTaskTime: (dossierId: string, taskId: string, seconds: number) =>
-      req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/time`, { method: 'POST', body: JSON.stringify({ seconds }) }),
+    addTaskTime: (dossierId: string, taskId: string, seconds: number, note?: string) =>
+      req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/time`, { method: 'POST', body: JSON.stringify({ seconds, note }) }),
   getTimers: (dossierId: string) =>
     req<{ entries: any[]; tasks: any[] }>(`/org/dossiers/${dossierId}/timers`),
 

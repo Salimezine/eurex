@@ -24,7 +24,7 @@ const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string 
 
 export default function OrgAlerts({ dossierId, personType, exportStatus }: Props) {
   const { state } = useOrgAuth();
-  const isExpert = state.user?.role === 'expert';
+  const isExpert = state.user?.role === 'expert' || state.user?.role === 'manager';
   const [feed, setFeed] = useState<OrgAlertFeed | null>(null);
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
