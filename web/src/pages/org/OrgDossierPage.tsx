@@ -421,6 +421,7 @@ export default function OrgDossierPage() {
                   try {
                     await orgApi.updateClient(dossier.client_id, { export_status: exportStatus });
                     setDossier({ ...dossier, export_status: exportStatus });
+                    load();
                   } catch (err: any) { alert(err.message); }
                 }}
                 title={t('alerts.client_export')}
