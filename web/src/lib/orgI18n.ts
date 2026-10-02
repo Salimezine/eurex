@@ -120,6 +120,14 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.client_type': { fr: 'Type de client', ar: 'نوعية العميل' },
   'alerts.hide': { fr: 'Masquer les échéances', ar: 'إخفاء المواعيد' },
   'alerts.show': { fr: 'Afficher les échéances', ar: 'إظهار المواعيد' },
+  'alerts.export_scope': { fr: 'Portée export', ar: 'نطاق التصدير' },
+  'alerts.export_hint': { fr: 'Portée : échéance affichée dans un dossier uniquement si le statut export du client correspond (vide = tous)', ar: 'النطاق: تظهر في الملف فقط إذا طابقت حالة تصدير العميل (فارغ = الكل)' },
+  'alerts.export_all': { fr: 'Toutes', ar: 'الكل' },
+  'alerts.export_exportatrice': { fr: '🌍 Exportatrices (ETE 100%)', ar: '🌍 شركات تصديرية' },
+  'alerts.export_semi': { fr: '🏢 Semi-exportatrices', ar: '🏢 شبه تصديرية' },
+  'alerts.export_non': { fr: '⚖️ Non-exportatrices', ar: '⚖️ غير تصديرية' },
+  'alerts.client_export': { fr: 'Statut export', ar: 'حالة التصدير' },
+  'alerts.export_none': { fr: 'Non renseigné', ar: 'غير محدد' },
 
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },

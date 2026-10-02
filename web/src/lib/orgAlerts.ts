@@ -14,6 +14,7 @@ export interface FeedItem {
   note?: string | null;
   recurrence?: string | null;
   category?: string | null;
+  export_scope?: string[] | null;
   task_status?: string;
 }
 
@@ -51,6 +52,7 @@ export function mergeFeed(feed: OrgAlertFeed, today: Date = new Date()): FeedIte
       note: a.note,
       recurrence: a.recurrence ?? null,
       category: a.category ?? null,
+      export_scope: a.export_scope ?? null,
     })),
     ...(feed.tasks || []).map(t => ({
       kind: 'task' as const,
@@ -84,4 +86,17 @@ export function formatDueDate(dueDate: string): string {
   const [y, m, d] = dueDate.split('-');
   if (!y || !m || !d) return dueDate;
   return `${d}/${m}/${y}`;
+}
+
+export const EXPORT_LABELS: Record<string, string> = {
+  exportatrice: '🌍 Export',
+  semi_exportatrice: '🏢 Semi',
+  non_exportatrice: '⚖️ Non-export',
+};
+
+/** Puce de portée export : null/vides = toutes, sinon libellé court des statuts concernés. */
+export function exportScopeLabel(scope?: string[] | null): string | null {
+  if (!scope || scope.length === 0) return null;
+  if (scope.length === 3) return '🌍 Tous statuts';
+  return scope.map(s => EXPORT_LABELS[s] || s).join(' + ');
 }

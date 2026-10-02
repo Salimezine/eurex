@@ -23,6 +23,7 @@ export interface OrgClient {
   name: string;
   matricule_fiscal: string | null;
   person_type?: string | null;
+  export_status?: string | null;
   assigned_comptable_id: string | null;
   comptable_name: string | null;
   contact_email: string | null;
@@ -38,6 +39,7 @@ export interface OrgDossier {
   client_name: string;
   matricule_fiscal: string | null;
     person_type?: string | null;
+    export_status?: string | null;
     client_comptable_id?: string | null;
     exercice: number;
   status: string;
@@ -85,6 +87,7 @@ export interface OrgAlert {
   note: string | null;
   recurrence?: string | null;
   category?: string | null;
+  export_scope?: string[] | null;
   dossier_id: string | null;
   dossier_label: string | null;
   created_by_name: string | null;
@@ -167,7 +170,7 @@ export const orgApi = {
   createClient: (d: any) => req<any>('/org/clients', { method: 'POST', body: JSON.stringify(d) }),
     reassignClient: (id: string, comptableId: string) =>
       req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
-    updateClient: (id: string, patch: { person_type?: string | null }) =>
+    updateClient: (id: string, patch: { person_type?: string | null; export_status?: string | null }) =>
       req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   // Dossiers
@@ -195,9 +198,9 @@ export const orgApi = {
   // Fiscal alerts (échéances)
   getAlerts: (dossierId?: string) =>
     req<OrgAlertFeed>(`/org/alerts${dossierId ? `?dossier_id=${dossierId}` : ''}`),
-  createAlert: (data: { title: string; due_date: string; lead_days?: number; recurrence?: string; category?: string | null; dossier_id?: string | null; note?: string }) =>
+  createAlert: (data: { title: string; due_date: string; lead_days?: number; recurrence?: string; category?: string | null; dossier_id?: string | null; export_scope?: string[] | null; note?: string }) =>
     req<OrgAlert>('/org/alerts', { method: 'POST', body: JSON.stringify(data) }),
-  updateAlert: (id: string, patch: { title?: string; due_date?: string; lead_days?: number; done?: boolean; note?: string; recurrence?: string; category?: string | null; occurrence?: string }) =>
+  updateAlert: (id: string, patch: { title?: string; due_date?: string; lead_days?: number; done?: boolean; note?: string; recurrence?: string; category?: string | null; export_scope?: string[] | null; occurrence?: string }) =>
     req<OrgAlert>(`/org/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteAlert: (id: string) =>
     req<{ ok: boolean }>(`/org/alerts/${id}`, { method: 'DELETE' }),

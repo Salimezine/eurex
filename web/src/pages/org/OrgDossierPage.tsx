@@ -8,7 +8,7 @@ import {
   taskStats, MonthFilter, MonthGroup,
 } from '../../lib/orgMonths';
 import { groupDocsByTask, docOpenKind, docIcon, formatFileSize, DOC_ACCEPT } from '../../lib/orgDocs';
-import { alertState, formatDueDate } from '../../lib/orgAlerts';
+import { alertState, formatDueDate, EXPORT_LABELS } from '../../lib/orgAlerts';
 import OrgAlerts from '../../components/OrgAlerts';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Timeline from '../../components/Timeline';
@@ -413,6 +413,29 @@ export default function OrgDossierPage() {
                 {dossier.person_type === 'morale' ? '🏢' : '👤'} {t(`alerts.cat_${dossier.person_type}`)}
               </span>
             ) : null}
+            {canEditType ? (
+              <select
+                value={dossier.export_status || ''}
+                onChange={async e => {
+                  const exportStatus = e.target.value || null;
+                  try {
+                    await orgApi.updateClient(dossier.client_id, { export_status: exportStatus });
+                    setDossier({ ...dossier, export_status: exportStatus });
+                  } catch (err: any) { alert(err.message); }
+                }}
+                title={t('alerts.client_export')}
+                className="text-xs border border-cyan-200 rounded-lg px-2 py-0.5 focus:ring-2 focus:ring-cyan-500 outline-none bg-white"
+              >
+                <option value="">🌍 {t('alerts.export_none')}</option>
+                <option value="exportatrice">{t('alerts.export_exportatrice')}</option>
+                <option value="semi_exportatrice">{t('alerts.export_semi')}</option>
+                <option value="non_exportatrice">{t('alerts.export_non')}</option>
+              </select>
+            ) : dossier.export_status ? (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-cyan-700 bg-cyan-50" title={t('alerts.client_export')}>
+                {EXPORT_LABELS[dossier.export_status] || dossier.export_status}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-4 bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
@@ -461,7 +484,7 @@ export default function OrgDossierPage() {
             )}
           </>
         )}
-        {dossier.status === 'cloture' && (
+        {isExpert && dossier.status === 'cloture' && (
           <button
             onClick={() => setShowNewDossierModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 transition-all"

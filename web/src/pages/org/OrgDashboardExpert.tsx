@@ -6,6 +6,7 @@ import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
 import OrgAlerts from '../../components/OrgAlerts';
+import { EXPORT_LABELS } from '../../lib/orgAlerts';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
@@ -27,6 +28,7 @@ export default function OrgDashboardExpert() {
   const [newClientName, setNewClientName] = useState('');
   const [newClientMF, setNewClientMF] = useState('');
   const [newClientType, setNewClientType] = useState('');
+  const [newClientExport, setNewClientExport] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -61,7 +63,7 @@ export default function OrgDashboardExpert() {
       // If new client, create it first
       if (selectedClient === '__new__') {
         if (!newClientName.trim()) { alert('Nom du client requis'); setCreating(false); return; }
-        const newClient = await orgApi.createClient({ name: newClientName.trim(), matricule_fiscal: newClientMF.trim() || undefined, person_type: newClientType || undefined });
+        const newClient = await orgApi.createClient({ name: newClientName.trim(), matricule_fiscal: newClientMF.trim() || undefined, person_type: newClientType || undefined, export_status: newClientExport || undefined });
         clientId = newClient.id;
       }
       if (!clientId) return;
@@ -71,6 +73,7 @@ export default function OrgDashboardExpert() {
       setNewClientName('');
       setNewClientMF('');
       setNewClientType('');
+      setNewClientExport('');
       setNewExercice(new Date().getFullYear());
       load();
     } catch (err: any) {
@@ -264,6 +267,11 @@ export default function OrgDashboardExpert() {
                       <Link to={`/cabinet/dossier/${d.id}`} className="font-semibold text-purple-700 hover:text-purple-900 hover:underline transition-colors">
                         {d.client_name}
                       </Link>
+                      {d.export_status && (
+                        <span className="ml-2 inline-block align-middle text-[10px] font-semibold text-cyan-700 bg-cyan-50 px-1.5 py-0.5 rounded-full" title="Statut export du client">
+                          {EXPORT_LABELS[d.export_status] || d.export_status}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-gray-500 font-mono">{d.exercice}</td>
                     <td className="px-5 py-4 text-gray-600">{d.comptable_name || '—'}</td>
@@ -367,6 +375,17 @@ export default function OrgDashboardExpert() {
                         <option value="">— Type de client (optionnel) —</option>
                         <option value="morale">🏢 Personne morale</option>
                         <option value="physique">👤 Personne physique</option>
+                      </select>
+                      <select
+                        value={newClientExport}
+                        onChange={e => setNewClientExport(e.target.value)}
+                        title="Statut export du client"
+                        className="w-full border border-cyan-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-cyan-500 focus:border-transparent outline-none bg-white"
+                      >
+                        <option value="">🌍 Statut export (optionnel) —</option>
+                        <option value="exportatrice">{t('alerts.export_exportatrice')}</option>
+                        <option value="semi_exportatrice">{t('alerts.export_semi')}</option>
+                        <option value="non_exportatrice">{t('alerts.export_non')}</option>
                       </select>
                     </div>
                   )}

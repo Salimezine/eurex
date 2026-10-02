@@ -2,13 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Bell, Plus, Check, Trash2, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import { orgApi, OrgAlertFeed } from '../lib/orgApi';
-import { mergeFeed, urgentCount, alertState, formatDueDate, daysUntil, FeedItem, AlertState } from '../lib/orgAlerts';
+import { mergeFeed, urgentCount, alertState, formatDueDate, daysUntil, exportScopeLabel, FeedItem, AlertState } from '../lib/orgAlerts';
+import { useOrgAuth } from '../lib/orgAuth';
 import { t } from '../lib/orgI18n';
 
 interface Props {
   dossierId?: string;
   personType?: string | null;
 }
+
+const EXPORT_STATUSES = ['exportatrice', 'semi_exportatrice', 'non_exportatrice'];
+const EXPORT_KEY: Record<string, string> = { exportatrice: 'alerts.export_exportatrice', semi_exportatrice: 'alerts.export_semi', non_exportatrice: 'alerts.export_non' };
 
 const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string }> = {
   overdue: { row: 'bg-red-50 border-red-200', chip: 'bg-red-100 text-red-700', icon: '🔴' },
@@ -18,6 +22,8 @@ const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string 
 };
 
 export default function OrgAlerts({ dossierId, personType }: Props) {
+  const { state } = useOrgAuth();
+  const isExpert = state.user?.role === 'expert';
   const [feed, setFeed] = useState<OrgAlertFeed | null>(null);
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -26,6 +32,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
   const [lead, setLead] = useState(7);
   const [recurrence, setRecurrence] = useState('once');
   const [category, setCategory] = useState('');
+  const [exportScope, setExportScope] = useState<string[]>([]);
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -61,13 +68,18 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
       setLead(item.lead_days);
       setRecurrence(item.recurrence || 'once');
       setCategory(item.category || '');
+      setExportScope(item.export_scope || []);
       setNote(item.note || '');
     } else {
       setEditId(null);
-      setTitle(''); setDueDate(''); setLead(7); setRecurrence('once'); setCategory(''); setNote('');
+      setTitle(''); setDueDate(''); setLead(7); setRecurrence('once'); setCategory(''); setExportScope([]); setNote('');
     }
     setErr('');
     setOpen(true);
+  };
+
+  const toggleExportScope = (s: string) => {
+    setExportScope(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
   };
 
   const save = async () => {
@@ -76,10 +88,11 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
     if (!dueDate) { setErr(t('alerts.due_date')); return; }
     setBusy(true);
     try {
+      const scope = exportScope.length > 0 ? exportScope : null;
       if (editId) {
-        await orgApi.updateAlert(editId, { title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, note: note.trim() || undefined });
+        await orgApi.updateAlert(editId, { title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, export_scope: scope, note: note.trim() || undefined });
       } else {
-        await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, dossier_id: dossierId || null, note: note.trim() || undefined });
+        await orgApi.createAlert({ title: title.trim(), due_date: dueDate, lead_days: lead, recurrence, category: category || null, export_scope: scope, dossier_id: dossierId || null, note: note.trim() || undefined });
       }
       setOpen(false);
       await load();
@@ -128,7 +141,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
         </h3>
         <div className="flex items-center gap-2">
           {!hidden && <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>}
-          {!hidden && (
+          {!hidden && (isExpert || dossierId) && (
             <button
               onClick={() => openModal()}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all"
@@ -185,6 +198,14 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
                         title={t('alerts.category')}
                       >
                         {item.category === 'morale' ? '🏢' : '👤'} {t(`alerts.cat_${item.category}`)}
+                      </span>
+                    )}
+                    {item.kind === 'echeance' && exportScopeLabel(item.export_scope) && (
+                      <span
+                        className="text-[9px] font-semibold text-cyan-700 bg-cyan-50 px-1.5 py-0.5 rounded-full"
+                        title={t('alerts.export_hint')}
+                      >
+                        {exportScopeLabel(item.export_scope)}
                       </span>
                     )}
                     {item.dossier_label && (
@@ -301,6 +322,23 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
                 {recurrence !== 'once' && (
                   <p className="text-[11px] text-teal-600 mt-1">🔁 {t('alerts.recur_hint')}</p>
                 )}
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">{t('alerts.export_scope')}</label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {EXPORT_STATUSES.map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => toggleExportScope(s)}
+                      className={`px-2 py-1 rounded-lg text-[11px] font-medium border transition-all ${exportScope.includes(s) ? 'bg-cyan-50 border-cyan-300 text-cyan-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                    >
+                      {t(EXPORT_KEY[s])}
+                    </button>
+                  ))}
+                  {exportScope.length === 0 && <span className="text-[11px] text-gray-400">→ {t('alerts.export_all')}</span>}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">{t('alerts.export_hint')}</p>
               </div>
               <textarea
                 value={note}

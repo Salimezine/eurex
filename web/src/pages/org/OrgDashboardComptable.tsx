@@ -6,7 +6,8 @@ import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
 import OrgAlerts from '../../components/OrgAlerts';
-import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search, Plus, X } from 'lucide-react';
+import { EXPORT_LABELS } from '../../lib/orgAlerts';
+import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search } from 'lucide-react';
 
 type SortKey = 'name' | 'progress' | 'blocked';
 
@@ -15,13 +16,6 @@ export default function OrgDashboardComptable() {
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>('blocked');
   const [search, setSearch] = useState('');
-  const [showNewDossier, setShowNewDossier] = useState(false);
-  const [selectedClient, setSelectedClient] = useState('');
-  const [newExercice, setNewExercice] = useState(new Date().getFullYear());
-  const [creating, setCreating] = useState(false);
-  const [newClientName, setNewClientName] = useState('');
-  const [newClientMF, setNewClientMF] = useState('');
-  const [newClientType, setNewClientType] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -29,31 +23,6 @@ export default function OrgDashboardComptable() {
   };
 
   useEffect(() => { load(); }, []);
-
-  const createDossier = async () => {
-    setCreating(true);
-    try {
-      let clientId = selectedClient;
-      if (selectedClient === '__new__') {
-        if (!newClientName.trim()) { alert('Nom du client requis'); setCreating(false); return; }
-        const newClient = await orgApi.createClient({ name: newClientName.trim(), matricule_fiscal: newClientMF.trim() || undefined, person_type: newClientType || undefined });
-        clientId = newClient.id;
-      }
-      if (!clientId) return;
-      await orgApi.createDossier(clientId, newExercice);
-      setShowNewDossier(false);
-      setSelectedClient('');
-      setNewClientName('');
-      setNewClientMF('');
-      setNewClientType('');
-      setNewExercice(new Date().getFullYear());
-      load();
-    } catch (err: any) {
-      alert(err.message || 'Erreur lors de la création');
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const filtered = clients
     .filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.matricule_fiscal?.includes(search))
@@ -81,13 +50,6 @@ export default function OrgDashboardComptable() {
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">{clients.length} client{clients.length > 1 ? 's' : ''}</span>
           <OrgAccountButton />
-          <button
-            onClick={() => setShowNewDossier(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
-          >
-            <Plus size={16} />
-            Nouveau dossier
-          </button>
         </div>
       </div>
 
@@ -169,9 +131,16 @@ export default function OrgDashboardComptable() {
                 />
                 <div className="flex-1 min-w-0">
                   <h3 className="font-bold text-gray-800 text-base group-hover:text-purple-700 transition-colors truncate">{client.name}</h3>
-                  {client.matricule_fiscal && (
-                    <p className="text-[11px] text-gray-400 font-mono">{client.matricule_fiscal}</p>
-                  )}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {client.matricule_fiscal && (
+                      <p className="text-[11px] text-gray-400 font-mono">{client.matricule_fiscal}</p>
+                    )}
+                    {client.export_status && (
+                      <span className="text-[10px] font-semibold text-cyan-700 bg-cyan-50 px-1.5 py-0.5 rounded-full" title="Statut export du client">
+                        {EXPORT_LABELS[client.export_status] || client.export_status}
+                      </span>
+                    )}
+                  </div>
                   {d && (
                     <p className="text-[11px] text-gray-500 mt-1">
                       Exercice {d.exercice}{d.status === 'cloture' && <> — <span className="font-medium">{t('status.cloture')}</span></>}
@@ -211,117 +180,6 @@ export default function OrgDashboardComptable() {
           );
         })}
       </div>
-
-      {/* Modal: Nouveau dossier */}
-      {showNewDossier && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                <Plus size={20} className="text-purple-600" />
-                Nouveau dossier
-              </h3>
-              <button onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); setNewClientType(''); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-                <X size={18} className="text-gray-500" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-1 block">Client</label>
-                <div className="space-y-2">
-                  <select
-                    value={selectedClient === '__new__' ? '__new__' : selectedClient}
-                    onChange={e => {
-                      if (e.target.value === '__new__') {
-                        setSelectedClient('__new__');
-                      } else {
-                        setSelectedClient(e.target.value);
-                        setNewClientName('');
-                      }
-                    }}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
-                  >
-                    <option value="">— Sélectionner un client existant —</option>
-                    {clients.map(c => (
-                      <option key={c.id} value={c.id}>{c.name} {c.matricule_fiscal ? `(${c.matricule_fiscal})` : ''}</option>
-                    ))}
-                    <option value="__new__">✨ Nouveau client...</option>
-                  </select>
-
-                  {selectedClient === '__new__' && (
-                    <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-2">
-                      <input
-                        autoFocus
-                        value={newClientName}
-                        onChange={e => setNewClientName(e.target.value)}
-                        placeholder="Nom du client *"
-                        className="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
-                      />
-                      <input
-                        value={newClientMF}
-                        onChange={e => setNewClientMF(e.target.value)}
-                        placeholder="Matricule fiscal (optionnel)"
-                        className="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
-                      />
-                      <select
-                        value={newClientType}
-                        onChange={e => setNewClientType(e.target.value)}
-                        title="Type de client"
-                        className="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white"
-                      >
-                        <option value="">— Type de client (optionnel) —</option>
-                        <option value="morale">🏢 Personne morale</option>
-                        <option value="physique">👤 Personne physique</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-1 block">Exercice</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setNewExercice(y => y - 1)}
-                    className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold transition-colors"
-                  >
-                    −
-                  </button>
-                  <input
-                    type="number"
-                    value={newExercice}
-                    onChange={e => setNewExercice(Number(e.target.value))}
-                    className="flex-1 text-center border border-gray-200 rounded-xl px-4 py-2.5 text-lg font-bold text-gray-800 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-                  />
-                  <button
-                    onClick={() => setNewExercice(y => y + 1)}
-                    className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold transition-colors"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={createDossier}
-                disabled={(!selectedClient && !newClientName.trim()) || creating}
-                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
-              >
-                {creating ? 'Création...' : 'Créer le dossier'}
-              </button>
-              <button
-                onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); setNewClientType(''); }}
-                className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
-              >
-                Annuler
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
