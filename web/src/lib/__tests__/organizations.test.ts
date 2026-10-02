@@ -193,7 +193,7 @@ describe('Organization: Task Templates', () => {
     { label: 'Saisie achats', order_index: 2, requires_document: 0 },
     { label: 'Saisie ventes', order_index: 3, requires_document: 0 },
     { label: 'Rapprochement bancaire', order_index: 4, requires_document: 0 },
-    { label: 'Déclaration TVA mensuelle', order_index: 5, requires_document: 0 },
+    { label: 'Déclaration mensuelle d\'impôts (DMI)', order_index: 5, requires_document: 0 },
     { label: 'Déclaration CNSS mensuelle', order_index: 6, requires_document: 0 },
     { label: 'Révision balance', order_index: 7, requires_document: 0 },
     { label: 'Établissement états financiers', order_index: 8, requires_document: 0 },

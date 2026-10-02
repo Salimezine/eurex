@@ -2399,8 +2399,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const ensureAlertPack = async (db: any, orgId: string, dossierId: string | null = null) => {
         const y = new Date().getUTCFullYear();
         const pack = [
-          { key: 'pm_mensuelle', title: 'Déclaration mensuelle — TVA, retenues, TFP, FOPROLOS (personne morale)', due_date: `${y}-12-28`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'Personnes morales : au plus tard le 28 du mois suivant (télédéclaration TEJ ; PP : 15) — report au 1er jour ouvrable si férié/dimanche' },
-          { key: 'pp_mensuelle', title: 'Déclaration mensuelle — TVA, retenues, TFP, FOPROLOS (personne physique)', due_date: `${y}-12-15`, recurrence: 'mensuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Personnes physiques au régime réel : au plus tard le 15 du mois suivant (PM : 28) — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pm_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (personne morale)', due_date: `${y}-12-20`, recurrence: 'mensuelle', months: null, category: 'morale', lead_days: 5, export_scope: null, note: 'Personnes morales soumises à la télé-déclaration : au plus tard le 20 du mois suivant (télé-déclaration DGI) ; non télé-déclarantes : 28 — report au 1er jour ouvrable si férié/dimanche' },
+          { key: 'pp_mensuelle', title: 'Déclaration mensuelle d\'impôts (DMI) — TVA, retenues, TFP, FOPROLOS (personne physique)', due_date: `${y}-12-15`, recurrence: 'mensuelle', months: null, category: 'physique', lead_days: 5, export_scope: null, note: 'Personnes physiques au régime réel : au plus tard le 15 du mois suivant (PM télé-déclaration : 20) — report au 1er jour ouvrable si férié/dimanche' },
           { key: 'cnss_tr', title: 'CNSS — déclaration trimestrielle des salaires & cotisations', due_date: `${y}-01-15`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 5, export_scope: '["semi_exportatrice","non_exportatrice"]', note: 'Régime général non agricole — droit commun : 15 du mois suivant le trimestre (15 janv/avr/juil/oct), BTP >50 salariés : 20 · entreprises totalement exportatrices : 25 (voir échéance dédiée)' },
           { key: 'cnss_tr_export', title: 'CNSS — déclaration trimestrielle (entreprises totalement exportatrices)', due_date: `${y}-01-25`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 5, export_scope: '["exportatrice"]', note: 'Entreprises totalement exportatrices (ETE) : 25 du mois suivant le trimestre — droit commun : 15 · BTP >50 : 20 (communiqué CNSS)' },
           { key: 'cnss_das', title: 'CNSS — déclaration annuelle des salaires (DAS)', due_date: `${y}-02-28`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, export_scope: null, note: 'DAS CNSS (régime général, salaires) : récapitulatif annuel des salaires, form. TS-02 — avant le 28 février' },
@@ -2904,29 +2904,36 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 
-        // Task templates (order, requiresDoc, frequency)
+        // Task templates (order, requiresDoc, frequency, exportScope)
         const templates = [
-          ['Réception relevés bancaires', 1, 1, 'mensuelle'],
-          ['Saisie achats', 2, 0, 'mensuelle'],
-          ['Saisie ventes', 3, 0, 'mensuelle'],
-          ['Rapprochement bancaire', 4, 0, 'mensuelle'],
-          ['Déclaration TVA mensuelle', 5, 0, 'mensuelle'],
-          ['Déclaration CNSS mensuelle', 6, 0, 'mensuelle'],
-          ['Révision balance', 7, 0, 'annuelle'],
-          ['Établissement états financiers', 8, 0, 'annuelle'],
-          ['Liasse fiscale / déclaration IS', 9, 0, 'annuelle'],
-          ['Déclaration TVA trimestrielle (option) — 15 du mois suivant', 10, 0, 'trimestrielle'],
-          ['CNSS déclaration trimestrielle I16 — 15 du mois suivant', 11, 0, 'trimestrielle'],
-          ['État suspension de TVA art. 18 II — 28 j après trimestre', 12, 0, 'trimestrielle'],
-          ['Déclaration annuelle IS/IRPP — 25 mars', 13, 0, 'annuelle'],
-          ['Acomptes provisionnels IS — 25 juin / 25 sept / 25 déc', 14, 0, 'annuelle'],
-          ['Déclaration annuelle employeur — 28 février', 15, 0, 'annuelle'],
-          ['Dépôt états financiers au RNE — 31 juillet', 16, 0, 'annuelle'],
-          ['Dossier AG / rapport CAC — 30 j après AG', 17, 0, 'annuelle'],
-          ['Taxe de circulation PM — 5 février', 18, 0, 'annuelle'],
+          ['Réception relevés bancaires', 1, 1, 'mensuelle', null],
+          ['Saisie achats', 2, 0, 'mensuelle', null],
+          ['Saisie ventes', 3, 0, 'mensuelle', null],
+          ['Rapprochement bancaire', 4, 0, 'mensuelle', null],
+          ['Déclaration mensuelle d\'impôts (DMI) — 15 (PP) / 20 (PM) du mois suivant', 5, 0, 'mensuelle', null],
+          ['Préparation des certificats de retenue à la source (TEJ)', 6, 0, 'mensuelle', null],
+          ['Déclaration CNSS mensuelle', 7, 0, 'mensuelle', null],
+          ['Révision balance', 8, 0, 'annuelle', null],
+          ['Établissement états financiers', 9, 0, 'annuelle', null],
+          ['Liasse fiscale / déclaration IS', 10, 0, 'annuelle', null],
+          ['Déclaration TVA trimestrielle (option) — 15 du mois suivant', 11, 0, 'trimestrielle', null],
+          ['CNSS déclaration trimestrielle I16 — 15 du mois suivant', 12, 0, 'trimestrielle', null],
+          ['Listes des factures de ventes en suspension TVA (art. 36 LF 2013) — 28 j après trimestre', 13, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
+          ['Listes des factures d\'achats en suspension TVA (art. 35 LF 2013) — 28 j après trimestre', 14, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
+          ['Déclaration annuelle IS/IRPP — 25 mars', 15, 0, 'annuelle', null],
+          ['Acomptes provisionnels IS — 28 juin / 28 sept / 28 déc (personnes morales)', 16, 0, 'annuelle', null],
+          ['Déclaration annuelle employeur — 28 février', 17, 0, 'annuelle', null],
+          ['Dépôt états financiers au RNE — 31 juillet', 18, 0, 'annuelle', null],
+          ['Dossier AG / rapport CAC — 30 j après AG', 19, 0, 'annuelle', null],
+          ['Vignette des voitures particulières (PM) — 5 février', 20, 0, 'annuelle', null],
+          ['Reporting mensuel — édition & envoi client', 21, 0, 'mensuelle', null],
+          ['Élaboration de la paie mensuelle', 22, 0, 'mensuelle', null],
+          ['Préparation PV AGO — approbation EF n-1', 23, 0, 'annuelle', null],
+          ['Renouvellement autorisation achat en suspension TVA', 24, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
+          ['Visa des bons de commande en suspension TVA', 25, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
         ] as const;
-        for (const [label, order, requiresDoc, freq] of templates) {
-          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq).run();
+        for (const [label, order, requiresDoc, freq, scope] of templates) {
+          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq, scope).run();
         }
 
         // Clients
@@ -2958,18 +2965,18 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             if (freq === 'mensuelle') {
               // Tâche mensuelle : le statut du seed se place sur le mois courant (Septembre),
               // les 11 autres mois restent à faire.
-              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month) VALUES (?, ?, ?, ?, ?, ?, 9)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope) VALUES (?, ?, ?, ?, ?, ?, 9, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
               for (let m = 1; m <= 12; m++) {
                 if (m === 9) continue;
-                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month) VALUES (?, ?, ?, \'a_faire\', ?, ?)').bind(genId(), dd.id, templates[i][0], i + 1, m).run();
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month, export_scope) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?)').bind(genId(), dd.id, templates[i][0], i + 1, m, templates[i][4]).run();
               }
             } else if (freq === 'trimestrielle') {
               // Tâche trimestrielle : Janv, Avr, Juil, Oct
               for (const m of [1, 4, 7, 10]) {
-                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m).run();
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m, templates[i][4]).run();
               }
             } else {
-              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1).run();
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
             }
           }
         }
