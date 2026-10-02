@@ -2932,9 +2932,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const comp1Hash = await makeHash('comptable1234567');
         const comp2Hash = await makeHash('comptable1234567');
 
-        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'EUREX', 'expert@eurex.tn', expertHash, 'expert').run();
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_expert_001', orgId, 'Omar', 'expert@eurex.tn', expertHash, 'expert').run();
         // Manager : rôle expert stocké (CHECK DB) + role_label 'manager' pour l'affichage
-        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, role_label) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('user_manager_001', orgId, 'Karim Mansour', 'manager@eurex.tn', managerHash, 'expert', 'manager').run();
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, role_label) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('user_manager_001', orgId, 'Abla', 'manager@eurex.tn', managerHash, 'expert', 'manager').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 

@@ -15,7 +15,7 @@
 -- 2. Compte manager (affiché 'manager' via role_label ; rôle stocké 'expert'
 --    car le CHECK de org_users n'accepte que expert/comptable)
 INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, role_label)
-SELECT lower(hex(randomblob(16))), o.id, 'Karim Mansour', 'manager@eurex.tn',
+SELECT lower(hex(randomblob(16))), o.id, 'Abla', 'manager@eurex.tn',
        'eurexmgr2026salt1:88cd2dc6ce957938373d196c4ed5a2616dc4d1cef2d28becec71ad1589e4e980',
        'expert', 'manager'
 FROM organizations o
