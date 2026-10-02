@@ -2492,9 +2492,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
 
         const dones = new Set<string>();
-        if (kept.length > 0) {
-          const placeholders = kept.map(() => '?').join(',');
-          const { results: dres } = await env.DB.prepare(`SELECT alert_id, due_date FROM org_alert_dones WHERE alert_id IN (${placeholders})`).bind(...kept.map((r: any) => r.id)).all();
+        // D1 : max 100 variables par requête → découpage par paquets de 50
+        const keptIds = kept.map((r: any) => String(r.id));
+        for (let i = 0; i < keptIds.length; i += 50) {
+          const chunk = keptIds.slice(i, i + 50);
+          const { results: dres } = await env.DB.prepare(`SELECT alert_id, due_date FROM org_alert_dones WHERE alert_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
           for (const d of dres as any[]) dones.add(`${d.alert_id}|${d.due_date}`);
         }
         const today = new Date();
