@@ -1719,9 +1719,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
 
       async function orgRecalcProgress(dossierId: string) {
-        const { results } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(dossierId).all();
+        const { results } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE t.dossier_id = ?').bind(dossierId).all();
         let total = 0, fait = 0;
-        for (const t of results as any[]) { total += t.cnt; if (t.status === 'fait') fait += t.cnt; }
+        for (const t of results as any[]) {
+          if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
+          total++; if (t.status === 'fait') fait++;
+        }
         const progress = total > 0 ? Math.round(fait / total * 1000) / 10 : 0;
         await env.DB.prepare('UPDATE org_dossiers SET cached_progress = ? WHERE id = ?').bind(progress, dossierId).run();
         return progress;
@@ -1733,6 +1736,15 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!Array.isArray(v)) return null;
         const valid = v.filter((s: any) => EXPORT_STATUSES.includes(s));
         return valid.length ? JSON.stringify(valid) : null;
+      };
+      // Filtre une tâche/échéance selon la portée export (JSON) et le statut export du client
+      // (vide/NULL = non_exportatrice ; portée NULL/vide = visible quel que soit le statut)
+      const exportScopeKeeps = (scopeJson: any, exportStatus: any): boolean => {
+        if (!scopeJson) return true;
+        let arr: any;
+        try { arr = JSON.parse(String(scopeJson)); } catch { return true; }
+        if (!Array.isArray(arr) || !arr.length) return true;
+        return arr.includes(exportStatus || 'non_exportatrice');
       };
 
       // --- ORG: ME ---
@@ -1808,8 +1820,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           let taskStats = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let docStats = { total: 0, received: 0 };
           if (d) {
-            const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
-            for (const t of tasks as any[]) { taskStats.total += t.cnt; if (t.status === 'fait') taskStats.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') taskStats.en_cours += t.cnt; else if (t.status === 'bloque_client') taskStats.bloque_client += t.cnt; }
+            const { results: tasks } = await env.DB.prepare('SELECT status, export_scope FROM org_tasks WHERE dossier_id = ?').bind(d.id).all();
+            for (const t of tasks as any[]) {
+              if (!exportScopeKeeps(t.export_scope, c.export_status)) continue;
+              taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
+            }
             const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
             if (ds) { docStats.total = ds.total || 0; docStats.received = ds.received || 0; }
           }
@@ -1878,9 +1893,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessClient(user, orgClientDossiersMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const { results } = await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? ORDER BY exercice DESC').bind(orgClientDossiersMatch[1]).all();
         const enriched = await Promise.all(results.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status FROM org_tasks t JOIN org_dossiers d2 ON t.dossier_id = d2.id JOIN org_clients c ON d2.client_id = c.id WHERE t.dossier_id = ?').bind(d.id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
-          for (const t of tasks as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          for (const t of tasks as any[]) {
+            if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
+            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+          }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0 };
         }));
         return json(enriched);
@@ -1909,7 +1927,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             [null];
           for (const m of months) {
             const taskId = genId();
-            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m).run();
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
             if (tmpl.requires_document) {
               const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exercice}` : tmpl.label;
               await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, docLabel).run();
@@ -1929,7 +1947,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type, c.export_status, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: tasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
+        // Filtre export : les tâches à portée hors statut du client n'apparaissent pas
+        const tasks = (rawTasks as any[]).filter(t => exportScopeKeeps(t.export_scope, dossier.export_status));
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
         const { results: notes } = await env.DB.prepare('SELECT n.*, u.full_name as author_name FROM org_notes n LEFT JOIN org_users u ON n.user_id = u.id WHERE n.dossier_id = ? ORDER BY n.created_at DESC').bind(orgDossierGetMatch[1]).all();
         // Time entries breakdown
@@ -1956,7 +1976,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const dossier = await env.DB.prepare('SELECT * FROM org_dossiers WHERE id = ?').bind(orgDossierCloseMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         if (dossier.status === 'cloture') return json({ error: 'Dossier déjà clôturé' }, 400);
-        const { results: blockedTasks } = await env.DB.prepare('SELECT label FROM org_tasks WHERE dossier_id = ? AND status != \'fait\'').bind(orgDossierCloseMatch[1]).all();
+        const { results: rawBlocked } = await env.DB.prepare('SELECT label, export_scope FROM org_tasks WHERE dossier_id = ? AND status != \'fait\'').bind(orgDossierCloseMatch[1]).all();
+        const clt = await env.DB.prepare('SELECT export_status FROM org_clients WHERE id = ?').bind(dossier.client_id).first() as any;
+        const blockedTasks = (rawBlocked as any[]).filter(t => exportScopeKeeps(t.export_scope, clt?.export_status));
         const { force, justification } = await request.json() as any;
         if (blockedTasks.length > 0 && !force) return json({ error: `Clôture impossible — tâches restantes : ${blockedTasks.map((t: any) => t.label).join(', ')}` }, 400);
         if (blockedTasks.length > 0 && force && user.role !== 'expert') return json({ error: 'Seul un expert peut forcer la clôture' }, 403);
@@ -2063,7 +2085,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
-        const { status, blocked_reason, label, assigned_comptable_id, due_date } = body;
+        const { status, blocked_reason, label, assigned_comptable_id, due_date, export_scope } = body;
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         const updates: string[] = [];
@@ -2086,6 +2108,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             if (!comp) return json({ error: 'Comptable introuvable' }, 400);
           }
           updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null);
+        }
+        if (export_scope !== undefined) {
+          if (export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
+          if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
+          updates.push('export_scope = ?'); binds.push(parseExportScope(export_scope));
         }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         updates.push("updated_by = ?", "updated_at = datetime('now')");
@@ -2132,8 +2159,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
-        const { label, assigned_comptable_id, month, due_date } = await request.json() as any;
+        const { label, assigned_comptable_id, month, due_date, export_scope } = await request.json() as any;
         if (!label?.trim()) return json({ error: 'Libellé requis' }, 400);
+        if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
+        if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
         const taskMonth = month === null || month === undefined ? null : (Number(month) >= 1 && Number(month) <= 12 ? Number(month) : null);
         const taskDue = due_date === null || due_date === undefined ? null : String(due_date).trim();
         if (taskDue && (!/^\d{4}-\d{2}-\d{2}$/.test(taskDue) || isNaN(Date.parse(taskDue)))) return json({ error: 'Date butoir invalide (AAAA-MM-JJ)' }, 400);
@@ -2148,7 +2177,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
         const taskId = genId();
-        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month, due_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth, taskDue).run();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month, due_date, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth, taskDue, export_scope === undefined ? null : parseExportScope(export_scope)).run();
         const progress = await orgRecalcProgress(dossierId);
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, month: taskMonth, due_date: taskDue, assigned_comptable_id: assigned_comptable_id || null })).run();
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
@@ -2382,8 +2411,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           { key: 'is_annuelle_export', title: 'Déclaration annuelle & liquidation IS — entreprise totalement exportatrice', due_date: `${y}-06-30`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, export_scope: '["exportatrice"]', note: 'ETE (100 % export, art. 69 loi 2017-8) : dépôt en franchise de pénalités jusqu\'au 30 juin — pénalités art. 85 CDPF à compter du 1er juillet · droit commun : 25 mars (provisoire) / 25 juin (définitive)' },
           { key: 'is_definitive', title: 'Déclaration définitive IS (après approbation des comptes)', due_date: `${y}-06-25`, recurrence: 'annuelle', months: null, category: 'morale', lead_days: 30, export_scope: null, note: 'SA et sociétés soumises à l\'audit légal : déclaration définitive au plus tard le 25 juin ou avant l\'AG (après la provisoire du 25 mars) — ETE : 30 juin' },
           { key: 'liasse_fiscale', title: 'Liasse fiscale — états comptables normalisés (F6001 à F6006)', due_date: `${y}-03-25`, recurrence: 'annuelle', months: null, category: null, lead_days: 30, export_scope: null, note: 'CCT (LF 2017 art. 41) : mêmes délais que la déclaration annuelle IS — provisoire 25 mars / définitive 25 juin (ETE : 30 juin) — télétransmission e-jibaya' },
-          { key: 'tva_susp_ventes', title: 'CA en suspension de TVA — ventes (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: null, note: 'Listes des factures de ventes en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 36 LF 2013) → 28 janv/avr/juil/oct' },
-          { key: 'tva_susp_achats', title: 'CA en suspension de TVA — achats (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: null, note: 'Listes des factures d\'achats en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 35 LF 2013) → 28 janv/avr/juil/oct' },
+          { key: 'tva_susp_ventes', title: 'CA en suspension de TVA — ventes (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Listes des factures de ventes en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 36 LF 2013) → 28 janv/avr/juil/oct' },
+          { key: 'tva_susp_achats', title: 'CA en suspension de TVA — achats (listes trimestrielles)', due_date: `${y}-01-28`, recurrence: 'trimestrielle', months: '[1,4,7,10]', category: null, lead_days: 7, export_scope: '["exportatrice","semi_exportatrice"]', note: 'Listes des factures d\'achats en suspension : dépôt dans les 28 jours suivant chaque trimestre civil (art. 35 LF 2013) → 28 janv/avr/juil/oct' },
           { key: 'certificats_tej', title: 'Certificats de retenue à la source — plateforme TEJ', due_date: `${y}-01-31`, recurrence: 'mensuelle', months: null, category: null, lead_days: 5, export_scope: null, note: 'Élaboration et remise des certificats de RS via tej.finances.gov.tn au plus tard à la fin du mois suivant le mois de paiement (arrêté MF du 10/05/2024, art. 8)' },
           { key: 'irpp_capitaux', title: 'Déclaration annuelle IRPP — capitaux mobiliers & fonciers', due_date: `${y}-02-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : revenus de capitaux mobiliers & valeurs mobilières, revenus fonciers, source étrangère (hors salaires/pensions/rentes) et plus-values (art. 31 bis) — avant le 25 février' },
           { key: 'irpp_bic', title: 'Déclaration annuelle IRPP — BIC (commerçants)', due_date: `${y}-04-25`, recurrence: 'annuelle', months: null, category: 'physique', lead_days: 30, export_scope: null, note: 'Art. 60 : commerçants — régime réel (RNR/RNS) ou régime forfaitaire — avant le 25 avril' },
@@ -2503,7 +2532,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const alerts = kept.flatMap(r => expandAlertOccurrence(r, dones, today));
         alerts.sort((a, b) => a.due_date.localeCompare(b.due_date));
 
-        let tSql = `SELECT t.id, t.label, t.due_date, t.status, t.dossier_id, t.assigned_comptable_id,
+        let tSql = `SELECT t.id, t.label, t.due_date, t.status, t.dossier_id, t.assigned_comptable_id, t.export_scope, c.export_status,
           c.name || ' (' || d.exercice || ')' AS dossier_label
           FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id
           WHERE c.organization_id = ? AND t.due_date IS NOT NULL AND t.status != 'fait'`;
@@ -2511,7 +2540,15 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (user.role !== 'expert') { tSql += ' AND c.assigned_comptable_id = ?'; tBinds.push(user.id); }
         if (dossierId) { tSql += ' AND t.dossier_id = ?'; tBinds.push(dossierId); }
         tSql += ' ORDER BY t.due_date ASC';
-        const { results: tasks } = await env.DB.prepare(tSql).bind(...tBinds).all();
+        const { results: rawFeedTasks } = await env.DB.prepare(tSql).bind(...tBinds).all();
+        // Filtre export : tâche à portée visible uniquement si le statut du client est dedans
+        const tasks = (rawFeedTasks as any[])
+          .filter(t => exportScopeKeeps(t.export_scope, t.export_status))
+          .map(t => {
+            let scope: string[] | null = null;
+            if (t.export_scope) { try { const p = JSON.parse(t.export_scope); if (Array.isArray(p)) scope = p; } catch { scope = null; } }
+            return { id: t.id, label: t.label, due_date: t.due_date, status: t.status, dossier_id: t.dossier_id, assigned_comptable_id: t.assigned_comptable_id, dossier_label: t.dossier_label, export_scope: scope };
+          });
 
         return json({ alerts, tasks });
       }
@@ -2636,9 +2673,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
         const enriched = await Promise.all(results.map(async (c: any) => {
           const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
-          const { results: taskStats } = await env.DB.prepare('SELECT t.status, COUNT(*) as cnt FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\' GROUP BY t.status').bind(c.id, user.organization_id).all();
+          const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\'').bind(c.id, user.organization_id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
-          for (const t of taskStats as any[]) { s.total += t.cnt; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          for (const t of taskStats as any[]) {
+            if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
+            s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+          }
           return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s };
         }));
         return json(enriched);
@@ -2709,10 +2749,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results: dossiers } = await env.DB.prepare('SELECT d.*, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(compId, user.organization_id).all();
         // Enrich dossiers with task stats
         const enrichedDossiers = await Promise.all(dossiers.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt, COALESCE(SUM(total_time_seconds), 0) as total_time FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t JOIN org_dossiers d2 ON t.dossier_id = d2.id JOIN org_clients c ON d2.client_id = c.id WHERE t.dossier_id = ?').bind(d.id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let totalTime = 0;
-          for (const t of tasks as any[]) { s.total += t.cnt; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          for (const t of tasks as any[]) {
+            if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
+            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+          }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
         }));
         // All tasks modified by this comptable
@@ -2759,10 +2802,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
         const { results } = await env.DB.prepare('SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(user.organization_id).all();
         const enriched = await Promise.all(results.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT status, COUNT(*) as cnt, COALESCE(SUM(total_time_seconds), 0) as total_time FROM org_tasks WHERE dossier_id = ? GROUP BY status').bind(d.id).all();
+          const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.dossier_id = ?').bind(d.id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let totalTime = 0;
-          for (const t of tasks as any[]) { s.total += t.cnt; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait += t.cnt; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours += t.cnt; else if (t.status === 'bloque_client') s.bloque_client += t.cnt; }
+          for (const t of tasks as any[]) {
+            if (!exportScopeKeeps(t.export_scope, d.export_status)) continue;
+            s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+          }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
         }));
         return json(enriched);
@@ -2778,8 +2824,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { label, requires_document, assigned_comptable_id, frequency } = await request.json() as any;
+        const { label, requires_document, assigned_comptable_id, frequency, export_scope } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
+        if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
+        if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
         if (frequency !== undefined && frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') {
           return json({ error: 'Fréquence invalide' }, 400);
         }
@@ -2790,16 +2838,18 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq).run();
-        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq }, 201);
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq, export_scope === undefined ? null : parseExportScope(export_scope)).run();
+        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq, export_scope: export_scope === undefined ? null : parseExportScope(export_scope) }, 201);
       }
       const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
       if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
-        const { assigned_comptable_id, label, requires_document, frequency } = await request.json() as any;
+        const { assigned_comptable_id, label, requires_document, frequency, export_scope } = await request.json() as any;
         const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
         if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
+        if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
+        if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
         if (assigned_comptable_id !== undefined && assigned_comptable_id !== null) {
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
           if (!comp) return json({ error: 'Comptable introuvable' }, 400);
@@ -2813,6 +2863,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
           updates.push('frequency = ?'); binds.push(frequency);
         }
+        if (export_scope !== undefined) { updates.push('export_scope = ?'); binds.push(parseExportScope(export_scope)); }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         binds.push(orgTmplMatch[1], user.organization_id);
         await env.DB.prepare(`UPDATE org_task_templates SET ${updates.join(', ')} WHERE id = ? AND organization_id = ?`).bind(...binds).run();
@@ -2922,6 +2973,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             }
           }
         }
+        // Portée export des tâches suspension TVA (seed) : exportatrices + semi-exportatrices
+        const seedScope = '["exportatrice","semi_exportatrice"]';
+        await env.DB.prepare('UPDATE org_task_templates SET export_scope = ? WHERE organization_id = ? AND label LIKE \'%suspension%\' AND label LIKE \'%TVA%\'').bind(seedScope, orgId).run();
+        await env.DB.prepare('UPDATE org_tasks SET export_scope = ? WHERE label LIKE \'%suspension%\' AND label LIKE \'%TVA%\'').bind(seedScope).run();
         // Update cached progress
         for (const dd of dossierData) {
           await orgRecalcProgress(dd.id);

@@ -201,7 +201,7 @@ export default function OrgAlerts({ dossierId, personType, exportStatus }: Props
                         {item.category === 'morale' ? '🏢' : '👤'} {t(`alerts.cat_${item.category}`)}
                       </span>
                     )}
-                    {item.kind === 'echeance' && exportScopeLabel(item.export_scope) && (
+                    {exportScopeLabel(item.export_scope) && (
                       <span
                         className="text-[9px] font-semibold text-cyan-700 bg-cyan-50 px-1.5 py-0.5 rounded-full"
                         title={t('alerts.export_hint')}

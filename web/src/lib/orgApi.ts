@@ -102,6 +102,7 @@ export interface OrgAlertTask {
   dossier_id: string;
   dossier_label: string;
   assigned_comptable_id: string | null;
+  export_scope?: string[] | null;
 }
 
 export interface OrgAlertFeed {

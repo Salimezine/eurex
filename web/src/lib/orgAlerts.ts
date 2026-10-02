@@ -64,6 +64,7 @@ export function mergeFeed(feed: OrgAlertFeed, today: Date = new Date()): FeedIte
       dossier_id: t.dossier_id,
       dossier_label: t.dossier_label,
       task_status: t.status,
+      export_scope: t.export_scope ?? null,
     })),
   ];
   return items.sort((a, b) => {
