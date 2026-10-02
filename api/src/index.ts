@@ -2459,7 +2459,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
       if (path === '/api/org/alerts' && method === 'POST') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
         const body = await request.json() as any;
         const title = (body.title || '').trim();
         const dueDate = (body.due_date || '').trim();
@@ -2475,6 +2475,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const d = await env.DB.prepare('SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(body.dossier_id, user.organization_id).first();
           if (!d) return json({ error: 'Dossier introuvable' }, 404);
           dossierId = String(body.dossier_id);
+          if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
         }
         const id = genId();
         await env.DB.prepare('INSERT INTO org_fiscal_alerts (id, organization_id, title, due_date, lead_days, recurrence, category, dossier_id, note, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -2489,43 +2490,37 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
+        if (user.role !== 'expert' && row.dossier_id && !await orgCanAccessDossier(user, row.dossier_id)) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
         const occ = body.occurrence ? String(body.occurrence).trim() : null;
         if (occ && (!/^\d{4}-\d{2}-\d{2}$/.test(occ) || isNaN(Date.parse(occ)))) return json({ error: 'Occurrence invalide' }, 400);
         const updates: string[] = [];
         const binds: any[] = [];
         let toggleDone: boolean | undefined;
-        if (user.role !== 'expert') {
-          const forbidden = ['title', 'due_date', 'lead_days', 'note', 'recurrence', 'category'].filter(k => body[k] !== undefined);
-          if (forbidden.length > 0) return json({ error: 'Seul un expert peut modifier cette échéance' }, 403);
-          if (body.done === undefined) return json({ error: 'Rien à modifier' }, 400);
-          toggleDone = !!body.done;
-        } else {
-          if (body.title !== undefined) {
-            const v = (body.title || '').trim();
-            if (!v) return json({ error: 'Libellé requis' }, 400);
-            updates.push('title = ?'); binds.push(v);
-          }
-          if (body.due_date !== undefined) {
-            const v = (body.due_date || '').trim();
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
-            updates.push('due_date = ?'); binds.push(v);
-          }
-          if (body.lead_days !== undefined) {
-            const l = Math.max(0, Math.min(60, Math.round(Number(body.lead_days) || 0)));
-            updates.push('lead_days = ?'); binds.push(l);
-          }
-          if (body.note !== undefined) { updates.push('note = ?'); binds.push((body.note || '').trim() || null); }
-          if (body.recurrence !== undefined) {
-            if (!['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence)) return json({ error: 'Récurrence invalide' }, 400);
-            updates.push('recurrence = ?'); binds.push(body.recurrence === 'once' ? null : body.recurrence);
-          }
-          if (body.category !== undefined) {
-            if (body.category !== null && !['morale', 'physique'].includes(body.category)) return json({ error: 'Catégorie invalide' }, 400);
-            updates.push('category = ?'); binds.push(body.category || null);
-          }
-          if (body.done !== undefined) toggleDone = !!body.done;
+        if (body.title !== undefined) {
+          const v = (body.title || '').trim();
+          if (!v) return json({ error: 'Libellé requis' }, 400);
+          updates.push('title = ?'); binds.push(v);
         }
+        if (body.due_date !== undefined) {
+          const v = (body.due_date || '').trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v))) return json({ error: 'Date invalide (AAAA-MM-JJ)' }, 400);
+          updates.push('due_date = ?'); binds.push(v);
+        }
+        if (body.lead_days !== undefined) {
+          const l = Math.max(0, Math.min(60, Math.round(Number(body.lead_days) || 0)));
+          updates.push('lead_days = ?'); binds.push(l);
+        }
+        if (body.note !== undefined) { updates.push('note = ?'); binds.push((body.note || '').trim() || null); }
+        if (body.recurrence !== undefined) {
+          if (!['once', 'mensuelle', 'trimestrielle', 'annuelle'].includes(body.recurrence)) return json({ error: 'Récurrence invalide' }, 400);
+          updates.push('recurrence = ?'); binds.push(body.recurrence === 'once' ? null : body.recurrence);
+        }
+        if (body.category !== undefined) {
+          if (body.category !== null && !['morale', 'physique'].includes(body.category)) return json({ error: 'Catégorie invalide' }, 400);
+          updates.push('category = ?'); binds.push(body.category || null);
+        }
+        if (body.done !== undefined) toggleDone = !!body.done;
 
         if (toggleDone !== undefined) {
           if (row.recurrence) {
@@ -2555,9 +2550,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
 
       if (orgAlertMatch && method === 'DELETE') {
         const user = await verifyOrgToken(request);
-        if (!user || user.role !== 'expert') return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
         const row = await env.DB.prepare('SELECT * FROM org_fiscal_alerts WHERE id = ? AND organization_id = ?').bind(orgAlertMatch[1], user.organization_id).first() as any;
         if (!row) return json({ error: 'Échéance introuvable' }, 404);
+        if (user.role !== 'expert' && row.dossier_id && !await orgCanAccessDossier(user, row.dossier_id)) return json({ error: 'Accès refusé' }, 403);
         await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_deleted\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, due_date: row.due_date })).run();

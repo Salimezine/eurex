@@ -4,7 +4,6 @@ import { Bell, Plus, Check, Trash2, RotateCcw, Eye, EyeOff } from 'lucide-react'
 import { orgApi, OrgAlertFeed } from '../lib/orgApi';
 import { mergeFeed, urgentCount, alertState, formatDueDate, daysUntil, FeedItem, AlertState } from '../lib/orgAlerts';
 import { t } from '../lib/orgI18n';
-import { useOrgAuth } from '../lib/orgAuth';
 
 interface Props {
   dossierId?: string;
@@ -19,8 +18,6 @@ const STATE_STYLE: Record<AlertState, { row: string; chip: string; icon: string 
 };
 
 export default function OrgAlerts({ dossierId, personType }: Props) {
-  const { state } = useOrgAuth();
-  const isExpert = state.user?.role === 'expert';
   const [feed, setFeed] = useState<OrgAlertFeed | null>(null);
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -131,7 +128,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
         </h3>
         <div className="flex items-center gap-2">
           {!hidden && <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>}
-          {!hidden && isExpert && (
+          {!hidden && (
             <button
               onClick={() => openModal()}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all"
@@ -215,7 +212,7 @@ export default function OrgAlerts({ dossierId, personType }: Props) {
                     {item.done ? <RotateCcw size={13} /> : <Check size={13} />}
                   </button>
                 )}
-                {item.kind === 'echeance' && isExpert && (
+                {item.kind === 'echeance' && (
                   <>
                     <button
                       onClick={() => openModal(item)}
