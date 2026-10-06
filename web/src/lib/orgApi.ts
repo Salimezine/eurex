@@ -57,6 +57,35 @@ export interface OrgDossier {
   progress: number;
   time_entries: any[];
   time_by_user: { user_name: string; seconds: number }[];
+  is_granted?: boolean;
+  grants?: OrgGrant[];
+}
+
+export interface OrgGrant {
+  id: string;
+  dossier_id: string;
+  granted_to: string;
+  granted_to_name?: string | null;
+  granted_by?: string;
+  granted_by_name?: string | null;
+  reason?: string | null;
+  days: number;
+  expires_at: string;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+export interface OrgMyGrant {
+  id: string;
+  dossier_id: string;
+  reason: string | null;
+  days: number;
+  expires_at: string;
+  created_at: string;
+  exercice: number;
+  status: string;
+  client_name: string;
+  granted_by_name: string | null;
 }
 
 export interface OrgTask {
@@ -189,6 +218,14 @@ export const orgApi = {
     req<any>(`/org/clients/${clientId}/dossiers`, { method: 'POST', body: JSON.stringify({ exercice, assigned_comptable_id: assignedComptableId || null }) }),
   closeDossier: (id: string, force?: boolean, justification?: string) =>
     req<any>(`/org/dossiers/${id}/close`, { method: 'PATCH', body: JSON.stringify({ force, justification }) }),
+
+  // Renfort (grants d'accès temporaire à un dossier)
+  createGrant: (dossierId: string, body: { granted_to: string; days: number; reason: string }) =>
+    req<OrgGrant>(`/org/dossiers/${dossierId}/grants`, { method: 'POST', body: JSON.stringify(body) }),
+  getGrants: (dossierId: string) => req<OrgGrant[]>(`/org/dossiers/${dossierId}/grants`),
+  revokeGrant: (dossierId: string, grantId: string) =>
+    req<{ ok: boolean }>(`/org/dossiers/${dossierId}/grants/${grantId}`, { method: 'DELETE' }),
+  getMyGrants: () => req<OrgMyGrant[]>('/org/grants/mine'),
 
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>

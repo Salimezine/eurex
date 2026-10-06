@@ -43,6 +43,11 @@ export default function OrgDossierPage() {
   const { state } = useOrgAuth();
   const isExpert = state.user?.role === 'expert' || state.user?.role === 'manager';
   const [dossier, setDossier] = useState<OrgDossier | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [grantComp, setGrantComp] = useState('');
+  const [grantDays, setGrantDays] = useState(7);
+  const [grantReason, setGrantReason] = useState('');
+  const [grantBusy, setGrantBusy] = useState(false);
   const canEditType = isExpert || (state.user?.role === 'comptable' && !!dossier && dossier.client_comptable_id === state.user.id);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('checklist');
@@ -69,7 +74,25 @@ export default function OrgDossierPage() {
 
   const load = () => {
     if (!id) return;
-    orgApi.getDossier(id).then(setDossier).catch(console.error).finally(() => setLoading(false));
+    setLoadError('');
+    orgApi.getDossier(id).then(setDossier).catch(e => { setLoadError(e.message || 'Erreur'); console.error(e); }).finally(() => setLoading(false));
+  };
+
+  // Renfort : ouvrir / revoquer un acces temporaire (expert/manager)
+  const openGrant = async () => {
+    if (!dossier || !grantComp || !grantReason.trim()) return;
+    setGrantBusy(true);
+    try {
+      await orgApi.createGrant(dossier.id, { granted_to: grantComp, days: grantDays, reason: grantReason.trim() });
+      setGrantComp(''); setGrantReason('');
+      load();
+    } catch (err: any) { alert(err.message); }
+    finally { setGrantBusy(false); }
+  };
+  const revokeGrant = async (grantId: string) => {
+    if (!dossier) return;
+    if (!confirm('Révoquer cet accès ?')) return;
+    try { await orgApi.revokeGrant(dossier.id, grantId); load(); } catch (err: any) { alert(err.message); }
   };
 
   useEffect(() => { load(); }, [id]);
@@ -375,7 +398,18 @@ export default function OrgDossierPage() {
 
   if (loading) return <SkeletonDossier />;
 
-  if (!dossier) return (
+  if (!dossier) return loadError === 'Accès refusé' ? (
+    <div className="text-center py-16">
+      <div className="text-4xl mb-3">🔒</div>
+      <h2 className="text-lg font-bold text-gray-800 mb-1">Accès refusé</h2>
+      <p className="text-sm text-gray-500 max-w-md mx-auto">
+        Ce dossier n'est pas assigné à votre compte. Demandez un renfort à l'expert/manager pour y accéder temporairement.
+      </p>
+      <button onClick={() => navigate('/cabinet')} className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors">
+        Retour au tableau de bord
+      </button>
+    </div>
+  ) : (
     <div className="text-center py-12 text-gray-400">Dossier non trouvé</div>
   );
 
@@ -418,7 +452,14 @@ export default function OrgDossierPage() {
           <ArrowLeft size={20} className="text-gray-600" />
         </button>
         <div className="flex-1">
-          <h2 className="text-xl font-bold text-gray-800">{dossier.client_name}</h2>
+          <h2 className="text-xl font-bold text-gray-800">
+            {dossier.client_name}
+            {dossier.is_granted && (
+              <span className="ml-2 align-middle text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title="Accès temporaire (renfort) ouvert par l'expert">
+                🔧 Renfort
+              </span>
+            )}
+          </h2>
           <div className="flex items-center gap-2 flex-wrap mt-0.5">
             <p className="text-sm text-gray-500">
               Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
@@ -489,6 +530,71 @@ export default function OrgDossierPage() {
           </div>
         </div>
       </div>
+
+      {/* Renfort : ouverture d'acces temporaire (expert/manager) */}
+      {isExpert && dossier.status === 'en_cours' && (
+        <div className="bg-white border border-amber-200 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-sm text-gray-700">🔧 Renfort — accès temporaire à ce dossier</h3>
+            <span className="text-[11px] text-gray-400">{(dossier.grants || []).length} accès actif{(dossier.grants || []).length > 1 ? 's' : ''}</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+            <select
+              value={grantComp}
+              onChange={e => setGrantComp(e.target.value)}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              title="Comptable bénéficiaire"
+            >
+              <option value="">Comptable : —</option>
+              {comptables.filter(c => c.is_active && c.id !== dossier.client_comptable_id).map(c => (
+                <option key={c.id} value={c.id}>{c.full_name}</option>
+              ))}
+            </select>
+            <select
+              value={grantDays}
+              onChange={e => setGrantDays(Number(e.target.value))}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              title="Durée du renfort"
+            >
+              <option value={1}>1 jour</option>
+              <option value={7}>7 jours</option>
+              <option value={30}>30 jours</option>
+            </select>
+            <input
+              type="text"
+              value={grantReason}
+              onChange={e => setGrantReason(e.target.value)}
+              placeholder="Motif du renfort"
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              onKeyDown={e => e.key === 'Enter' && openGrant()}
+            />
+            <button
+              onClick={openGrant}
+              disabled={!grantComp || !grantReason.trim() || grantBusy}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+            >
+              Ouvrir l'accès
+            </button>
+          </div>
+          {(dossier.grants || []).length > 0 && (
+            <div className="space-y-1.5">
+              {dossier.grants!.map(g => (
+                <div key={g.id} className="flex items-center gap-3 text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                  <span className="font-semibold text-gray-800">{g.granted_to_name || g.granted_to}</span>
+                  <span className="text-gray-500 whitespace-nowrap">J-{g.days} · expire le {String(g.expires_at).slice(0, 16)}</span>
+                  {g.reason && <span className="text-gray-500 italic flex-1 truncate">« {g.reason} »</span>}
+                  <button
+                    onClick={() => revokeGrant(g.id)}
+                    className="ml-auto text-red-500 hover:text-red-700 font-medium whitespace-nowrap"
+                  >
+                    Révoquer
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action buttons */}
       <div className="flex items-center gap-2">

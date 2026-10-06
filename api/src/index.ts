@@ -1716,10 +1716,23 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         } catch { return null; }
       }
 
+      // Grant (renfort) actif : acces temporaire ouvert par un expert/manager
+      const ORG_GRANT_ACTIVE = `revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))`;
+
       async function orgCanAccessDossier(user: any, dossierId: string): Promise<boolean> {
         if (isSupervisor(user.role)) return true;
         const d = await env.DB.prepare(`SELECT c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?`).bind(dossierId, user.organization_id).first() as any;
-        return d?.assigned_comptable_id === user.id;
+        if (d?.assigned_comptable_id === user.id) return true;
+        const g = await env.DB.prepare(`SELECT 1 AS x FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, user.id).first();
+        return !!g;
+      }
+
+      // Un comptable (cible d'assignation) a-t-il acces au dossier ? (assigne OU renfort actif)
+      async function orgCompCanAccessDossier(compId: string, dossierId: string): Promise<boolean> {
+        const d = await env.DB.prepare(`SELECT c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?`).bind(dossierId).first() as any;
+        if (d?.assigned_comptable_id === compId) return true;
+        const g = await env.DB.prepare(`SELECT 1 AS x FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, compId).first();
+        return !!g;
       }
 
       async function orgCanAccessClient(user: any, clientId: string): Promise<boolean> {
@@ -1985,7 +1998,63 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const docStats = { total: documents.length, received: documents.filter((d: any) => d.received).length };
         const canClose = stats.bloque_client === 0 && stats.en_cours === 0;
         const blockReasons = (tasks as any[]).filter(t => t.status !== 'fait').map(t => t.label);
-        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: isSupervisor(user.role), block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0 });
+        // Renfort : grants actifs de ce dossier + flag pour le comptable concerne
+        const { results: grantRows } = await env.DB.prepare(`SELECT g.*, u.full_name as granted_to_name FROM org_dossier_grants g LEFT JOIN org_users u ON g.granted_to = u.id WHERE g.dossier_id = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) ORDER BY g.created_at DESC`).bind(orgDossierGetMatch[1]).all();
+        const grants = grantRows as any[];
+        const isGranted = !isSupervisor(user.role) && grants.some(g => g.granted_to === user.id);
+        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: isSupervisor(user.role), block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0, is_granted: isGranted, grants: isSupervisor(user.role) ? grants : [] });
+      }
+
+      // --- ORG: RENFORT — ouvrir un acces temporaire a un dossier (expert/manager) ---
+      const orgGrantsMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/grants$/);
+      if (orgGrantsMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Seul un expert/manager peut ouvrir un renfort' }, 403);
+        const dossierId = orgGrantsMatch[1];
+        const dossier = await env.DB.prepare('SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first();
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        const { granted_to, days, reason } = await request.json() as any;
+        const grantDays = days === undefined || days === null ? 7 : Number(days);
+        if (![1, 7, 30].includes(grantDays)) return json({ error: 'Durée invalide (1, 7 ou 30 jours)' }, 400);
+        if (!reason || !String(reason).trim()) return json({ error: 'Motif du renfort requis' }, 400);
+        if (!granted_to) return json({ error: 'granted_to requis' }, 400);
+        const target = await env.DB.prepare('SELECT id, full_name FROM org_users WHERE id = ? AND organization_id = ? AND role = ? AND is_active = 1').bind(granted_to, user.organization_id, 'comptable').first() as any;
+        if (!target) return json({ error: 'Comptable introuvable' }, 400);
+        const dup = await env.DB.prepare(`SELECT 1 AS x FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, granted_to).first();
+        if (dup) return json({ error: 'Accès déjà ouvert pour ce comptable' }, 400);
+        const id = genId();
+        await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))`).bind(id, dossierId, granted_to, user.id, String(reason).trim(), grantDays, `+${grantDays} days`).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_created', 'dossier', dossierId, JSON.stringify({ granted_to, granted_to_name: target.full_name, days: grantDays, reason: String(reason).trim() })).run();
+        return json({ id, dossier_id: dossierId, granted_to, granted_to_name: target.full_name, days: grantDays, reason: String(reason).trim() }, 201);
+      }
+      if (orgGrantsMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Réservé à l\'expert/manager' }, 403);
+        const { results } = await env.DB.prepare(`SELECT g.*, u.full_name as granted_to_name, ub.full_name as granted_by_name FROM org_dossier_grants g LEFT JOIN org_users u ON g.granted_to = u.id LEFT JOIN org_users ub ON g.granted_by = ub.id WHERE g.dossier_id = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) ORDER BY g.created_at DESC`).bind(orgGrantsMatch[1]).all();
+        return json(results);
+      }
+
+      // --- ORG: RENFORT — revoquer un acces ---
+      const orgGrantRevokeMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/grants\/([^/]+)$/);
+      if (orgGrantRevokeMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Réservé à l\'expert/manager' }, 403);
+        const g = await env.DB.prepare(`SELECT * FROM org_dossier_grants WHERE id = ? AND dossier_id = ? AND ${ORG_GRANT_ACTIVE}`).bind(orgGrantRevokeMatch[2], orgGrantRevokeMatch[1]).first() as any;
+        if (!g) return json({ error: 'Grant introuvable ou déjà expiré' }, 404);
+        await env.DB.prepare("UPDATE org_dossier_grants SET revoked_at = datetime('now') WHERE id = ?").bind(g.id).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_revoked', 'dossier', g.dossier_id, JSON.stringify({ grant_id: g.id, granted_to: g.granted_to, reason: g.reason })).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: RENFORT — mes dossiers en renfort (comptable) ---
+      if (path === '/api/org/grants/mine' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const { results } = await env.DB.prepare(`SELECT g.id, g.dossier_id, g.reason, g.days, g.expires_at, g.created_at, d.exercice, d.status, c.name as client_name, ub.full_name as granted_by_name FROM org_dossier_grants g JOIN org_dossiers d ON g.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users ub ON g.granted_by = ub.id WHERE g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) ORDER BY g.created_at DESC`).bind(user.id).all();
+        return json(results);
       }
 
       // --- ORG: CLOSE DOSSIER ---
@@ -2147,6 +2216,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           if (assigned_comptable_id !== null) {
             const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
             if (!comp) return json({ error: 'Comptable introuvable' }, 400);
+            if (!await orgCompCanAccessDossier(assigned_comptable_id, orgTaskMatch[1])) return json({ error: 'Ce comptable n\'a pas accès au dossier (assignez-le au client ou ouvrez un renfort)' }, 400);
           }
           updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null);
         }
@@ -2219,6 +2289,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const dossier = await env.DB.prepare('SELECT * FROM org_dossiers WHERE id = ?').bind(dossierId).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        if (assigned_comptable_id && !await orgCompCanAccessDossier(assigned_comptable_id, dossierId)) return json({ error: 'Ce comptable n\'a pas accès au dossier (assignez-le au client ou ouvrez un renfort)' }, 400);
         // Get next order_index
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
@@ -2520,8 +2591,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const dOk = await env.DB.prepare('SELECT 1 AS x FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first();
           if (dOk) await ensureAlertPack(env.DB, user.organization_id, dossierId);
         } else if (!isSupervisor(user.role)) {
-          // Le comptable n'a pas de pack global : pack propre à chacun de ses dossiers en cours
-          const { results: myDossiers } = await env.DB.prepare("SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? AND d.status = 'en_cours' ORDER BY d.exercice DESC LIMIT 100").bind(user.organization_id, user.id).all();
+          // Le comptable n'a pas de pack global : pack propre à chacun de ses dossiers en cours (assignes + renforts actifs)
+          const { results: myDossiers } = await env.DB.prepare(`SELECT d.id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.status = 'en_cours' AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))) ORDER BY d.exercice DESC LIMIT 100`).bind(user.organization_id, user.id, user.id).all();
           for (const d of myDossiers as any[]) await ensureAlertPack(env.DB, user.organization_id, d.id);
         }
 
@@ -2530,9 +2601,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           FROM org_fiscal_alerts a WHERE a.organization_id = ?`;
         const aBinds: any[] = [user.organization_id];
         if (!isSupervisor(user.role)) {
-          // Échéances du comptable = SES dossiers uniquement (pas le pack global)
-          aSql += ` AND a.dossier_id IS NOT NULL AND EXISTS (SELECT 1 FROM org_dossiers d2 JOIN org_clients c2 ON d2.client_id = c2.id WHERE d2.id = a.dossier_id AND c2.assigned_comptable_id = ? AND d2.status = 'en_cours')`;
-          aBinds.push(user.id);
+          // Échéances du comptable = SES dossiers assignés + dossiers en renfort actif (pas le pack global)
+          aSql += ` AND a.dossier_id IS NOT NULL AND EXISTS (SELECT 1 FROM org_dossiers d2 JOIN org_clients c2 ON d2.client_id = c2.id WHERE d2.id = a.dossier_id AND d2.status = 'en_cours' AND (c2.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d2.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))`;
+          aBinds.push(user.id, user.id);
         }
         if (dossierId) { aSql += ' AND a.dossier_id = ?'; aBinds.push(dossierId); }
         aSql += ' ORDER BY a.due_date ASC';
@@ -2577,7 +2648,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id
           WHERE c.organization_id = ? AND t.due_date IS NOT NULL AND t.status != 'fait'`;
         const tBinds: any[] = [user.organization_id];
-        if (!isSupervisor(user.role)) { tSql += ' AND c.assigned_comptable_id = ?'; tBinds.push(user.id); }
+        if (!isSupervisor(user.role)) { tSql += ` AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = t.dossier_id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now'))))`; tBinds.push(user.id, user.id); }
         if (dossierId) { tSql += ' AND t.dossier_id = ?'; tBinds.push(dossierId); }
         tSql += ' ORDER BY t.due_date ASC';
         const { results: rawFeedTasks } = await env.DB.prepare(tSql).bind(...tBinds).all();

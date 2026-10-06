@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { orgApi, OrgClient } from '../../lib/orgApi';
+import { orgApi, OrgClient, OrgMyGrant } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
@@ -13,13 +13,17 @@ type SortKey = 'name' | 'progress' | 'blocked';
 
 export default function OrgDashboardComptable() {
   const [clients, setClients] = useState<OrgClient[]>([]);
+  const [myGrants, setMyGrants] = useState<OrgMyGrant[]>([]);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>('blocked');
   const [search, setSearch] = useState('');
 
   const load = () => {
     setLoading(true);
-    orgApi.getClients().then(setClients).catch(console.error).finally(() => setLoading(false));
+    Promise.all([orgApi.getClients(), orgApi.getMyGrants()])
+      .then(([cs, gs]) => { setClients(cs); setMyGrants(gs); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -55,6 +59,32 @@ export default function OrgDashboardComptable() {
 
       {/* Échéances fiscales — alertes dates butoirs */}
       <OrgAlerts />
+
+      {/* Dossiers en renfort (acces temporaire ouvert par l'expert) */}
+      {myGrants.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2">
+            🔧 Dossiers en renfort
+            <span className="text-gray-400 font-normal">— accès temporaire ouvert par l'expert</span>
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {myGrants.map(g => (
+              <Link
+                key={g.id}
+                to={`/cabinet/dossier/${g.dossier_id}`}
+                className="bg-amber-50 border border-amber-200 rounded-xl p-4 hover:shadow-md hover:border-amber-300 transition-all group"
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <h4 className="font-bold text-sm text-gray-800 group-hover:text-amber-700 truncate">{g.client_name}</h4>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 whitespace-nowrap">🔧 Renfort</span>
+                </div>
+                <p className="text-[11px] text-gray-500">Exercice {g.exercice} · expire le {String(g.expires_at).slice(0, 16)}</p>
+                {g.reason && <p className="text-[11px] text-gray-500 italic truncate">« {g.reason} »</p>}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Search + Sort */}
       <div className="flex items-center gap-3">
