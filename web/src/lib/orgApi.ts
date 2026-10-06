@@ -144,6 +144,10 @@ export interface OrgComptable {
   client_count: number;
   avg_progress: number;
   task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
+  last_seen_at?: string | null;
+  online?: boolean;
+  worked_today_seconds?: number;
+  norm_seconds?: number;
 }
 
 export type OrgFrequency = 'mensuelle' | 'trimestrielle' | 'annuelle';

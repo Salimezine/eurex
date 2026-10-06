@@ -43,6 +43,12 @@ export default function OrgDashboardExpert() {
     }).catch(console.error).finally(() => setLoading(false));
   }, []);
 
+  // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s
+  useEffect(() => {
+    const iv = setInterval(() => { orgApi.getComptables().then(setComptables).catch(() => {}); }, 60000);
+    return () => clearInterval(iv);
+  }, []);
+
   // Create dossier
   const load = () => {
     setLoading(true);
@@ -97,6 +103,13 @@ export default function OrgDashboardExpert() {
   const filteredDossiers = allDossiers
     .filter(d => filterComptable === 'all' || d.comptable_id === filterComptable)
     .filter(d => !search || d.client_name?.toLowerCase().includes(search.toLowerCase()));
+
+  // Presence comptables : heures pointees aujourd'hui / norme 8h30
+  const fmtHm = (sec?: number) => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+  };
+  const presMap: Record<string, OrgComptable> = Object.fromEntries(comptables.map(c => [c.id, c]));
 
   if (loading) return (
     <div className="space-y-4">
@@ -197,6 +210,32 @@ export default function OrgDashboardExpert() {
                 <div className="flex-1 min-w-0">
                   <h3 className="text-lg font-bold text-gray-800 group-hover:text-purple-700 transition-colors">{c.full_name}</h3>
                   <p className="text-xs text-gray-400 mt-0.5">{c.email}</p>
+                  <div className="flex items-center gap-4 mt-2 text-[11px]">
+                    <span className={`flex items-center gap-1.5 font-semibold ${c.online ? 'text-emerald-600' : 'text-gray-400'}`} title="Présence (activité < 3 min)">
+                      <span className={`inline-block w-2 h-2 rounded-full ${c.online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300'}`} />
+                      {c.online ? 'Connecté' : 'Hors ligne'}
+                    </span>
+                    {c.norm_seconds ? (
+                      <span className="text-gray-500">Aujourd'hui : <b className="text-gray-700">{fmtHm(c.worked_today_seconds)} / 8h30</b></span>
+                    ) : (
+                      <span className="text-gray-400 italic">Repos (samedi / dimanche){(c.worked_today_seconds || 0) > 0 ? ` · ${fmtHm(c.worked_today_seconds)} pointées` : ''}</span>
+                    )}
+                  </div>
+                  {c.norm_seconds ? (
+                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mt-1.5">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${Math.min(100, Math.round(((c.worked_today_seconds || 0) / (c.norm_seconds || 30600)) * 100))}%`,
+                          background: (c.worked_today_seconds || 0) >= (c.norm_seconds || 30600)
+                            ? 'linear-gradient(90deg,#10b981,#34d399)'
+                            : (c.worked_today_seconds || 0) >= (c.norm_seconds || 30600) / 2
+                              ? 'linear-gradient(90deg,#3b82f6,#60a5fa)'
+                              : 'linear-gradient(90deg,#f59e0b,#fbbf24)',
+                        }}
+                      />
+                    </div>
+                  ) : null}
                   <div className="flex items-center gap-3 mt-3 text-xs">
                     <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-lg font-medium">
                       {c.client_count} client{c.client_count > 1 ? 's' : ''}
@@ -277,7 +316,17 @@ export default function OrgDashboardExpert() {
                       )}
                     </td>
                     <td className="px-5 py-4 text-gray-500 font-mono">{d.exercice}</td>
-                    <td className="px-5 py-4 text-gray-600">{d.comptable_name || '—'}</td>
+                    <td className="px-5 py-4 text-gray-600">
+                      {d.comptable_name || '—'}
+                      {d.comptable_id && presMap[d.comptable_id] && (
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-400" title="Heures pointées aujourd'hui (norme 8h30 du lundi au vendredi)">
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${presMap[d.comptable_id].online ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                          {presMap[d.comptable_id].norm_seconds
+                            ? `${fmtHm(presMap[d.comptable_id].worked_today_seconds)} / 8h30`
+                            : ((presMap[d.comptable_id].worked_today_seconds || 0) > 0 ? `${fmtHm(presMap[d.comptable_id].worked_today_seconds)} (repos)` : 'Repos')}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3 justify-center">
                         <div className="w-24 bg-gray-100 rounded-full h-2.5 overflow-hidden">

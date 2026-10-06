@@ -1710,6 +1710,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
           if (!user || !user.is_active) return null;
           if (user.role_label) user.role = user.role_label;
+          // Presence : marque l'utilisateur comme "vu" (max 1 ecriture/60s)
+          await env.DB.prepare("UPDATE org_users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now','-60 seconds'))").bind(user.id).run();
           return user;
         } catch { return null; }
       }
@@ -2692,7 +2694,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/comptables' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
+        const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at, last_seen_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
+        // Presence : derniere activite (< 3 min = connecte) + heures pointees du jour (journée locale TN = UTC+1)
+        const { results: dayRows } = await env.DB.prepare("SELECT user_id, COALESCE(SUM(duration_seconds),0) AS secs FROM org_time_entries WHERE stopped_at IS NOT NULL AND started_at >= datetime('now','start of day','-60 minutes') GROUP BY user_id").all();
+        const dayByUser = new Map((dayRows as any[]).map(r => [r.user_id, r.secs]));
+        const { results: running } = await env.DB.prepare('SELECT user_id, started_at FROM org_time_entries WHERE stopped_at IS NULL').all();
+        const runByUser = new Map((running as any[]).map(r => [r.user_id, r.started_at]));
+        const nowS = Math.floor(Date.now() / 1000);
+        const parseUtc = (s: any) => s ? Math.floor(Date.parse(String(s).replace(' ', 'T') + 'Z') / 1000) : 0;
+        // Norme 8h30 uniquement lun-ven (heure locale TN = UTC+1) ; sam/dim = repos
+        const dowTn = new Date(Date.now() + 3600000).getUTCDay();
+        const normSec = (dowTn !== 0 && dowTn !== 6) ? 30600 : 0;
         const enriched = await Promise.all(results.map(async (c: any) => {
           const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
           const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\'').bind(c.id, user.organization_id).all();
@@ -2701,7 +2713,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
             s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
-          return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s };
+          const runStart = parseUtc(runByUser.get(c.id));
+          return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s,
+            online: parseUtc(c.last_seen_at) >= nowS - 180,
+            worked_today_seconds: (Number(dayByUser.get(c.id)) || 0) + Math.max(0, runStart ? nowS - runStart : 0),
+            norm_seconds: normSec };
         }));
         return json(enriched);
       }
