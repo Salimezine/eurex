@@ -11,6 +11,10 @@ import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide
 
 type Tab = 'comptables' | 'global';
 
+// L'endpoint /org/comptables renvoie tout le personnel (pour la gestion des roles
+// dans Settings) : le dashboard n'affiche que les comptables.
+const onlyComptables = (cs: OrgComptable[]) => cs.filter(c => c.role === 'comptable');
+
 export default function OrgDashboardExpert() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('comptables');
@@ -33,7 +37,7 @@ export default function OrgDashboardExpert() {
 
   useEffect(() => {
     Promise.all([
-      orgApi.getComptables(),
+      orgApi.getComptables().then(onlyComptables),
       orgApi.getAllDossiers(),
       orgApi.getClients(),
     ]).then(([c, d, cl]) => {
@@ -45,7 +49,7 @@ export default function OrgDashboardExpert() {
 
   // Presence en direct : rafraichit statut connecte + heures du jour toutes les 15s
   useEffect(() => {
-    const iv = setInterval(() => { orgApi.getComptables().then(setComptables).catch(() => {}); }, 15000);
+    const iv = setInterval(() => { orgApi.getComptables().then(cs => setComptables(onlyComptables(cs))).catch(() => {}); }, 15000);
     return () => clearInterval(iv);
   }, []);
 
@@ -53,7 +57,7 @@ export default function OrgDashboardExpert() {
   const load = () => {
     setLoading(true);
     Promise.all([
-      orgApi.getComptables(),
+      orgApi.getComptables().then(onlyComptables),
       orgApi.getAllDossiers(),
       orgApi.getClients(),
     ]).then(([c, d, cl]) => {

@@ -2710,7 +2710,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/comptables' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { results } = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at, last_seen_at FROM org_users WHERE organization_id = ? AND role = \'comptable\' ORDER BY full_name').bind(user.organization_id).all();
+        const { results } = await env.DB.prepare("SELECT id, full_name, email, is_active, created_at, last_seen_at, role, role_label FROM org_users WHERE organization_id = ? AND role IN ('comptable','expert') ORDER BY full_name").bind(user.organization_id).all();
         // Presence : derniere activite (< 3 min = connecte) + heures pointees du jour (journée locale TN = UTC+1)
         const { results: dayRows } = await env.DB.prepare("SELECT user_id, COALESCE(SUM(duration_seconds),0) AS secs FROM org_time_entries WHERE stopped_at IS NOT NULL AND started_at >= datetime('now','start of day','-60 minutes') GROUP BY user_id").all();
         const dayByUser = new Map((dayRows as any[]).map(r => [r.user_id, r.secs]));
@@ -2730,7 +2730,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           const runStart = parseUtc(runByUser.get(c.id));
-          return { ...c, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s,
+          return { ...c, role: c.role_label || c.role, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s,
             online: parseUtc(c.last_seen_at) >= nowS - 180,
             worked_today_seconds: (Number(dayByUser.get(c.id)) || 0) + Math.max(0, runStart ? nowS - runStart : 0),
             norm_seconds: normSec };
@@ -2741,29 +2741,52 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/comptables' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { full_name, email, password } = await request.json() as any;
+        const { full_name, email, password, role } = await request.json() as any;
         if (!full_name || !email || !password) return json({ error: 'Nom, email et mot de passe requis' }, 400);
         if (password.length < 12) return json({ error: 'Le mot de passe doit faire au moins 12 caractères' }, 400);
+        if (role !== undefined && !['comptable', 'manager', 'expert'].includes(role)) return json({ error: 'Rôle invalide (comptable, manager ou expert)' }, 400);
         const existing = await env.DB.prepare('SELECT id FROM org_users WHERE email = ?').bind(email).first();
         if (existing) return json({ error: 'Cet email est déjà utilisé' }, 409);
+        const effRole: string = ['manager', 'expert'].includes(role) ? role : 'comptable';
         const id = genId();
         const salt = crypto.randomUUID().slice(0, 16);
         const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + password));
         const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-        await env.DB.prepare("INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, must_change_password) VALUES (?, ?, ?, ?, ?, 'comptable', 1)").bind(id, user.organization_id, full_name, email, salt + ':' + hashHex).run();
-        return json({ id, full_name, email, role: 'comptable' }, 201);
+        await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role, role_label, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)').bind(id, user.organization_id, full_name, email, salt + ':' + hashHex, effRole === 'comptable' ? 'comptable' : 'expert', effRole === 'manager' ? 'manager' : null).run();
+        if (effRole !== 'comptable') {
+          await env.DB.prepare("INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, 'user_role_changed', 'user', ?, ?)").bind(genId(), user.organization_id, user.id, user.full_name, id, JSON.stringify({ old: 'comptable', new: effRole, created: true })).run();
+        }
+        return json({ id, full_name, email, role: effRole }, 201);
       }
 
       const orgCompToggleMatch = path.match(/^\/api\/org\/comptables\/([^/]+)$/);
       if (orgCompToggleMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { is_active, full_name, email, password } = await request.json() as any;
-        const target = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = \'comptable\'').bind(orgCompToggleMatch[1], user.organization_id).first();
+        const { is_active, full_name, email, password, role } = await request.json() as any;
+        const target = await env.DB.prepare("SELECT id, role, role_label, is_active FROM org_users WHERE id = ? AND organization_id = ? AND role IN ('comptable','expert')").bind(orgCompToggleMatch[1], user.organization_id).first() as any;
         if (!target) return json({ error: 'Comptable non trouvé' }, 404);
+        if (target.id === user.id) return json({ error: 'Impossible de modifier son propre compte' }, 400);
+        const curEff: string = target.role_label || target.role;
+        let newEff: string | null = null;
+        if (role !== undefined) {
+          if (!['comptable', 'manager', 'expert'].includes(role)) return json({ error: 'Rôle invalide (comptable, manager ou expert)' }, 400);
+          newEff = role;
+        }
+        // Garde-fou : il doit rester au moins un superviseur actif (expert/manager)
+        const willBeSupervisor = newEff !== null ? newEff !== 'comptable' : target.role === 'expert';
+        const willBeActive = is_active !== undefined ? !!is_active : !!target.is_active;
+        if (target.role === 'expert' && !(willBeSupervisor && willBeActive)) {
+          const { results: sups } = await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND role = 'expert' AND is_active = 1 AND id != ?").bind(user.organization_id, target.id).all();
+          if (sups.length === 0) return json({ error: 'Impossible : au moins un superviseur (expert/manager) doit rester actif' }, 400);
+        }
         const sets: string[] = [];
         const binds: any[] = [];
         if (is_active !== undefined) { sets.push('is_active = ?'); binds.push(is_active ? 1 : 0); }
+        if (newEff !== null) {
+          sets.push('role = ?', 'role_label = ?');
+          binds.push(newEff === 'comptable' ? 'comptable' : 'expert', newEff === 'manager' ? 'manager' : null);
+        }
         if (full_name !== undefined) {
           const name = String(full_name).trim();
           if (!name) return json({ error: 'Nom requis' }, 400);
@@ -2788,7 +2811,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (sets.length === 0) return json({ error: 'Aucun champ à mettre à jour' }, 400);
         await env.DB.prepare(`UPDATE org_users SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, orgCompToggleMatch[1]).run();
-        return json({ ok: true });
+        if (newEff !== null && newEff !== curEff) {
+          await env.DB.prepare("INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, 'user_role_changed', 'user', ?, ?)").bind(genId(), user.organization_id, user.id, user.full_name, target.id, JSON.stringify({ old: curEff, new: newEff })).run();
+        }
+        return json({ ok: true, role: newEff ?? curEff });
       }
 
       // --- ORG: EXPERT — COMPTABLE DETAIL ---

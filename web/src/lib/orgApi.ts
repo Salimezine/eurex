@@ -142,6 +142,7 @@ export interface OrgComptable {
   full_name: string;
   email: string;
   is_active: number;
+  role?: 'comptable' | 'manager' | 'expert';
   client_count: number;
   avg_progress: number;
   task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
@@ -279,7 +280,7 @@ export const orgApi = {
   createComptable: (d: any) => req<any>('/org/comptables', { method: 'POST', body: JSON.stringify(d) }),
   toggleComptable: (id: string, isActive: boolean) =>
     req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify({ is_active: isActive }) }),
-  updateComptable: (id: string, patch: { full_name?: string; email?: string; password?: string }) =>
+  updateComptable: (id: string, patch: { full_name?: string; email?: string; password?: string; role?: 'comptable' | 'manager' | 'expert' }) =>
     req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   updateProfile: (patch: { full_name?: string; email?: string }) =>
     req<any>('/org/auth/me', { method: 'PATCH', body: JSON.stringify(patch) }),

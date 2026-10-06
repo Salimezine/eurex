@@ -8,6 +8,19 @@ import PwdField from '../../components/PwdField';
 import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw, Pencil, Check, X } from 'lucide-react';
 
 type Tab = 'templates' | 'comptables';
+type Role = 'comptable' | 'manager' | 'expert';
+
+const ROLE_LABEL: Record<string, string> = { comptable: 'Comptable', manager: 'Manager', expert: 'Expert' };
+const ROLE_BADGE: Record<string, string> = {
+  comptable: 'bg-gray-100 text-gray-600',
+  manager: 'bg-purple-100 text-purple-700',
+  expert: 'bg-indigo-100 text-indigo-700',
+};
+const RoleBadge = ({ role }: { role?: string }) => (
+  <span className={`ml-2 align-middle text-[10px] font-bold px-1.5 py-0.5 rounded-full ${ROLE_BADGE[role || 'comptable'] || ROLE_BADGE.comptable}`}>
+    {ROLE_LABEL[role || 'comptable'] || 'Comptable'}
+  </span>
+);
 
 export default function OrgSettings() {
   const { state } = useOrgAuth();
@@ -27,6 +40,12 @@ export default function OrgSettings() {
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editPwd, setEditPwd] = useState('');
+  const [editRole, setEditRole] = useState<Role>('comptable');
+  const [newCompRole, setNewCompRole] = useState<Role>('comptable');
+
+  // Le personnel inclut les superviseurs (gestion des roles) ;
+  // les selects "Comptable assigné" restent limités aux comptables.
+  const comps = comptables.filter(c => c.role === 'comptable');
 
   useEffect(() => {
     Promise.all([orgApi.getTemplates(), orgApi.getComptables()])
@@ -85,10 +104,12 @@ export default function OrgSettings() {
         full_name: newCompName.trim(),
         email: newCompEmail.trim(),
         password: newCompPassword.trim(),
+        role: newCompRole,
       });
       setNewCompName('');
       setNewCompEmail('');
       setNewCompPassword('');
+      setNewCompRole('comptable');
       setComptables(await orgApi.getComptables());
     } catch (err: any) {
       alert(err.message);
@@ -100,6 +121,7 @@ export default function OrgSettings() {
     setEditName(c.full_name);
     setEditEmail(c.email);
     setEditPwd('');
+    setEditRole(c.role || 'comptable');
   };
 
   const saveEditComp = async (id: string) => {
@@ -107,9 +129,10 @@ export default function OrgSettings() {
     if (!isValidEmail(editEmail)) { alert('Email invalide'); return; }
     if (editPwd && !isValidPassword(editPwd)) { alert('Mot de passe : 12 caractères minimum'); return; }
     try {
-      const patch: { full_name?: string; email?: string; password?: string } = {
+      const patch: { full_name?: string; email?: string; password?: string; role?: Role } = {
         full_name: editName.trim(),
         email: editEmail.trim(),
+        role: editRole,
       };
       if (editPwd) patch.password = editPwd;
       await orgApi.updateComptable(id, patch);
@@ -199,7 +222,7 @@ export default function OrgSettings() {
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               >
                 <option value="">Comptable : —</option>
-                {comptables.filter(c => c.is_active).map(c => (
+                {comps.filter(c => c.is_active).map(c => (
                   <option key={c.id} value={c.id}>{c.full_name}</option>
                 ))}
               </select>              <button
@@ -244,7 +267,7 @@ export default function OrgSettings() {
                 title="Comptable assigné par défaut"
               >
                 <option value="">Comptable : —</option>
-                {comptables.filter(c => c.is_active).map(c => (
+                {comps.filter(c => c.is_active).map(c => (
                   <option key={c.id} value={c.id}>{c.full_name}</option>
                 ))}
               </select>
@@ -264,7 +287,7 @@ export default function OrgSettings() {
         <div className="space-y-3">
           <div className="bg-white border border-gray-200 rounded-xl p-4">
             <h3 className="font-semibold text-sm text-gray-700 mb-3">Ajouter un comptable</h3>
-            <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
               <input
                 type="text"
                 value={newCompName}
@@ -285,6 +308,16 @@ export default function OrgSettings() {
                 placeholder="Mot de passe (12+ car.)"
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
               />
+              <select
+                value={newCompRole}
+                onChange={e => setNewCompRole(e.target.value as Role)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                title="Rôle du compte"
+              >
+                <option value="comptable">Rôle : Comptable</option>
+                <option value="manager">Rôle : Manager</option>
+                <option value="expert">Rôle : Expert</option>
+              </select>
             </div>
             <button
               onClick={addComptable}
@@ -298,7 +331,7 @@ export default function OrgSettings() {
           {comptables.map(c => (
             <div key={c.id} className={`bg-white border rounded-xl p-4 flex items-center gap-4 ${c.is_active ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
               {editCompId === c.id ? (
-                <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-2">
+                <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-2">
                   <input
                     autoFocus
                     value={editName}
@@ -319,10 +352,20 @@ export default function OrgSettings() {
                     placeholder="Nouveau mdp (vide = inchangǸ)"
                     className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
                   />
+                  <select
+                    value={editRole}
+                    onChange={e => setEditRole(e.target.value as Role)}
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                    title="Rôle du compte"
+                  >
+                    <option value="comptable">Comptable</option>
+                    <option value="manager">Manager</option>
+                    <option value="expert">Expert</option>
+                  </select>
                 </div>
               ) : (
                 <div className="flex-1">
-                  <p className="font-semibold text-sm text-gray-800">{c.full_name}</p>
+                  <p className="font-semibold text-sm text-gray-800">{c.full_name}<RoleBadge role={c.role} /></p>
                   <p className="text-xs text-gray-500">{c.email}</p>
                   <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
                     <span>{c.client_count} clients</span>
@@ -349,12 +392,16 @@ export default function OrgSettings() {
                     <X size={18} />
                   </button>
                 </div>
+              ) : c.id === state.user?.id ? (
+                <span className="text-[10px] text-gray-400 whitespace-nowrap" title="Impossible de modifier son propre compte">
+                  Votre compte
+                </span>
               ) : (
                 <>
                   <button
                     onClick={() => startEditComp(c)}
                     className="p-2 rounded-lg text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
-                    title="Modifier nom / email / mot de passe"
+                    title="Modifier nom / email / mot de passe / rôle"
                   >
                     <Pencil size={18} />
                   </button>

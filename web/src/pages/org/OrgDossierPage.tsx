@@ -75,7 +75,7 @@ export default function OrgDossierPage() {
   useEffect(() => { load(); }, [id]);
 
   useEffect(() => {
-    if (isExpert) orgApi.getComptables().then(setComptables).catch(() => {});
+    if (isExpert) orgApi.getComptables().then(cs => setComptables(cs.filter(c => c.role === 'comptable'))).catch(() => {});
   }, [isExpert]);
 
   // Live timer tick
