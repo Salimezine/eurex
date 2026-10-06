@@ -48,10 +48,12 @@ export default function OrgDashboardExpert() {
     }).catch(console.error).finally(() => setLoading(false));
   }, []);
 
-  // Presence en direct : rafraichit statut connecte + heures du jour toutes les 15s
+  // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s (pausé si onglet cache)
   useEffect(() => {
-    const iv = setInterval(() => { orgApi.getComptables().then(cs => setComptables(onlyComptables(cs))).catch(() => {}); }, 15000);
-    return () => clearInterval(iv);
+    const tick = () => { if (!document.hidden) orgApi.getComptables().then(cs => setComptables(onlyComptables(cs))).catch(() => {}); };
+    const iv = setInterval(tick, 60000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', tick); };
   }, []);
 
   // Create dossier

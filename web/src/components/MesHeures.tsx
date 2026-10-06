@@ -9,7 +9,7 @@ type View = 'days' | 'month' | 'year';
 // et solde net de semaine (rattrapage : le depassement d'un jour compense le ghyeb d'un autre).
 // 3 vues de periode : Jours (7 derniers) / Mois (jour par jour) / Annee (mois par mois).
 // Sans props : mes heures (/me/hours). Avec userId : heures d'un comptable (/comptables/{id}/hours).
-// Auto-suffisant : fetch au montage + rafraichissement 15s (chrono en cours).
+// Auto-suffisant : fetch au montage + rafraichissement 60s (pausé si onglet cache).
 export default function MesHeures({ userId, title }: { userId?: string; title?: string } = {}) {
   const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
@@ -20,8 +20,10 @@ export default function MesHeures({ userId, title }: { userId?: string; title?: 
   useEffect(() => { fetchHours(view); }, [view, userId]);
 
   useEffect(() => {
-    const iv = setInterval(() => { fetchHours(view); }, 15000);
-    return () => clearInterval(iv);
+    const tick = () => { if (!document.hidden) fetchHours(view); };
+    const iv = setInterval(tick, 60000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', tick); };
   }, [view, userId]);
 
   const fmtHm = (sec?: number) => {
