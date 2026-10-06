@@ -2107,7 +2107,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgTaskMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const body = await request.json() as any;
-        const { status, blocked_reason, label, assigned_comptable_id, due_date, export_scope } = body;
+        const { status, blocked_reason, label, assigned_comptable_id, due_date, export_scope, verify_due_hours } = body;
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         const updates: string[] = [];
@@ -2123,6 +2123,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           } else if (task.status === 'fait') {
             updates.push('verified_by = NULL', 'verified_at = NULL');
           }
+          // Delai de validation : 24h auto a l'entree en verification
+          if (effStatus === 'a_verifier' && task.status !== 'a_verifier') {
+            updates.push("verify_due_at = datetime('now','+24 hours')");
+          }
+        }
+        // Delai pose/expert par l'expert ou le manager (en heures)
+        if (verify_due_hours !== undefined) {
+          if (!isSupervisor(user.role)) return json({ error: 'Seul un expert peut fixer le délai de validation' }, 403);
+          const h = Number(verify_due_hours);
+          if (!h || !isFinite(h) || h < 1 || h > 720) return json({ error: 'Délai invalide (1 à 720 heures)' }, 400);
+          updates.push("verify_due_at = datetime('now', ?)"); binds.push(`+${Math.round(h)} hours`);
         }
         if (blocked_reason !== undefined) { updates.push('blocked_reason = ?'); binds.push(blocked_reason || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
@@ -2153,6 +2164,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const newStatus = effStatus || oldStatus;
         if (effStatus && effStatus !== oldStatus) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_status_changed\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ old_status: oldStatus, new_status: effStatus, blocked_reason })).run();
+          // Validation a_verifier -> fait : pointage automatique de la validation (5 min) + audit "qui a valide"
+          if (effStatus === 'fait' && oldStatus === 'a_verifier') {
+            await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at, stopped_at, duration_seconds) VALUES (?, ?, ?, ?, datetime('now','-300 seconds'), datetime('now'), 300)").bind(genId(), orgTaskMatch[1], orgTaskMatch[2], user.id).run();
+            await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_verified\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgTaskMatch[2], JSON.stringify({ label: task.label, verify_seconds: 300, verify_due_at: task.verify_due_at || null })).run();
+          }
         }
         if (label !== undefined && label.trim() && label.trim() !== task.label) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_renamed', 'task', orgTaskMatch[2], JSON.stringify({ old_label: task.label, new_label: label.trim() })).run();

@@ -78,6 +78,7 @@ export interface OrgTask {
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
   due_date: string | null;
+  verify_due_at?: string | null;
 }
 
 export interface OrgAlert {
@@ -201,6 +202,8 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/tasks`, { method: 'POST', body: JSON.stringify({ label, assigned_comptable_id: assignedComptableId || null, month: month ?? null }) }),
   setTaskDue: (dossierId: string, taskId: string, dueDate: string | null) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ due_date: dueDate }) }),
+  setTaskVerifyDue: (dossierId: string, taskId: string, hours: number) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ verify_due_hours: hours }) }),
 
   // Fiscal alerts (échéances)
   getAlerts: (dossierId?: string) =>

@@ -98,6 +98,8 @@ export default function OrgDossierPage() {
     if (tab === 'timeline' && id) loadTimeline();
   }, [tab, id]);
 
+  const [vdH, setVdH] = useState<Record<string, string>>({});
+
   const updateTaskStatus = async (taskId: string, newStatus: string, reason?: string) => {
     if (!dossier) return;
     try {
@@ -106,6 +108,30 @@ export default function OrgDossierPage() {
     } catch (err: any) {
       alert(err.message);
     }
+  };
+
+  // Delai de validation : compte a rebours (verify_due_at stocke en UTC)
+  const verifyLeftSec = (due?: string | null) =>
+    due ? Math.floor((Date.parse(String(due).replace(' ', 'T') + 'Z') - Date.now()) / 1000) : 0;
+  const verifyLabel = (due?: string | null) => {
+    if (!due) return 'Aucun délai';
+    const left = verifyLeftSec(due);
+    if (left < 0) {
+      const m = Math.floor(-left / 60);
+      return m >= 60 ? `Délai dépassé de ${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `Délai dépassé de ${m} min`;
+    }
+    const m = Math.floor(left / 60);
+    return `Reste ${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
+  };
+  const setVerifyDue = async (taskId: string) => {
+    if (!dossier) return;
+    const h = Number(vdH[taskId]);
+    if (!h || !isFinite(h) || h < 1 || h > 720) { alert('Délai invalide (1 à 720 heures)'); return; }
+    try {
+      await orgApi.setTaskVerifyDue(dossier.id, taskId, h);
+      setVdH(prev => { const n = { ...prev }; delete n[taskId]; return n; });
+      load();
+    } catch (err: any) { alert(err.message); }
   };
 
   const toggleDocument = async (docId: string, received: boolean, note?: string) => {
@@ -661,6 +687,20 @@ export default function OrgDossierPage() {
                       📅 {formatDueDate(task.due_date)}
                     </span>
                   )}
+                  {task.status === 'a_verifier' && task.verify_due_at && editingTaskId !== task.id && (
+                    <span
+                      title="Délai de validation (fixé par l'expert/manager)"
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                        verifyLeftSec(task.verify_due_at) < 0
+                          ? 'bg-red-100 text-red-700 animate-pulse'
+                          : verifyLeftSec(task.verify_due_at) < 3600
+                            ? 'bg-orange-100 text-orange-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      ⏳ {verifyLabel(task.verify_due_at)}
+                    </span>
+                  )}
                   {task.total_time_seconds > 0 && (
                     <span className="text-[11px] text-gray-400 font-mono">
                       {formatTime(task.total_time_seconds)}
@@ -750,6 +790,35 @@ export default function OrgDossierPage() {
                         </>
                       )}
                     </div>
+
+                    {/* Validation : delai + fixation par l'expert/manager */}
+                    {task.status === 'a_verifier' && (
+                      <div className="flex items-center gap-2 mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg" onClick={e => e.stopPropagation()}>
+                        <span className="text-xs font-semibold text-amber-800">Validation :</span>
+                        <span className={`text-xs font-bold ${verifyLeftSec(task.verify_due_at) < 0 ? 'text-red-600' : verifyLeftSec(task.verify_due_at) < 3600 ? 'text-orange-600' : 'text-amber-700'}`}>
+                          {verifyLabel(task.verify_due_at)}
+                        </span>
+                        {isExpert && (
+                          <>
+                            <input
+                              type="number"
+                              min={1}
+                              max={720}
+                              placeholder="h"
+                              value={vdH[task.id] || ''}
+                              onChange={e => setVdH(prev => ({ ...prev, [task.id]: e.target.value }))}
+                              className="w-16 px-2 py-1 text-xs border border-amber-300 rounded outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                            <button
+                              onClick={() => setVerifyDue(task.id)}
+                              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 transition-all"
+                            >
+                              Fixer le délai
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
 
                     {timeTaskId === task.id && (
                       <div
