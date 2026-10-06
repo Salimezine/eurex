@@ -2067,6 +2067,41 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json(results);
       }
 
+      // --- ORG: MES HEURES — 7 derniers jours (realise vs norme 8h30 lun-ven, repos sam-dim) ---
+      if (path === '/api/org/me/hours' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        // Heures pointees groupees par jour local TN (UTC+1)
+        const { results: dayRows } = await env.DB.prepare(`SELECT date(datetime(started_at, '+60 minutes')) as d, COALESCE(SUM(duration_seconds),0) AS secs FROM org_time_entries WHERE user_id = ? AND stopped_at IS NOT NULL AND started_at >= datetime('now', '-8 days') GROUP BY d`).bind(user.id).all();
+        const byDay = new Map((dayRows as any[]).map(r => [String(r.d), Number(r.secs) || 0]));
+        // Chrono en cours : ajoute au jour TN courant (comme le dashboard expert)
+        const running = await env.DB.prepare('SELECT started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(user.id).first() as any;
+        const nowMs = Date.now();
+        const parseUtc = (s: any) => s ? Math.floor(Date.parse(String(s).replace(' ', 'T') + 'Z') / 1000) : 0;
+        const runningSec = running ? Math.max(0, Math.floor(nowMs / 1000) - parseUtc(running.started_at)) : 0;
+        const todayDow = new Date(nowMs + 3600000).getUTCDay();
+        const days: any[] = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(new Date(nowMs + 3600000).setUTCHours(0, 0, 0, 0) - i * 86400000).toISOString().slice(0, 10);
+          const dow = new Date(d + 'T12:00:00+01:00').getUTCDay();
+          const rest = dow === 0 || dow === 6;
+          const norm = rest ? 0 : 30600;
+          let worked = byDay.get(d) || 0;
+          if (i === 0) worked += runningSec;
+          const missing = norm > 0 ? Math.max(0, norm - worked) : 0;
+          // Depassement : jours ouvres au-dela de 8h30 + heures faites le jour de repos (rattrapage du ghyeb)
+          const overtime = Math.max(0, worked - norm);
+          days.push({ date: d, dow, worked_seconds: worked, norm_seconds: norm, missing_seconds: missing, overtime_seconds: overtime, rest, is_today: i === 0 });
+        }
+        const totals = days.reduce((acc, d) => ({ worked_seconds: acc.worked_seconds + d.worked_seconds, norm_seconds: acc.norm_seconds + d.norm_seconds, missing_seconds: acc.missing_seconds + d.missing_seconds, overtime_seconds: acc.overtime_seconds + d.overtime_seconds }), { worked_seconds: 0, norm_seconds: 0, missing_seconds: 0, overtime_seconds: 0 });
+        // Solde net : le depassement d'un jour compense le ghyeb d'un autre (rattrapage)
+        const net_missing = Math.max(0, totals.norm_seconds - totals.worked_seconds);
+        const surplus = Math.max(0, totals.worked_seconds - totals.norm_seconds);
+        const today = days[days.length - 1];
+        const online = parseUtc(user.last_seen_at) >= Math.floor(nowMs / 1000) - 180;
+        return json({ days, today, totals: { ...totals, net_missing_seconds: net_missing, surplus_seconds: surplus }, online, today_dow: todayDow });
+      }
+
       // --- ORG: CLOSE DOSSIER ---
       const orgDossierCloseMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/close$/);
       if (orgDossierCloseMatch && method === 'PATCH') {
