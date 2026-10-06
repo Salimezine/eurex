@@ -43,9 +43,9 @@ export default function OrgDashboardExpert() {
     }).catch(console.error).finally(() => setLoading(false));
   }, []);
 
-  // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s
+  // Presence en direct : rafraichit statut connecte + heures du jour toutes les 15s
   useEffect(() => {
-    const iv = setInterval(() => { orgApi.getComptables().then(setComptables).catch(() => {}); }, 60000);
+    const iv = setInterval(() => { orgApi.getComptables().then(setComptables).catch(() => {}); }, 15000);
     return () => clearInterval(iv);
   }, []);
 
