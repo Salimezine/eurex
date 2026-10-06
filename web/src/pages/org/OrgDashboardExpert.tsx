@@ -6,6 +6,7 @@ import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
 import OrgAlerts from '../../components/OrgAlerts';
+import MesHeures from '../../components/MesHeures';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
 
@@ -157,6 +158,9 @@ export default function OrgDashboardExpert() {
           );
         })}
       </div>
+
+      {/* Mes heures (les miennes) — realises vs norme 8h30, solde net de semaine */}
+      <MesHeures />
 
       {/* Échéances fiscales — alertes dates butoirs */}
       <OrgAlerts />
