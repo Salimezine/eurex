@@ -2,39 +2,78 @@ import { useState, useEffect } from 'react';
 import { orgApi, OrgMyHours } from '../lib/orgApi';
 
 const DAY_LABELS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+const MONTH_LABELS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+type View = 'days' | 'month' | 'year';
 
-// Mes heures : 7 derniers jours realises vs norme 8h30 (lun-ven), repos sam-dim.
-// Depassement (+XhYY, y compris heures faites le weekend) et solde net de semaine
-// (rattrapage : le depassement d'un jour compense le ghyeb d'un autre).
+// Mes heures : realise vs norme 8h30 (lun-ven), repos sam-dim, depassement (+XhYY)
+// et solde net de semaine (rattrapage : le depassement d'un jour compense le ghyeb d'un autre).
+// 3 vues de periode : Jours (7 derniers) / Mois (jour par jour) / Annee (mois par mois).
 // Auto-suffisant : fetch au montage + rafraichissement 15s (chrono en cours).
 export default function MesHeures() {
+  const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
 
-  useEffect(() => { orgApi.getMyHours().then(setHours).catch(() => {}); }, []);
+  useEffect(() => { orgApi.getMyHours(view).then(setHours).catch(() => {}); }, [view]);
 
   useEffect(() => {
-    const iv = setInterval(() => { orgApi.getMyHours().then(setHours).catch(() => {}); }, 15000);
+    const iv = setInterval(() => { orgApi.getMyHours(view).then(setHours).catch(() => {}); }, 15000);
     return () => clearInterval(iv);
-  }, []);
+  }, [view]);
 
   const fmtHm = (sec?: number) => {
     const s = Math.max(0, Math.floor(sec || 0));
     return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
   };
 
+  const totalsLabel = !hours ? ''
+    : view === 'days' ? 'Semaine (7 jours)'
+    : view === 'month' ? `Mois (au ${hours.today.date.slice(8, 10)}/${hours.today.date.slice(5, 7)})`
+    : `Année ${hours.today.date.slice(0, 4)}`;
+
+  const fmtDay = (d: { date: string; dow: number }) =>
+    `${DAY_LABELS[d.dow]} ${d.date.slice(8, 10)}/${d.date.slice(5, 7)}`;
+
+  const ecartCell = (overtime: number, rest: boolean, missing: number) =>
+    overtime > 0 ? <span className="text-green-600 font-semibold">+{fmtHm(overtime)}</span>
+      : rest ? <span className="text-gray-300">—</span>
+      : missing > 0 ? <span className="text-rose-500 font-semibold">{fmtHm(missing)}</span>
+      : <span className="text-green-600 font-semibold">✓ atteint</span>;
+
   if (!hours) return null;
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-4" data-testid="mes-heures">
-      <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-3">
-        ⏱ Mes heures
-        <span className="text-gray-400 font-normal">— norme 8h30 du lundi au vendredi · repos sam-dim</span>
-      </h3>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+          ⏱ Mes heures
+          <span className="text-gray-400 font-normal">— norme 8h30 du lundi au vendredi · repos sam-dim</span>
+        </h3>
+        {/* Onglets de periode : jours / mois / annee */}
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1" role="tablist">
+          {([
+            { key: 'days' as View, label: 'Jours (7j)' },
+            { key: 'month' as View, label: 'Mois' },
+            { key: 'year' as View, label: 'Année' },
+          ]).map(tab => (
+            <button
+              key={tab.key}
+              role="tab"
+              aria-selected={view === tab.key}
+              onClick={() => setView(tab.key)}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                view === tab.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Aujourd'hui */}
       <div className="flex items-center justify-between flex-wrap gap-2 text-sm">
         <span className="text-gray-500">
-          Aujourd'hui ({DAY_LABELS[hours.today.dow]} {hours.today.date.slice(8, 10)}/{hours.today.date.slice(5, 7)}) :{' '}
+          Aujourd'hui ({fmtDay(hours.today)}) :{' '}
           <b className="text-gray-800">
             {fmtHm(hours.today.worked_seconds)} / {hours.today.rest ? 'Repos' : '8h30'}
           </b>
@@ -43,7 +82,7 @@ export default function MesHeures() {
           )}
         </span>
         <span className="text-xs text-gray-500">
-          Semaine (7 jours) : <b className="text-gray-700">{fmtHm(hours.totals.worked_seconds)} / {fmtHm(hours.totals.norm_seconds)}</b>
+          {totalsLabel} : <b className="text-gray-700">{fmtHm(hours.totals.worked_seconds)} / {fmtHm(hours.totals.norm_seconds)}</b>
           {hours.totals.net_missing_seconds > 0
             ? <span className="text-rose-500 font-semibold"> · manque {fmtHm(hours.totals.net_missing_seconds)} (solde net)</span>
             : hours.totals.surplus_seconds > 0
@@ -66,35 +105,42 @@ export default function MesHeures() {
         />
       </div>
 
-      {/* Detail par jour */}
+      {/* Detail : jours (vues jours/mois) ou mois (vue annee) */}
       <table className="w-full text-xs mt-3" data-testid="heures-table">
         <thead>
           <tr className="text-gray-400 text-left border-b border-gray-100">
-            <th className="py-1.5 font-medium">Jour</th>
+            <th className="py-1.5 font-medium">{view === 'year' ? 'Mois' : 'Jour'}</th>
             <th className="py-1.5 font-medium text-right">Réalisé</th>
             <th className="py-1.5 font-medium text-right">Norme</th>
             <th className="py-1.5 font-medium text-right">Écart norme</th>
           </tr>
         </thead>
         <tbody>
-          {hours.days.map(d => (
-            <tr key={d.date} className={`border-b border-gray-50 ${d.is_today ? 'bg-purple-50/50 font-semibold' : ''}`}>
-              <td className="py-1.5 text-gray-600">
-                {DAY_LABELS[d.dow]} {d.date.slice(8, 10)}/{d.date.slice(5, 7)}
-                {d.is_today && <span className="text-purple-500 ml-1">· aujourd'hui</span>}
-              </td>
-              <td className="py-1.5 text-right text-gray-700">{fmtHm(d.worked_seconds)}</td>
-              <td className="py-1.5 text-right">
-                {d.rest ? <span className="text-gray-400 italic">Repos</span> : <span className="text-gray-600">8h30</span>}
-              </td>
-              <td className="py-1.5 text-right">
-                {d.overtime_seconds > 0 ? <span className="text-green-600 font-semibold">+{fmtHm(d.overtime_seconds)}</span>
-                  : d.rest ? <span className="text-gray-300">—</span>
-                  : d.missing_seconds > 0 ? <span className="text-rose-500 font-semibold">{fmtHm(d.missing_seconds)}</span>
-                  : <span className="text-green-600 font-semibold">✓ atteint</span>}
-              </td>
-            </tr>
-          ))}
+          {view === 'year'
+            ? (hours.months || []).map(m => (
+                <tr key={m.month} className={`border-b border-gray-50 ${m.is_current ? 'bg-purple-50/50 font-semibold' : ''}`}>
+                  <td className="py-1.5 text-gray-600">
+                    {MONTH_LABELS[m.month - 1]}
+                    {m.is_current && <span className="text-purple-500 ml-1">· en cours</span>}
+                  </td>
+                  <td className="py-1.5 text-right text-gray-700">{fmtHm(m.worked_seconds)}</td>
+                  <td className="py-1.5 text-right text-gray-600">{fmtHm(m.norm_seconds)}</td>
+                  <td className="py-1.5 text-right">{ecartCell(m.overtime_seconds, false, m.missing_seconds)}</td>
+                </tr>
+              ))
+            : hours.days.map(d => (
+                <tr key={d.date} className={`border-b border-gray-50 ${d.is_today ? 'bg-purple-50/50 font-semibold' : ''}`}>
+                  <td className="py-1.5 text-gray-600">
+                    {fmtDay(d)}
+                    {d.is_today && <span className="text-purple-500 ml-1">· aujourd'hui</span>}
+                  </td>
+                  <td className="py-1.5 text-right text-gray-700">{fmtHm(d.worked_seconds)}</td>
+                  <td className="py-1.5 text-right">
+                    {d.rest ? <span className="text-gray-400 italic">Repos</span> : <span className="text-gray-600">8h30</span>}
+                  </td>
+                  <td className="py-1.5 text-right">{ecartCell(d.overtime_seconds, d.rest, d.missing_seconds)}</td>
+                </tr>
+              ))}
         </tbody>
       </table>
     </div>

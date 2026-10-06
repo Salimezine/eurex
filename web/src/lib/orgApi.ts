@@ -99,8 +99,19 @@ export interface OrgHoursDay {
   is_today: boolean;
 }
 
+export interface OrgHoursMonth {
+  month: number;
+  worked_seconds: number;
+  norm_seconds: number;
+  missing_seconds: number;
+  overtime_seconds: number;
+  is_current: boolean;
+}
+
 export interface OrgMyHours {
+  view: string;
   days: OrgHoursDay[];
+  months: OrgHoursMonth[] | null;
   today: OrgHoursDay;
   totals: { worked_seconds: number; norm_seconds: number; missing_seconds: number; overtime_seconds: number; net_missing_seconds: number; surplus_seconds: number };
   online: boolean;
@@ -245,8 +256,8 @@ export const orgApi = {
   revokeGrant: (dossierId: string, grantId: string) =>
     req<{ ok: boolean }>(`/org/dossiers/${dossierId}/grants/${grantId}`, { method: 'DELETE' }),
   getMyGrants: () => req<OrgMyGrant[]>('/org/grants/mine'),
-  // Mes heures : 7 derniers jours (réalisé vs norme 8h30 lun-ven)
-  getMyHours: () => req<OrgMyHours>('/org/me/hours'),
+  // Mes heures : vues jours (7j) / mois / annee (realise vs norme 8h30)
+  getMyHours: (view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/me/hours?view=${view}`),
 
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>
