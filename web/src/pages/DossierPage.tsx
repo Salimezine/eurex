@@ -287,15 +287,18 @@ export default function DossierPage() {
         await api.generateVTJC(id);
         setOcrProgress('Termine! ' + ok + ' facture(s) + ecritures generees');
       } else if (journal === 'VT C') {
-        // Client-side: extract text, send to Worker
-        let allText = '';
+        // Client-side: parse each invoice like VT J.C, then generate VT C entries
+        let ok = 0;
         for (const file of Array.from(files)) {
           const text = await extractTextFromPDF(file);
-          allText += text + '\n';
+          const inv = parseInvoice(text);
+          if (!inv.numero) inv.numero = file.name.replace(/[^0-9]/g, '');
+          await api.addFacture(id, { date_facture: inv.date, numero_facture: inv.numero, client: inv.client, total_ht_0: inv.ht0, total_ht_19: inv.ht19, tva_19: inv.tva19, timbre: inv.timbre, total_ttc: inv.ttc });
+          ok++;
         }
-        setOcrProgress('Envoi au serveur pour traitement...');
-        const r = await api.processVTC(id, allText);
-        setOcrProgress('Termine! ' + r.totalEntries + ' ecriture(s) VT C extraite(s)');
+        setOcrProgress(ok + ' facture(s) extraitee(s). Generation VT C...');
+        const r = await api.generateVTJC(id, 'VT C');
+        setOcrProgress('Termine! ' + ok + ' facture(s), ' + (r.days || 0) + ' jour(s)');
       } else if (journal === 'FISC') {
         // Client-side: extract items, parse DMI, validate, send to Worker
         setOcrProgress('Extraction DMI...');
@@ -348,11 +351,11 @@ export default function DossierPage() {
   };
 
   const generate = async () => {
-    if (!id || journal !== 'VT J.C') return;
+    if (!id || (journal !== 'VT J.C' && journal !== 'VT C')) return;
     setGenerating(true);
     setVtjcResult(null);
     try {
-      const result = await api.generateVTJC(id);
+      const result = await api.generateVTJC(id, journal);
       setVtjcResult(result);
       reload(true);
     } catch (e: any) { alert('Erreur: ' + e.message); }
@@ -477,7 +480,7 @@ export default function DossierPage() {
               <button onClick={() => { setJournal('VT C'); setTab('factures'); }} className="border-2 border-teal-200 rounded-xl p-6 hover:border-teal-500 hover:bg-teal-50 transition-all group">
                 <FileText className="w-10 h-10 mx-auto text-teal-500 mb-3 group-hover:scale-110 transition-transform" />
                 <h3 className="font-semibold text-teal-700">VT C</h3>
-                <p className="text-xs text-gray-500 mt-1">Factures → Extraction PDF</p>
+                <p className="text-xs text-gray-500 mt-1">Factures → Calcul des ecritures</p>
                 <p className="text-xs text-gray-400 mt-2">{ecrituresVTC.length} ecriture(s)</p>
               </button>
               <button onClick={() => { setJournal('FISC'); setTab('ecritures'); }} className="border-2 border-amber-200 rounded-xl p-6 hover:border-amber-500 hover:bg-amber-50 transition-all group">
@@ -688,23 +691,17 @@ export default function DossierPage() {
                 <h3 className={`font-semibold ${isVTJC ? 'text-violet-800' : 'text-teal-800'}`}>Resultat — {journal}</h3>
                 <button onClick={() => setVtjcResult(null)} className="text-gray-400 hover:text-gray-600 text-sm">Fermer</button>
               </div>
-              {isVTJC ? (
-                <>
-                  <p className="text-sm text-violet-700">{vtjcResult.days} jour(s) traite(s), {vtjcResult.entries?.filter((e: any) => !e.excluded).length || 0} ecriture(s)</p>
-                  {vtjcResult.anomalies?.length > 0 && (
-                    <div className="mt-3">
-                      <p className="text-sm font-semibold text-red-700 mb-1">Jours excludes (ecart &gt; 3DT) :</p>
-                      {vtjcResult.anomalies.map((a: any, i: number) => (
-                        <div key={i} className="bg-white border border-red-200 rounded-lg p-2 mb-2">
-                          <p className="text-sm font-mono font-bold text-red-700">{a.date} — {a.error}</p>
-                          {a.factures && <pre className="text-xs text-gray-600 mt-1 whitespace-pre-wrap font-mono">{a.factures}</pre>}
-                        </div>
-                      ))}
+              <p className={`text-sm ${isVTJC ? 'text-violet-700' : 'text-teal-700'}`}>{vtjcResult.days} jour(s) traite(s), {vtjcResult.entries?.filter((e: any) => !e.excluded).length || 0} ecriture(s)</p>
+              {vtjcResult.anomalies?.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-sm font-semibold text-red-700 mb-1">Jours excludes (ecart &gt; 3DT) :</p>
+                  {vtjcResult.anomalies.map((a: any, i: number) => (
+                    <div key={i} className="bg-white border border-red-200 rounded-lg p-2 mb-2">
+                      <p className="text-sm font-mono font-bold text-red-700">{a.date} — {a.error}</p>
+                      {a.factures && <pre className="text-xs text-gray-600 mt-1 whitespace-pre-wrap font-mono">{a.factures}</pre>}
                     </div>
-                  )}
-                </>
-              ) : (
-                <p className="text-sm text-teal-700">{vtjcResult.vtcCount || 0} ecriture(s) extraite(s) du PDF</p>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -742,13 +739,13 @@ export default function DossierPage() {
               </table>
             </div>
           )}
-          {isVTJC && (
+          {(isVTJC || isVTC) && (
             <div className="bg-white rounded-xl border p-5">
-              <h2 className="font-semibold mb-3">Generer les ecritures VT J.C</h2>
+              <h2 className="font-semibold mb-3">Generer les ecritures {journal}</h2>
               <p className="text-xs text-gray-500 mb-3">Calcule les ecritures a partir des factures + rapport.</p>
-              <button onClick={generate} disabled={generating || !factures.length} className="bg-violet-600 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center gap-1.5">
+              <button onClick={generate} disabled={generating || !factures.length} className={`${isVTJC ? 'bg-violet-600 hover:bg-violet-700' : 'bg-teal-600 hover:bg-teal-700'} text-white px-5 py-2.5 rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5`}>
                 {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                {generating ? 'Generation...' : 'Generer VT J.C'}
+                {generating ? 'Generation...' : `Generer ${journal}`}
               </button>
             </div>
           )}

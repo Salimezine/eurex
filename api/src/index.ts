@@ -67,7 +67,11 @@ const EXCLUDED_DAYS = new Set([
 ]);
 const CLIENT_NAMES: Record<string, string> = { '99': 'CLTS PASSAGERS', '111': 'STE WEZIGN', '122': 'NESRINE BACCAR' };
 
-function buildDayEcritures(date: string, dayFactures: any[], modes: any, defaultLibelle: string) {
+function buildDayEcritures(date: string, dayFactures: any[], modes: any, defaultLibelle: string, journal: 'VT J.C' | 'VT C' = 'VT J.C') {
+  const isJC = journal !== 'VT C';
+  const COMPTE_VENTE0 = isJC ? '707200' : '707100';
+  const COMPTE_VENTE19 = isJC ? '707219' : '707119';
+  const COMPTE_TVA = isJC ? '436711' : '436710';
   if (EXCLUDED_DAYS.has(date)) {
     return { lines: [], ecart: 0, excluded: true, anomaly: { date, error: 'Exclu: ecart > 3DT' } };
   }
@@ -97,10 +101,10 @@ function buildDayEcritures(date: string, dayFactures: any[], modes: any, default
     const rht0 = Math.round(amt.ht0 * 1000) / 1000;
     const rht19 = Math.round(amt.ht19 * 1000) / 1000;
     const lib = tierKeys.length > 1 ? (CLIENT_NAMES[cc] || cc) : defaultLibelle;
-    if (rht0 > 0) lines.push({ compte: '707200', montant: rht0, sens: 'C', libelle: lib });
-    if (rht19 > 0) lines.push({ compte: '707219', montant: rht19, sens: 'C', libelle: lib });
+    if (rht0 > 0) lines.push({ compte: COMPTE_VENTE0, montant: rht0, sens: 'C', libelle: lib });
+    if (rht19 > 0) lines.push({ compte: COMPTE_VENTE19, montant: rht19, sens: 'C', libelle: lib });
   }
-  if (tva19 > 0) lines.push({ compte: '436711', montant: tva19, sens: 'C' });
+  if (tva19 > 0) lines.push({ compte: COMPTE_TVA, montant: tva19, sens: 'C' });
   lines.push({ compte: '437500', montant: timbres, sens: 'C' });
   if (avoir709 > 0) lines.push({ compte: '709500', montant: Math.round(avoir709 * 1000) / 1000, sens: 'D' });
   if (ecart !== 0) lines.push({ compte: '634500', montant: Math.abs(ecart), sens: ecart > 0 ? 'C' : 'D' });
@@ -341,10 +345,16 @@ export default {
         const d = await env.DB.prepare('SELECT * FROM dossiers WHERE id = ?').bind(did).first() as any;
         if (!d) return json({ error: 'Dossier non trouve' }, 404);
 
+        let journal: 'VT J.C' | 'VT C' = 'VT J.C';
+        try {
+          const b = await request.json() as any;
+          if (b && b.journal === 'VT C') journal = 'VT C';
+        } catch { /* no body -> VT J.C */ }
+
         const facturesR = await env.DB.prepare('SELECT * FROM factures WHERE dossier_id = ? ORDER BY date_facture, numero_facture').bind(did).all();
         if (!facturesR.results.length) return json({ error: 'Aucune facture' }, 400);
 
-        await env.DB.prepare("DELETE FROM ecritures WHERE dossier_id = ? AND journal_code = 'VT J.C'").bind(did).run();
+        await env.DB.prepare('DELETE FROM ecritures WHERE dossier_id = ? AND journal_code = ?').bind(did, journal).run();
 
         const byDay: Record<string, any[]> = {};
         for (const f of facturesR.results) {
@@ -364,7 +374,7 @@ export default {
           const rapportR = await env.DB.prepare('SELECT especes, cheques, tpe, bonsAchat, avoir, credit FROM rapport_modes WHERE dossier_id = ? AND date_jour = ?').bind(did, date).first() as any;
           const modes = rapportR || { especes: 0, tpe: 0, cheques: 0, bonsAchat: 0, avoir: 0, credit: 0 };
 
-          const result = buildDayEcritures(date, dayFactures, modes, defaultLibelle);
+          const result = buildDayEcritures(date, dayFactures, modes, defaultLibelle, journal);
           if (result.excluded) {
             anomalies.push(result.anomaly);
             allEntries.push({ date, numPiece, excluded: true });
@@ -373,7 +383,7 @@ export default {
           if (result.anomaly) anomalies.push(result.anomaly);
 
           for (const l of result.lines) {
-            await env.DB.prepare('INSERT INTO ecritures (id, dossier_id, societe_id, journal_code, date_operation, date_piece, numero_doc, libelle, compte, sens, montant, tresorerie) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), did, d.societe_id, 'VT J.C', date, date, numPiece, l.libelle || defaultLibelle, l.compte, l.sens, l.montant, null).run();
+            await env.DB.prepare('INSERT INTO ecritures (id, dossier_id, societe_id, journal_code, date_operation, date_piece, numero_doc, libelle, compte, sens, montant, tresorerie) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), did, d.societe_id, journal, date, date, numPiece, l.libelle || defaultLibelle, l.compte, l.sens, l.montant, null).run();
           }
           allEntries.push({ date, numPiece, libelle: defaultLibelle, ecart: result.ecart, lignes: result.lines });
         }

@@ -37,7 +37,11 @@ const EXCLUDED_DAYS = new Set([
 ]);
 const CLIENT_NAMES = { '99': 'CLTS PASSAGERS', '111': 'STE WEZIGN', '122': 'NESRINE BACCAR' };
 
-function buildDayEcritures(date, dayFactures, modes, defaultLibelle) {
+function buildDayEcritures(date, dayFactures, modes, defaultLibelle, journal = 'VT J.C') {
+  const isJC = journal !== 'VT C';
+  const COMPTE_VENTE0 = isJC ? '707200' : '707100';
+  const COMPTE_VENTE19 = isJC ? '707219' : '707119';
+  const COMPTE_TVA = isJC ? '436711' : '436710';
   if (EXCLUDED_DAYS.has(date)) {
     const factureDetails = dayFactures.map(f => {
       const num = f.numero_facture || f.num || '?';
@@ -78,10 +82,10 @@ function buildDayEcritures(date, dayFactures, modes, defaultLibelle) {
     const rht0 = Math.round(amt.ht0 * 1000) / 1000;
     const rht19 = Math.round(amt.ht19 * 1000) / 1000;
     const lib = tierKeys.length > 1 ? (CLIENT_NAMES[cc] || cc) : defaultLibelle;
-    if (rht0 > 0) lines.push({ compte: '707200', montant: rht0, sens: 'C', libelle: lib });
-    if (rht19 > 0) lines.push({ compte: '707219', montant: rht19, sens: 'C', libelle: lib });
+    if (rht0 > 0) lines.push({ compte: COMPTE_VENTE0, montant: rht0, sens: 'C', libelle: lib });
+    if (rht19 > 0) lines.push({ compte: COMPTE_VENTE19, montant: rht19, sens: 'C', libelle: lib });
   }
-  if (tva19 > 0) lines.push({ compte: '436711', montant: tva19, sens: 'C' });
+  if (tva19 > 0) lines.push({ compte: COMPTE_TVA, montant: tva19, sens: 'C' });
   lines.push({ compte: '437500', montant: timbres, sens: 'C' });
   if (avoir709 > 0) lines.push({ compte: '709500', montant: Math.round(avoir709 * 1000) / 1000, sens: 'D' });
   if (ecart !== 0) lines.push({ compte: '634500', montant: Math.abs(ecart), sens: ecart > 0 ? 'C' : 'D' });
@@ -923,7 +927,8 @@ app.post('/api/dossiers/:did/generate-vtjc', (req, res) => {
   const factures = db.prepare('SELECT * FROM factures WHERE dossier_id = ? ORDER BY date_facture, numero_facture').all(did);
   if (!factures.length) return res.status(400).json({ error: 'Aucune facture' });
 
-  db.prepare("DELETE FROM ecritures WHERE dossier_id = ? AND journal_code = 'VT J.C'").run(did);
+  const journal = (req.body && req.body.journal === 'VT C') ? 'VT C' : 'VT J.C';
+  db.prepare('DELETE FROM ecritures WHERE dossier_id = ? AND journal_code = ?').run(did, journal);
 
   const byDay = {};
   for (const f of factures) {
@@ -946,7 +951,7 @@ app.post('/api/dossiers/:did/generate-vtjc', (req, res) => {
       const dbRapport = db.prepare('SELECT especes, cheques, tpe, bonsAchat, avoir, credit FROM rapport_modes WHERE dossier_id = ? AND date_jour = ?').get(did, date);
       const modes = (req.body.modes && req.body.modes[date]) || dbRapport || RAPPORT_MODES_JUIN[date] || { especes: 0, tpe: 0, cheques: 0, bonsAchat: 0, avoir: 0, credit: 0 };
 
-      const result = buildDayEcritures(date, dayFactures, modes, defaultLibelle);
+      const result = buildDayEcritures(date, dayFactures, modes, defaultLibelle, journal);
       if (result.excluded) {
         anomalies.push(result.anomaly);
         allEntries.push({ date, numPiece, excluded: true, ecart: 0, anomaly: result.anomaly });
@@ -956,7 +961,7 @@ app.post('/api/dossiers/:did/generate-vtjc', (req, res) => {
 
       for (const l of result.lines) {
         const lib = l.libelle || defaultLibelle;
-        insertE.run(genId(), did, d.societe_id, 'VT J.C', date, date, numPiece, lib, l.compte, l.sens, l.montant, null);
+        insertE.run(genId(), did, d.societe_id, journal, date, date, numPiece, lib, l.compte, l.sens, l.montant, null);
       }
 
       const dayD = result.lines.filter(l => l.sens === 'D').reduce((s, l) => s + l.montant, 0);
