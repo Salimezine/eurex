@@ -5,6 +5,7 @@ import { t } from '../../lib/orgI18n';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { monthShort } from '../../lib/orgMonths';
 import ProgressDonut from '../../components/ProgressDonut';
+import MesHeures from '../../components/MesHeures';
 import {
   ArrowLeft, Users, FileText, MessageSquare, CheckCircle2,
   Circle, AlertTriangle, BarChart3, Activity, Timer,
@@ -281,6 +282,8 @@ export default function OrgComptableDetail() {
       {/* Tab: Time entries */}
       {tab === 'time' && (
         <div className="space-y-2">
+          {/* Heures du comptable : jours / mois / annee (norme 8h30, solde net) */}
+          <MesHeures userId={id} title={`Heures de ${c.full_name}`} />
           {time_entries.length === 0 && <p className="text-center text-gray-400 py-8">Aucune entrée temps</p>}
           {time_entries.map((te: any) => (
             <div key={te.id} className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3">

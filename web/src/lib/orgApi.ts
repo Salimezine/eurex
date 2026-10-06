@@ -258,6 +258,8 @@ export const orgApi = {
   getMyGrants: () => req<OrgMyGrant[]>('/org/grants/mine'),
   // Mes heures : vues jours (7j) / mois / annee (realise vs norme 8h30)
   getMyHours: (view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/me/hours?view=${view}`),
+  // Heures d'un comptable (expert) — fiche comptable, memes vues
+  getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}`),
 
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>

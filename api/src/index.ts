@@ -15,6 +15,66 @@ function isSupervisor(role: string): boolean {
   return role === 'expert' || role === 'manager';
 }
 
+// Heures pointees d'un utilisateur : vues days (7 derniers) / month (1..aujourd'hui) / year (mois).
+// Realise vs norme 8h30 lun-ven, repos sam-dim, depassement (+ heures du weekend = rattrapage
+// du ghyeb) et solde net de periode (le depassement d'un jour compense le manque d'un autre).
+async function buildHoursPayload(env: Env, userId: string, view: string): Promise<any> {
+  // Heures pointees groupees par jour local TN (UTC+1) — fenetre 400j pour la vue annee
+  const { results: dayRows } = await env.DB.prepare(`SELECT date(datetime(started_at, '+60 minutes')) as d, COALESCE(SUM(duration_seconds),0) AS secs FROM org_time_entries WHERE user_id = ? AND stopped_at IS NOT NULL AND started_at >= datetime('now', '-400 days') GROUP BY d`).bind(userId).all();
+  const byDay = new Map((dayRows as any[]).map(r => [String(r.d), Number(r.secs) || 0]));
+  // Chrono en cours : ajoute au jour TN courant
+  const running = await env.DB.prepare('SELECT started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(userId).first() as any;
+  const me = await env.DB.prepare('SELECT last_seen_at FROM org_users WHERE id = ?').bind(userId).first() as any;
+  const nowMs = Date.now();
+  const parseUtc = (s: any) => s ? Math.floor(Date.parse(String(s).replace(' ', 'T') + 'Z') / 1000) : 0;
+  const runningSec = running ? Math.max(0, Math.floor(nowMs / 1000) - parseUtc(running.started_at)) : 0;
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const tn = new Date(nowMs + 3600000);
+  const tY = tn.getUTCFullYear(), tM = tn.getUTCMonth(), tD = tn.getUTCDate();
+  const todayDow = tn.getUTCDay();
+  const mkDay = (ds: string, y: number, m: number, d: number, isToday: boolean) => {
+    const dow = new Date(Date.UTC(y, m, d)).getUTCDay();
+    const rest = dow === 0 || dow === 6;
+    const norm = rest ? 0 : 30600;
+    let worked = byDay.get(ds) || 0;
+    if (isToday) worked += runningSec;
+    const missing = norm > 0 ? Math.max(0, norm - worked) : 0;
+    const overtime = Math.max(0, worked - norm);
+    return { date: ds, dow, worked_seconds: worked, norm_seconds: norm, missing_seconds: missing, overtime_seconds: overtime, rest, is_today: isToday };
+  };
+  let days: any[] = [];
+  let months: any[] | null = null;
+  if (view === 'year') {
+    // Annee en cours : un rang par mois (janv..mois courant), norme = jours ouvres x 8h30
+    months = [];
+    for (let m = 0; m <= tM; m++) {
+      const lastD = m === tM ? tD : new Date(Date.UTC(tY, m + 1, 0)).getUTCDate();
+      let w = 0, n = 0, mi = 0, ot = 0;
+      for (let d = 1; d <= lastD; d++) {
+        const row = mkDay(`${tY}-${pad2(m + 1)}-${pad2(d)}`, tY, m, d, m === tM && d === tD);
+        w += row.worked_seconds; n += row.norm_seconds; mi += row.missing_seconds; ot += row.overtime_seconds;
+      }
+      months.push({ month: m + 1, worked_seconds: w, norm_seconds: n, missing_seconds: mi, overtime_seconds: ot, is_current: m === tM });
+    }
+  } else if (view === 'month') {
+    // Mois en cours : un rang par jour (1..aujourd'hui)
+    for (let d = 1; d <= tD; d++) days.push(mkDay(`${tY}-${pad2(tM + 1)}-${pad2(d)}`, tY, tM, d, d === tD));
+  } else {
+    // 7 derniers jours glissants (jour courant en dernier)
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date(new Date(nowMs + 3600000).setUTCHours(0, 0, 0, 0) - i * 86400000);
+      days.push(mkDay(dt.toISOString().slice(0, 10), dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), i === 0));
+    }
+  }
+  const rows: any[] = view === 'year' ? (months as any[]) : days;
+  const totals = rows.reduce((acc, r) => ({ worked_seconds: acc.worked_seconds + r.worked_seconds, norm_seconds: acc.norm_seconds + r.norm_seconds, missing_seconds: acc.missing_seconds + r.missing_seconds, overtime_seconds: acc.overtime_seconds + r.overtime_seconds }), { worked_seconds: 0, norm_seconds: 0, missing_seconds: 0, overtime_seconds: 0 });
+  const net_missing = Math.max(0, totals.norm_seconds - totals.worked_seconds);
+  const surplus = Math.max(0, totals.worked_seconds - totals.norm_seconds);
+  const today = mkDay(`${tY}-${pad2(tM + 1)}-${pad2(tD)}`, tY, tM, tD, true);
+  const online = parseUtc(me?.last_seen_at) >= Math.floor(nowMs / 1000) - 180;
+  return { view, days, months, today, totals: { ...totals, net_missing_seconds: net_missing, surplus_seconds: surplus }, online, today_dow: todayDow };
+}
+
 // Quota Workers AI épuisé (tous les modèles partagent les 10 000 neurons/jour du compte).
 function isQuotaExhausted(e: any): boolean {
   const msg = String((e && (e.message || e)) || '').toLowerCase();
@@ -2067,66 +2127,23 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json(results);
       }
 
-      // --- ORG: MES HEURES — vues days (7j) / month / year : realise vs norme 8h30 lun-ven, repos sam-dim ---
+      // --- ORG: MES HEURES — vues days (7j) / month / year : realise vs norme 8h30 lun-ven ---
       if (path === '/api/org/me/hours' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const view = new URL(request.url).searchParams.get('view') || 'days';
-        // Heures pointees groupees par jour local TN (UTC+1) — fenetre 400j pour la vue annee
-        const { results: dayRows } = await env.DB.prepare(`SELECT date(datetime(started_at, '+60 minutes')) as d, COALESCE(SUM(duration_seconds),0) AS secs FROM org_time_entries WHERE user_id = ? AND stopped_at IS NOT NULL AND started_at >= datetime('now', '-400 days') GROUP BY d`).bind(user.id).all();
-        const byDay = new Map((dayRows as any[]).map(r => [String(r.d), Number(r.secs) || 0]));
-        // Chrono en cours : ajoute au jour TN courant (comme le dashboard expert)
-        const running = await env.DB.prepare('SELECT started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(user.id).first() as any;
-        const nowMs = Date.now();
-        const parseUtc = (s: any) => s ? Math.floor(Date.parse(String(s).replace(' ', 'T') + 'Z') / 1000) : 0;
-        const runningSec = running ? Math.max(0, Math.floor(nowMs / 1000) - parseUtc(running.started_at)) : 0;
-        const pad2 = (n: number) => String(n).padStart(2, '0');
-        const tn = new Date(nowMs + 3600000);
-        const tY = tn.getUTCFullYear(), tM = tn.getUTCMonth(), tD = tn.getUTCDate();
-        const todayDow = tn.getUTCDay();
-        const mkDay = (ds: string, y: number, m: number, d: number, isToday: boolean) => {
-          const dow = new Date(Date.UTC(y, m, d)).getUTCDay();
-          const rest = dow === 0 || dow === 6;
-          const norm = rest ? 0 : 30600;
-          let worked = byDay.get(ds) || 0;
-          if (isToday) worked += runningSec;
-          const missing = norm > 0 ? Math.max(0, norm - worked) : 0;
-          // Depassement : jours ouvres au-dela de 8h30 + heures faites le jour de repos (rattrapage du ghyeb)
-          const overtime = Math.max(0, worked - norm);
-          return { date: ds, dow, worked_seconds: worked, norm_seconds: norm, missing_seconds: missing, overtime_seconds: overtime, rest, is_today: isToday };
-        };
-        let days: any[] = [];
-        let months: any[] | null = null;
-        if (view === 'year') {
-          // Annee en cours : un rang par mois (janv..mois courant), norme = jours ouvres x 8h30
-          months = [];
-          for (let m = 0; m <= tM; m++) {
-            const lastD = m === tM ? tD : new Date(Date.UTC(tY, m + 1, 0)).getUTCDate();
-            let w = 0, n = 0, mi = 0, ot = 0;
-            for (let d = 1; d <= lastD; d++) {
-              const row = mkDay(`${tY}-${pad2(m + 1)}-${pad2(d)}`, tY, m, d, m === tM && d === tD);
-              w += row.worked_seconds; n += row.norm_seconds; mi += row.missing_seconds; ot += row.overtime_seconds;
-            }
-            months.push({ month: m + 1, worked_seconds: w, norm_seconds: n, missing_seconds: mi, overtime_seconds: ot, is_current: m === tM });
-          }
-        } else if (view === 'month') {
-          // Mois en cours : un rang par jour (1..aujourd'hui)
-          for (let d = 1; d <= tD; d++) days.push(mkDay(`${tY}-${pad2(tM + 1)}-${pad2(d)}`, tY, tM, d, d === tD));
-        } else {
-          // 7 derniers jours glissants (jour courant en dernier)
-          for (let i = 6; i >= 0; i--) {
-            const dt = new Date(new Date(nowMs + 3600000).setUTCHours(0, 0, 0, 0) - i * 86400000);
-            days.push(mkDay(dt.toISOString().slice(0, 10), dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), i === 0));
-          }
-        }
-        const rows: any[] = view === 'year' ? (months as any[]) : days;
-        const totals = rows.reduce((acc, r) => ({ worked_seconds: acc.worked_seconds + r.worked_seconds, norm_seconds: acc.norm_seconds + r.norm_seconds, missing_seconds: acc.missing_seconds + r.missing_seconds, overtime_seconds: acc.overtime_seconds + r.overtime_seconds }), { worked_seconds: 0, norm_seconds: 0, missing_seconds: 0, overtime_seconds: 0 });
-        // Solde net : le depassement d'un jour compense le ghyeb d'un autre (rattrapage)
-        const net_missing = Math.max(0, totals.norm_seconds - totals.worked_seconds);
-        const surplus = Math.max(0, totals.worked_seconds - totals.norm_seconds);
-        const today = mkDay(`${tY}-${pad2(tM + 1)}-${pad2(tD)}`, tY, tM, tD, true);
-        const online = parseUtc(user.last_seen_at) >= Math.floor(nowMs / 1000) - 180;
-        return json({ view, days, months, today, totals: { ...totals, net_missing_seconds: net_missing, surplus_seconds: surplus }, online, today_dow: todayDow });
+        return json(await buildHoursPayload(env, user.id, view));
+      }
+
+      // --- ORG: HEURES D'UN COMPTABLE (expert/manager) — fiche comptable, memes vues ---
+      const orgCompHoursMatch = path.match(/^\/api\/org\/comptables\/([^/]+)\/hours$/);
+      if (orgCompHoursMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const target = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ?').bind(orgCompHoursMatch[1], user.organization_id).first();
+        if (!target) return json({ error: 'Comptable introuvable' }, 404);
+        const view = new URL(request.url).searchParams.get('view') || 'days';
+        return json(await buildHoursPayload(env, target.id, view));
       }
 
       // --- ORG: CLOSE DOSSIER ---

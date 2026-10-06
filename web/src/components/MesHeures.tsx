@@ -8,17 +8,21 @@ type View = 'days' | 'month' | 'year';
 // Mes heures : realise vs norme 8h30 (lun-ven), repos sam-dim, depassement (+XhYY)
 // et solde net de semaine (rattrapage : le depassement d'un jour compense le ghyeb d'un autre).
 // 3 vues de periode : Jours (7 derniers) / Mois (jour par jour) / Annee (mois par mois).
+// Sans props : mes heures (/me/hours). Avec userId : heures d'un comptable (/comptables/{id}/hours).
 // Auto-suffisant : fetch au montage + rafraichissement 15s (chrono en cours).
-export default function MesHeures() {
+export default function MesHeures({ userId, title }: { userId?: string; title?: string } = {}) {
   const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
 
-  useEffect(() => { orgApi.getMyHours(view).then(setHours).catch(() => {}); }, [view]);
+  const fetchHours = (v: View) =>
+    (userId ? orgApi.getComptableHours(userId, v) : orgApi.getMyHours(v)).then(setHours).catch(() => {});
+
+  useEffect(() => { fetchHours(view); }, [view, userId]);
 
   useEffect(() => {
-    const iv = setInterval(() => { orgApi.getMyHours(view).then(setHours).catch(() => {}); }, 15000);
+    const iv = setInterval(() => { fetchHours(view); }, 15000);
     return () => clearInterval(iv);
-  }, [view]);
+  }, [view, userId]);
 
   const fmtHm = (sec?: number) => {
     const s = Math.max(0, Math.floor(sec || 0));
@@ -45,7 +49,7 @@ export default function MesHeures() {
     <div className="bg-white border border-gray-200 rounded-2xl p-4" data-testid="mes-heures">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
         <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
-          ⏱ Mes heures
+          ⏱ {title || 'Mes heures'}
           <span className="text-gray-400 font-normal">— norme 8h30 du lundi au vendredi · repos sam-dim</span>
         </h3>
         {/* Onglets de periode : jours / mois / annee */}
