@@ -1,25 +1,11 @@
 {
   "name": "eurex",
   "version": "1.0.0",
-  "description": "Plateforme web permettant de transformer un dossier complet de pieces justificatives (PDF) en ecritures comptables pretes a l'import, conforme au Systeme Comptable des Entreprises tunisiennes (SCE 1996).",
-  "main": "server.js",
+  "description": "Plateforme EUREX : cabinet comptable (dossiers, clients, taches, temps) + modules Achats, Etats Financiers, Baud et ScanFlash, conforme au Systeme Comptable des Entreprises tunisiennes (SCE 1996).",
+  "private": true,
   "scripts": {
     "build": "cd web && npm install && npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "test": "cd web && npm test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "better-sqlite3": "^13.0.3",
-    "canvas": "^3.2.3",
-    "cors": "^2.8.6",
-    "express": "^5.2.1",
-    "multer": "^2.2.0",
-    "pdf-parse": "^2.4.5",
-    "pdfjs-dist": "^3.11.174",
-    "xlsx": "^0.18.5"
-  }
+  "license": "ISC"
 }

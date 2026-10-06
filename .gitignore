@@ -47,3 +47,6 @@ Thumbs.db
 # Modeles OCR locaux
 tools/pdf-factures/fra.traineddata
 *.traineddata
+
+# Donnees uploadnees (artefacts locaux)
+uploads/
