@@ -139,6 +139,26 @@ export interface OrgTask {
   assigned_comptable_name: string | null;
   due_date: string | null;
   verify_due_at?: string | null;
+  // Qui a travaille la tache (celui qui l'a passee en verification, ou l'expert si fait direct)
+  done_by?: string | null;
+  done_by_name?: string | null;
+}
+
+// Taches en attente de verification (feed expert/manager)
+export interface OrgVerifyTask {
+  id: string;
+  label: string;
+  status: string;
+  verify_due_at: string | null;
+  verify_left_hours: number | null;
+  due_date: string | null;
+  created_at: string;
+  updated_at: string;
+  dossier_id: string;
+  exercice: number;
+  client_name: string;
+  done_by: string | null;
+  done_by_name: string | null;
 }
 
 export interface OrgRecentTask {
@@ -283,6 +303,10 @@ export const orgApi = {
   getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}`),
   // Nouvelles tâches des dossiers accessibles (dashboard)
   getMyRecentTasks: (days: number = 30) => req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}`),
+  // Taches en attente de verification (expert/manager) + validation en un clic
+  getTasksToVerify: () => req<{ tasks: OrgVerifyTask[] }>('/org/tasks/verify'),
+  verifyTask: (dossierId: string, taskId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status: 'fait' }) }),
 
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>

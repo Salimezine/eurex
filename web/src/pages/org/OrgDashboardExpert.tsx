@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { orgApi, OrgComptable, OrgDossier, OrgClient } from '../../lib/orgApi';
+import { orgApi, OrgComptable, OrgDossier, OrgClient, OrgVerifyTask } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
@@ -16,6 +16,14 @@ type Tab = 'comptables' | 'global';
 // dans Settings) : le dashboard n'affiche que les comptables.
 const onlyComptables = (cs: OrgComptable[]) => cs.filter(c => c.role === 'comptable');
 
+// Delai de validation restant (en heures, negatif = delai depasse)
+const verifyBadge = (h: number | null) => {
+  if (h === null) return { cls: 'bg-gray-100 text-gray-500', label: 'Sans délai' };
+  if (h < 0) return { cls: 'bg-red-100 text-red-700', label: `Délai dépassé +${Math.abs(Math.round(h))} h` };
+  if (h < 1) return { cls: 'bg-orange-100 text-orange-700', label: `${Math.max(1, Math.round(h * 60))} min restantes` };
+  return { cls: 'bg-amber-100 text-amber-700', label: `${Math.round(h)} h restantes` };
+};
+
 export default function OrgDashboardExpert() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('comptables');
@@ -26,6 +34,9 @@ export default function OrgDashboardExpert() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterComptable, setFilterComptable] = useState<string>('all');
+  // Tâches faites par les comptables, en attente de vérification expert/manager
+  const [verifyTasks, setVerifyTasks] = useState<OrgVerifyTask[]>([]);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   // New dossier modal
   const [showNewDossier, setShowNewDossier] = useState(false);
   const [selectedClient, setSelectedClient] = useState('');
@@ -64,6 +75,27 @@ export default function OrgDashboardExpert() {
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', tick); };
   }, []);
+
+  // Tâches à vérifier : indépendant du reste (un échec ne bloque pas le dashboard)
+  useEffect(() => {
+    const loadVerify = () => orgApi.getTasksToVerify().then(r => setVerifyTasks(r.tasks || [])).catch(() => setVerifyTasks([]));
+    loadVerify();
+    const iv = setInterval(() => { if (!document.hidden) loadVerify(); }, 60000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const verifyOne = async (vt: OrgVerifyTask) => {
+    if (!confirm(`Valider la tâche « ${vt.label} » (${vt.client_name}) ?`)) return;
+    setVerifyingId(vt.id);
+    try {
+      await orgApi.verifyTask(vt.dossier_id, vt.id);
+      setVerifyTasks(prev => prev.filter(x => x.id !== vt.id));
+    } catch (e: any) {
+      alert(e.message || 'Erreur lors de la validation');
+    } finally {
+      setVerifyingId(null);
+    }
+  };
 
   // Create dossier
   const load = () => {
@@ -218,6 +250,48 @@ export default function OrgDashboardExpert() {
           );
         })}
       </div>
+
+      {/* Tâches à vérifier — faites par les comptables, en attente de validation */}
+      {verifyTasks.length > 0 && (
+        <div data-testid="a-verifier">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2">
+            ✅ À vérifier
+            <span className="text-gray-400 font-normal">— tâches terminées par les comptables, en attente de votre validation</span>
+            <span className="ml-auto text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {verifyTasks.map(vt => {
+              const badge = verifyBadge(vt.verify_left_hours);
+              return (
+                <div key={vt.id} data-testid="verify-task-card" className="bg-white border border-amber-200 rounded-xl p-4 hover:shadow-md hover:border-amber-300 transition-all">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <h4 className="font-bold text-sm text-gray-800 truncate" data-testid="verify-task-label">{vt.label}</h4>
+                    <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${badge.cls}`} data-testid="verify-task-delay">{badge.label}</span>
+                  </div>
+                  <Link
+                    to={`/cabinet/dossier/${vt.dossier_id}`}
+                    className="block text-[11px] text-gray-500 truncate hover:text-amber-700"
+                    data-testid="verify-task-dossier"
+                  >
+                    📁 {vt.client_name} · Exercice {vt.exercice}
+                  </Link>
+                  <p className="mt-1.5 text-[11px] text-purple-600 font-medium" data-testid="verify-task-doneby">
+                    👤 Travaillé par {vt.done_by_name || '—'}
+                  </p>
+                  <button
+                    onClick={() => verifyOne(vt)}
+                    disabled={verifyingId === vt.id}
+                    className="mt-2.5 w-full px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 transition-all"
+                    data-testid="verify-task-btn"
+                  >
+                    {verifyingId === vt.id ? 'Validation…' : '✅ Valider la vérification'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Mes heures (les miennes) — realises vs norme 8h30, solde net de semaine */}
       <MesHeures />

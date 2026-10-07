@@ -2086,7 +2086,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
         const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type, c.export_status, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
-        const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, vu.full_name as verified_by_name, COALESCE(vu.role_label, vu.role) as verified_by_role, au.full_name as assigned_comptable_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users vu ON t.verified_by = vu.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
+        const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, vu.full_name as verified_by_name, COALESCE(vu.role_label, vu.role) as verified_by_role, au.full_name as assigned_comptable_name, du.full_name as done_by_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users vu ON t.verified_by = vu.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id LEFT JOIN org_users du ON t.done_by = du.id WHERE t.dossier_id = ? ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         // Filtre export : les tâches à portée hors statut du client n'apparaissent pas
         const tasks = (rawTasks as any[]).filter(t => exportScopeKeeps(t.export_scope, dossier.export_status));
         const { results: documents } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ? ORDER BY label').bind(orgDossierGetMatch[1]).all();
@@ -2187,6 +2187,20 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           days_left: t.due_date ? Math.round((Date.parse(t.due_date + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400000) : null,
         }));
         return json({ tasks, days });
+      }
+
+      // --- ORG: TACHES EN ATTENTE DE VERIFICATION (expert/manager) ---
+      if (path === '/api/org/tasks/verify' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert/manager' }, 403);
+        const { results } = await env.DB.prepare("SELECT t.id, t.label, t.status, t.verify_due_at, t.due_date, t.created_at, t.updated_at, t.dossier_id, d.exercice, c.name as client_name, t.done_by, du.full_name as done_by_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users du ON t.done_by = du.id WHERE c.organization_id = ? AND t.status = 'a_verifier' ORDER BY (t.verify_due_at IS NULL), t.verify_due_at ASC, t.updated_at DESC LIMIT 50").bind(user.organization_id).all();
+        const tasks = (results as any[]).map(t => ({
+          ...t,
+          // heures restantes avant le delai de validation (negatif = delai depasse)
+          verify_left_hours: t.verify_due_at ? Math.round(((Date.parse(String(t.verify_due_at).replace(' ', 'T') + 'Z') - Date.now()) / 3600000) * 10) / 10 : null,
+        }));
+        return json({ tasks });
       }
 
       // --- ORG: HEURES D'UN COMPTABLE (expert/manager) — fiche comptable, memes vues ---
@@ -2331,6 +2345,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           // Un comptable qui marque "fait" envoie la tâche en vérification : seul un expert/manager la valide en "fait".
           effStatus = status === 'fait' && !isSupervisor(user.role) ? 'a_verifier' : status;
           updates.push('status = ?'); binds.push(effStatus);
+          // Qui a travaille la tache : celui qui la passe en verification, ou l'expert/manager
+          // qui la marque directement "fait" (un expert qui verifie une tache deja a_verifier
+          // n'efface pas le travail du comptable)
+          if (effStatus === 'a_verifier' || (effStatus === 'fait' && task.status !== 'a_verifier')) {
+            updates.push('done_by = ?'); binds.push(user.id);
+          }
           if (effStatus === 'fait') {
             updates.push('verified_by = ?', "verified_at = datetime('now')"); binds.push(user.id);
           } else if (task.status === 'fait') {

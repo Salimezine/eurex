@@ -759,6 +759,25 @@ export default function OrgDossierPage() {
                   onClick={() => setExpandedTask(isExpanded ? null : task.id)}
                 >
                   <Icon size={18} className={STATUS_COLORS[task.status]?.split(' ')[0] || 'text-gray-400'} />
+                  {/* Etat de verification : fait NON verifie vs fait verifie */}
+                  {task.status === 'a_verifier' && (
+                    <span
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap bg-amber-100 text-amber-700"
+                      title="Travaillée, mais pas encore vérifiée par l'expert/manager"
+                      data-testid="tag-a-verifier"
+                    >
+                      ⏳ À vérifier
+                    </span>
+                  )}
+                  {task.status === 'fait' && (
+                    <span
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap bg-teal-50 text-teal-700"
+                      title={task.verified_by_name ? 'Vérifiée par un expert/manager' : 'Fait — pas encore vérifié par un expert/manager'}
+                      data-testid="tag-fait"
+                    >
+                      {task.verified_by_name ? '✅ Vérifié' : '✅ Fait'}
+                    </span>
+                  )}
                   {monthFilter === 'tous' && task.month && (
                     <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-full">
                       {monthShort(task.month)}
@@ -818,17 +837,23 @@ export default function OrgDossierPage() {
                       {task.assigned_comptable_name}
                     </span>
                   )}
-                  {isExpert && task.updated_by_name && (
-                    <span className="text-[10px] text-purple-500 bg-purple-50 px-1.5 py-0.5 rounded-full">
-                      {task.updated_by_name}
+                  {task.done_by_name && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded-full font-medium"
+                      title="Qui a travaillé cette tâche"
+                      data-testid="tag-done-by"
+                    >
+                      <UserRound size={10} />
+                      Travaillé par {task.done_by_name}
                     </span>
                   )}
                   {task.status === 'fait' && task.verified_by_name && (
                     <span
                       className="text-[10px] text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded-full font-medium"
-                      title="Vérifié par"
+                      title="Qui a fait la vérification"
+                      data-testid="tag-verified-by"
                     >
-                      ✓ {task.verified_by_name} ({task.verified_by_role || 'expert'})
+                      ✓ Vérifié par {task.verified_by_name} ({task.verified_by_role || 'expert'})
                     </span>
                   )}
                   {isBlocked && (
