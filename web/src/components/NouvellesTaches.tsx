@@ -88,7 +88,8 @@ export default function NouvellesTaches() {
           </span>
         )}
       </h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+      {/* comme les Échéances fiscales : la zone grandit avec le contenu, plafonne a max-h-72 puis scroll */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
         {tasks.map(rt => {
           const rest = restBadge(rt.days_left);
           const fresh = isNew(rt.created_at);

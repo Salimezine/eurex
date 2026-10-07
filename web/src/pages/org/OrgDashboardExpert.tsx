@@ -263,7 +263,8 @@ export default function OrgDashboardExpert() {
             <span className="text-gray-400 font-normal">— tâches terminées par les comptables, en attente de votre validation</span>
             <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+          {/* comme les Échéances fiscales : la zone grandit avec le contenu, plafonne a max-h-72 puis scroll */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
             {verifyTasks.map(vt => {
               const badge = verifyBadge(vt.verify_left_hours);
               return (
