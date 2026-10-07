@@ -21,6 +21,7 @@ export default function OrgDashboardExpert() {
   const [tab, setTab] = useState<Tab>('comptables');
   const [comptables, setComptables] = useState<OrgComptable[]>([]);
   const [allDossiers, setAllDossiers] = useState<any[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [allClients, setAllClients] = useState<OrgClient[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -45,7 +46,8 @@ export default function OrgDashboardExpert() {
       setComptables(c);
       setAllDossiers(d);
       setAllClients(cl);
-    }).catch(console.error).finally(() => setLoading(false));
+      setLoadError(false);
+    }).catch(e => { console.error(e); setLoadError(true); }).finally(() => setLoading(false));
   }, []);
 
   // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s (pausé si onglet cache)
@@ -67,7 +69,8 @@ export default function OrgDashboardExpert() {
       setComptables(c);
       setAllDossiers(d);
       setAllClients(cl);
-    }).catch(console.error).finally(() => setLoading(false));
+      setLoadError(false);
+    }).catch(e => { console.error(e); setLoadError(true); }).finally(() => setLoading(false));
   };
 
   const createDossier = async () => {
@@ -127,6 +130,13 @@ export default function OrgDashboardExpert() {
 
   return (
     <div className="space-y-4">
+      {/* API indisponible : ne PAS afficher une liste vide qui ressemble a des dossiers perdus */}
+      {loadError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4 text-sm text-rose-700">
+          <span>Chargement impossible : l'API est momentanément indisponible. Aucune donnée n'a été supprimée.</span>
+          <button onClick={load} className="shrink-0 px-3 py-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors">Réessayer</button>
+        </div>
+      )}
       {/* KPIs — 2 catégories : fait / bloqué client */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[

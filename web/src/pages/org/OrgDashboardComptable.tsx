@@ -15,6 +15,7 @@ type SortKey = 'name' | 'progress' | 'blocked';
 export default function OrgDashboardComptable() {
   const [clients, setClients] = useState<OrgClient[]>([]);
   const [myGrants, setMyGrants] = useState<OrgMyGrant[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>('blocked');
   const [search, setSearch] = useState('');
@@ -22,8 +23,8 @@ export default function OrgDashboardComptable() {
   const load = () => {
     setLoading(true);
     Promise.all([orgApi.getClients(), orgApi.getMyGrants()])
-      .then(([cs, gs]) => { setClients(cs); setMyGrants(gs); })
-      .catch(console.error)
+      .then(([cs, gs]) => { setClients(cs); setMyGrants(gs); setLoadError(false); })
+      .catch(e => { console.error(e); setLoadError(true); })
       .finally(() => setLoading(false));
   };
 
@@ -57,6 +58,14 @@ export default function OrgDashboardComptable() {
           <OrgAccountButton />
         </div>
       </div>
+
+      {/* API indisponible : ne PAS afficher une liste vide qui ressemble a des clients/dossiers perdus */}
+      {loadError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4 text-sm text-rose-700">
+          <span>Chargement impossible : l'API est momentanément indisponible. Aucune donnée n'a été supprimée.</span>
+          <button onClick={load} className="shrink-0 px-3 py-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors">Réessayer</button>
+        </div>
+      )}
 
       {/* Mes heures — realises vs norme 8h30 (lun-ven), repos sam-dim, solde net */}
       <MesHeures />
