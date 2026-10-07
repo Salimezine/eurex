@@ -2069,7 +2069,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
         const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
         for (const tmpl of templates as any[]) {
-          const months: (number | null)[] =
+          // Modele rattache a un mois precis (ex: Depots AP) : un seul exemplaire dans ce mois
+          const months: (number | null)[] = tmpl.month ? [tmpl.month] :
             tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] :
             tmpl.frequency === 'trimestrielle' ? [1, 4, 7, 10] :
             [null];
@@ -3287,10 +3288,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { label, requires_document, assigned_comptable_id, frequency, export_scope } = await request.json() as any;
+        const { label, requires_document, assigned_comptable_id, frequency, export_scope, month } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
         if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
         if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
+        if (month !== undefined && month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) return json({ error: 'Mois invalide (1 à 12)' }, 400);
         if (frequency !== undefined && frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') {
           return json({ error: 'Fréquence invalide' }, 400);
         }
@@ -3301,16 +3303,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq, export_scope === undefined ? null : parseExportScope(export_scope)).run();
-        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq, export_scope: export_scope === undefined ? null : parseExportScope(export_scope) }, 201);
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency, export_scope, month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq, export_scope === undefined ? null : parseExportScope(export_scope), month ?? null).run();
+        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq, export_scope: export_scope === undefined ? null : parseExportScope(export_scope), month: month ?? null }, 201);
       }
       const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
       if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { assigned_comptable_id, label, requires_document, frequency, export_scope } = await request.json() as any;
+        const { assigned_comptable_id, label, requires_document, frequency, export_scope, month } = await request.json() as any;
         const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
         if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
+        if (month !== undefined && month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) return json({ error: 'Mois invalide (1 à 12)' }, 400);
         if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
         if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
         if (assigned_comptable_id !== undefined && assigned_comptable_id !== null) {
@@ -3325,12 +3328,15 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (frequency !== undefined) {
           if (frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
           updates.push('frequency = ?'); binds.push(frequency);
+          // Une tache mensuelle/trimestrielle ne reste pas rattachee a un mois unique
+          if (month === undefined && frequency !== 'annuelle') { updates.push('month = ?'); binds.push(null); }
         }
         if (export_scope !== undefined) { updates.push('export_scope = ?'); binds.push(parseExportScope(export_scope)); }
+        if (month !== undefined) { updates.push('month = ?'); binds.push(month || null); }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         binds.push(orgTmplMatch[1], user.organization_id);
         await env.DB.prepare(`UPDATE org_task_templates SET ${updates.join(', ')} WHERE id = ? AND organization_id = ?`).bind(...binds).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document, frequency })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document, frequency, month })).run();
         return json({ ok: true });
       }
       if (orgTmplMatch && method === 'DELETE') {
@@ -3370,31 +3376,31 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_001', orgId, 'Ahmed Ben Ali', 'ahmed@eurex.tn', comp1Hash, 'comptable').run();
         await env.DB.prepare('INSERT INTO org_users (id, organization_id, full_name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)').bind('user_comp_002', orgId, 'Fatma Trabelsi', 'fatma@eurex.tn', comp2Hash, 'comptable').run();
 
-        // Task templates (order, requiresDoc, frequency, exportScope)
-        const templates = [
-          ['SAISIE Comptable et ERB', 1, 1, 'mensuelle', null],
-          ['Dépôt DMI', 2, 0, 'mensuelle', null],
-          ['Reporting mensuel', 3, 0, 'mensuelle', null],
-          ['Préparation paie du mois', 4, 0, 'mensuelle', null],
-          ['Préparation des certificats TEJ', 5, 0, 'mensuelle', null],
-          ['Préparation déclaration CNSS trimestrielle', 6, 0, 'trimestrielle', null],
-          ['Préparation et dépôt déclaration chiffre d\'affaire en suspension de TVA', 7, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
-          ['Préparation et dépôt déclaration des achats en suspension de TVA', 8, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]'],
-          ['Préparation Etats financiers annuels', 9, 0, 'annuelle', null],
-          ['Dépôt AP 1', 10, 0, 'annuelle', null],
-          ['Dépôt AP 2', 11, 0, 'annuelle', null],
-          ['Dépôt AP 3', 12, 0, 'annuelle', null],
-          ['Dépôt IS provisoire', 13, 0, 'annuelle', null],
-          ['Dépôt IS définitive', 14, 0, 'annuelle', null],
-          ['Dépôt de la déclaration employeur', 15, 0, 'annuelle', null],
-          ['Préparation et dépôt de la liasse fiscale', 16, 0, 'annuelle', null],
-          ['Renouvellement Autorisation d\'achat en suspension de TVA', 17, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
-          ['Visa bon de commande en suspension de TVA', 18, 0, 'annuelle', '["exportatrice","semi_exportatrice"]'],
-          ['Préparation PV AGO approbation EF n-1', 19, 0, 'annuelle', null],
-          ['Dépôt des EF n-1 et du PV AGO au RNE', 20, 0, 'annuelle', null],
-        ] as const;
-        for (const [label, order, requiresDoc, freq, scope] of templates) {
-          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq, scope).run();
+        // Task templates (order, requiresDoc, frequency, exportScope, month force)
+        const templates: [string, number, number, string, string | null, number | null][] = [
+          ['SAISIE Comptable et ERB', 1, 1, 'mensuelle', null, null],
+          ['Dépôt DMI', 2, 0, 'mensuelle', null, null],
+          ['Reporting mensuel', 3, 0, 'mensuelle', null, null],
+          ['Préparation paie du mois', 4, 0, 'mensuelle', null, null],
+          ['Préparation des certificats TEJ', 5, 0, 'mensuelle', null, null],
+          ['Préparation déclaration CNSS trimestrielle', 6, 0, 'trimestrielle', null, null],
+          ['Préparation et dépôt déclaration chiffre d\'affaire en suspension de TVA', 7, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]', null],
+          ['Préparation et dépôt déclaration des achats en suspension de TVA', 8, 0, 'trimestrielle', '["exportatrice","semi_exportatrice"]', null],
+          ['Préparation Etats financiers annuels', 9, 0, 'annuelle', null, null],
+          ['Dépôt AP 1', 10, 0, 'annuelle', null, 6],
+          ['Dépôt AP 2', 11, 0, 'annuelle', null, 9],
+          ['Dépôt AP 3', 12, 0, 'annuelle', null, 12],
+          ['Dépôt IS provisoire', 13, 0, 'annuelle', null, null],
+          ['Dépôt IS définitive', 14, 0, 'annuelle', null, null],
+          ['Dépôt de la déclaration employeur', 15, 0, 'annuelle', null, null],
+          ['Préparation et dépôt de la liasse fiscale', 16, 0, 'annuelle', null, null],
+          ['Renouvellement Autorisation d\'achat en suspension de TVA', 17, 0, 'annuelle', '["exportatrice","semi_exportatrice"]', null],
+          ['Visa bon de commande en suspension de TVA', 18, 0, 'annuelle', '["exportatrice","semi_exportatrice"]', null],
+          ['Préparation PV AGO approbation EF n-1', 19, 0, 'annuelle', null, null],
+          ['Dépôt des EF n-1 et du PV AGO au RNE', 20, 0, 'annuelle', null, null],
+        ];
+        for (const [label, order, requiresDoc, freq, scope, month] of templates) {
+          await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, frequency, export_scope, month) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), orgId, label, order, requiresDoc, freq, scope, month).run();
         }
 
         // Clients
@@ -3437,7 +3443,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
                 await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m, templates[i][4]).run();
               }
             } else {
-              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
+              const forcedMonth = templates[i][5];
+              if (forcedMonth) {
+                // Modele rattache a un mois precis (ex: Depots AP 1/2/3)
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, forcedMonth, templates[i][4]).run();
+              } else {
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
+              }
             }
           }
         }

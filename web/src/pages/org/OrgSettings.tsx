@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { orgApi, OrgTemplate, OrgComptable, OrgFrequency } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
+import { monthLabel } from '../../lib/orgMonths';
 import { isValidEmail, isValidPassword } from '../../lib/orgValidate';
 import { SkeletonSection } from '../../components/Skeleton';
 import PwdField from '../../components/PwdField';
@@ -238,7 +239,18 @@ export default function OrgSettings() {
           {templates.map(tmpl => (
             <div key={tmpl.id} className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3">
               <span className="text-gray-300 text-sm">#{tmpl.order_index}</span>
-              <span className="flex-1 text-sm font-medium text-gray-700">{tmpl.label}</span>
+              <span className="flex-1 text-sm font-medium text-gray-700">
+                {tmpl.label}
+                {tmpl.month ? (
+                  <span
+                    data-testid="template-month"
+                    className="ml-2 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-semibold border border-indigo-100"
+                    title="Tâche placée dans ce mois"
+                  >
+                    📅 {monthLabel(tmpl.month)}
+                  </span>
+                ) : null}
+              </span>
               <select
                 value={tmpl.frequency || 'annuelle'}
                 onChange={e => changeFrequency(tmpl.id, e.target.value as OrgFrequency)}

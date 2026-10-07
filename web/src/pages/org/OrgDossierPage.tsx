@@ -764,6 +764,7 @@ export default function OrgDossierPage() {
             {monthChips.map(chip => (
               <button
                 key={String(chip.key)}
+                data-testid={`month-chip-${String(chip.key)}`}
                 onClick={() => setMonthFilter(chip.key)}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
                   monthFilter === chip.key

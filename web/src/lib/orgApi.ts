@@ -275,6 +275,8 @@ export interface OrgTemplate {
   order_index: number;
   requires_document: number;
   frequency: OrgFrequency;
+  // Modele rattache a un mois precis (ex: Depots AP 1/2/3) — un seul exemplaire, dans ce mois
+  month?: number | null;
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
 }
@@ -436,9 +438,9 @@ export const orgApi = {
 
   // Templates
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),
-  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency) =>
-    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle' }) }),
-  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency }) =>
+  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency, month?: number | null) =>
+    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle', month: month ?? null }) }),
+  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency; month?: number | null }) =>
     req<any>(`/org/templates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTemplate: (id: string) => req<any>(`/org/templates/${id}`, { method: 'DELETE' }),
 };
