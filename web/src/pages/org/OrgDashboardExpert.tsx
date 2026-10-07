@@ -7,6 +7,7 @@ import { SkeletonKpiGrid, SkeletonRows } from '../../components/Skeleton';
 import OrgAccountButton from '../../components/OrgAccount';
 import OrgAlerts from '../../components/OrgAlerts';
 import MesHeures from '../../components/MesHeures';
+import NouvellesTaches from '../../components/NouvellesTaches';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X, Pencil, Trash2, Save } from 'lucide-react';
 
@@ -250,6 +251,9 @@ export default function OrgDashboardExpert() {
           );
         })}
       </div>
+
+      {/* Nouvelles tâches — dernières tâches ajoutées aux dossiers de l'organisation */}
+      <NouvellesTaches />
 
       {/* Tâches à vérifier — faites par les comptables, en attente de validation */}
       {verifyTasks.length > 0 && (
