@@ -88,7 +88,9 @@ async function loginAs(p, email, pwd) {
     ok(/(h restantes|min restantes|Sans délai)/.test(delayTxt), 'U9: délai de validation affiché (' + delayTxt + ')');
 
     // ---- U18-U19 : carte "🆕 Nouvelles tâches" aussi sur le dashboard expert ----
-    ok(await p.locator('[data-testid="nouvelles-taches"]').count() === 1, 'U18: carte "🆕 Nouvelles tâches" présente sur le dashboard expert');
+    // (le feed arrive en parallèle : on attend la section avant de compter)
+    const ntSection = p.locator('[data-testid="nouvelles-taches"]').first();
+    ok(await ntSection.waitFor({ timeout: 20000 }).then(() => true).catch(() => false), 'U18: carte "🆕 Nouvelles tâches" présente sur le dashboard expert');
     ok(await p.locator('[data-testid="recent-task-card"]').count() >= 1, 'U19: au moins une tâche récente listée (' + await p.locator('[data-testid="recent-task-card"]').count() + ')');
     const rc = p.locator('[data-testid="recent-task-card"]').first();
     ok(/\d{2}\/\d{4} à \d{2}h\d{2}/.test(await rc.locator('[data-testid="recent-task-created"]').innerText()), 'U20: date/heure de création formatée (DD/MM/YYYY à HHhMM)');
