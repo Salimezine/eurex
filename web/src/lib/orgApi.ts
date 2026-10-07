@@ -27,6 +27,7 @@ export interface OrgClient {
   assigned_comptable_id: string | null;
   comptable_name: string | null;
   contact_email: string | null;
+  contact_phone?: string | null;
   dossier_actuel: OrgDossier | null;
   task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
   doc_stats: { total: number; received: number };
@@ -240,6 +241,13 @@ export const orgApi = {
       req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
     updateClient: (id: string, patch: { person_type?: string | null; export_status?: string | null }) =>
       req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    // Modification des infos du client (expert + manager) : nom, matricule, contacts
+    updateClientInfo: (id: string, patch: { name?: string; matricule_fiscal?: string | null; contact_email?: string | null; contact_phone?: string | null }) =>
+      req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    // Suppression d'un client + tous ses dossiers (expert + manager)
+    deleteClient: (id: string) => req<{ ok: boolean; deleted: string }>(`/org/clients/${id}`, { method: 'DELETE' }),
+    // Suppression d'un compte utilisateur (expert + manager) — comptes de test/jetables
+    deleteComptable: (id: string) => req<{ ok: boolean; deleted: string }>(`/org/comptables/${id}`, { method: 'DELETE' }),
 
   // Dossiers
   getClientDossiers: (clientId: string) => req<OrgDossier[]>(`/org/clients/${clientId}/dossiers`),

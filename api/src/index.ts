@@ -1945,25 +1945,60 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (orgClientMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || (!isSupervisor(user.role) && user.role !== 'comptable')) return json({ error: 'Non autorisé' }, 403);
-        const { person_type, export_status } = await request.json() as any;
+        const { person_type, export_status, name, matricule_fiscal, contact_email, contact_phone } = await request.json() as any;
         if (person_type !== null && person_type !== undefined && !['morale', 'physique'].includes(person_type)) return json({ error: 'Type invalide' }, 400);
         if (export_status !== null && export_status !== undefined && !EXPORT_STATUSES.includes(export_status)) return json({ error: 'Statut export invalide' }, 400);
         const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientMatch[1], user.organization_id).first() as any;
         if (!client) return json({ error: 'Client non trouvé' }, 404);
         if (user.role === 'comptable' && client.assigned_comptable_id !== user.id) return json({ error: 'Réservé au comptable assigné' }, 403);
+        // Nom / matricule / contacts : reserves aux superviseurs (expert + manager)
+        const infoFields = { name, matricule_fiscal, contact_email, contact_phone };
+        const hasInfoEdit = Object.values(infoFields).some(v => v !== undefined);
+        if (hasInfoEdit && !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert (modification des informations)' }, 403);
         const updates: string[] = [];
         const binds: any[] = [];
-        if (person_type !== undefined) { updates.push('person_type = ?'); binds.push(person_type || null); }
-        if (export_status !== undefined) { updates.push('export_status = ?'); binds.push(export_status || null); }
+        const changed: Record<string, { old: any; new: any }> = {};
+        if (person_type !== undefined) { updates.push('person_type = ?'); binds.push(person_type || null); changed.person_type = { old: client.person_type || null, new: person_type || null }; }
+        if (export_status !== undefined) { updates.push('export_status = ?'); binds.push(export_status || null); changed.export_status = { old: client.export_status || null, new: export_status || null }; }
+        if (name !== undefined) {
+          const v = String(name).trim();
+          if (!v) return json({ error: 'Nom requis' }, 400);
+          updates.push('name = ?'); binds.push(v); changed.name = { old: client.name, new: v };
+        }
+        if (matricule_fiscal !== undefined) { updates.push('matricule_fiscal = ?'); binds.push(matricule_fiscal || null); changed.matricule_fiscal = { old: client.matricule_fiscal || null, new: matricule_fiscal || null }; }
+        if (contact_email !== undefined) {
+          const v = contact_email ? String(contact_email).trim() : null;
+          if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return json({ error: 'Email invalide' }, 400);
+          updates.push('contact_email = ?'); binds.push(v); changed.contact_email = { old: client.contact_email || null, new: v };
+        }
+        if (contact_phone !== undefined) { updates.push('contact_phone = ?'); binds.push(contact_phone || null); changed.contact_phone = { old: client.contact_phone || null, new: contact_phone || null }; }
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         await env.DB.prepare(`UPDATE org_clients SET ${updates.join(', ')} WHERE id = ?`).bind(...binds, orgClientMatch[1]).run();
-        if (person_type !== undefined) {
-          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_person_type', 'client', orgClientMatch[1], JSON.stringify({ old: client.person_type || null, new: person_type || null })).run();
-        }
-        if (export_status !== undefined) {
-          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_export_status', 'client', orgClientMatch[1], JSON.stringify({ old: client.export_status || null, new: export_status || null })).run();
-        }
-        return json({ ok: true, person_type: person_type !== undefined ? (person_type || null) : client.person_type, export_status: export_status !== undefined ? (export_status || null) : client.export_status });
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_updated', 'client', orgClientMatch[1], JSON.stringify(changed)).run();
+        const after = await env.DB.prepare('SELECT name, matricule_fiscal, contact_email, contact_phone, person_type, export_status FROM org_clients WHERE id = ?').bind(orgClientMatch[1]).first() as any;
+        return json({ ok: true, ...after });
+      }
+
+      // --- ORG: DELETE CLIENT (expert + manager) ---
+      if (orgClientMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientMatch[1], user.organization_id).first() as any;
+        if (!client) return json({ error: 'Client non trouvé' }, 404);
+        const delId = orgClientMatch[1];
+        // Cascade : documents -> alertes -> notes -> grants -> temps -> taches -> dossiers -> client
+        await env.DB.prepare('DELETE FROM org_expected_documents WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id IN (SELECT id FROM org_fiscal_alerts WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?))').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_notes WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_dossier_grants WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_time_entries WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_audit_log WHERE target_id = ? OR target_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId, delId).run();
+        await env.DB.prepare('DELETE FROM org_dossiers WHERE client_id = ?').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_clients WHERE id = ?').bind(delId).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_deleted', 'client', delId, JSON.stringify({ name: client.name })).run();
+        return json({ ok: true, deleted: client.name });
       }
 
       const orgClientReassignMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/reassign$/);
@@ -2975,6 +3010,27 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           await env.DB.prepare("INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, 'user_role_changed', 'user', ?, ?)").bind(genId(), user.organization_id, user.id, user.full_name, target.id, JSON.stringify({ old: curEff, new: newEff })).run();
         }
         return json({ ok: true, role: newEff ?? curEff });
+      }
+
+      // --- ORG: DELETE USER (expert + manager) — pour supprimer un compte de test/jetable ---
+      if (orgCompToggleMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        if (orgCompToggleMatch[1] === user.id) return json({ error: 'Impossible de supprimer son propre compte' }, 400);
+        const target = await env.DB.prepare("SELECT id, role, full_name, email FROM org_users WHERE id = ? AND organization_id = ?").bind(orgCompToggleMatch[1], user.organization_id).first() as any;
+        if (!target) return json({ error: 'Compte non trouvé' }, 404);
+        // Garde-fou : il doit rester au moins un superviseur actif
+        if (target.role === 'expert') {
+          const { results: sups } = await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND role = 'expert' AND is_active = 1 AND id != ?").bind(user.organization_id, target.id).all();
+          if (sups.length === 0) return json({ error: 'Impossible : au moins un superviseur doit rester actif' }, 400);
+        }
+        const { n: assigned } = await env.DB.prepare('SELECT COUNT(*) as n FROM org_clients WHERE assigned_comptable_id = ?').bind(target.id).first() as any;
+        if (assigned > 0) return json({ error: `Impossible : ${assigned} client(s) sont assignés à ce compte` }, 409);
+        await env.DB.prepare('DELETE FROM org_time_entries WHERE user_id = ?').bind(target.id).run();
+        await env.DB.prepare('DELETE FROM org_audit_log WHERE target_id = ? AND target_type = ?').bind(target.id, 'user').run();
+        await env.DB.prepare('DELETE FROM org_users WHERE id = ?').bind(target.id).run();
+        await env.DB.prepare("INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, 'user_deleted', 'user', ?, ?)").bind(genId(), user.organization_id, user.id, user.full_name, target.id, JSON.stringify({ email: target.email, full_name: target.full_name })).run();
+        return json({ ok: true, deleted: target.email });
       }
 
       // --- ORG: EXPERT — COMPTABLE DETAIL ---

@@ -8,7 +8,7 @@ import OrgAccountButton from '../../components/OrgAccount';
 import OrgAlerts from '../../components/OrgAlerts';
 import MesHeures from '../../components/MesHeures';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
-import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X } from 'lucide-react';
+import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X, Pencil, Trash2, Save } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
 
@@ -36,6 +36,13 @@ export default function OrgDashboardExpert() {
   const [newClientType, setNewClientType] = useState('');
   const [newClientExport, setNewClientExport] = useState('');
   const [newDossierComp, setNewDossierComp] = useState('');
+  // Edition / suppression d'un client (expert + manager)
+  const [editClient, setEditClient] = useState<OrgClient | null>(null);
+  const [ecName, setEcName] = useState('');
+  const [ecMF, setEcMF] = useState('');
+  const [ecEmail, setEcEmail] = useState('');
+  const [ecPhone, setEcPhone] = useState('');
+  const [ecSaving, setEcSaving] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -99,6 +106,47 @@ export default function OrgDashboardExpert() {
       alert(err.message || 'Erreur lors de la création');
     } finally {
       setCreating(false);
+    }
+  };
+
+  // Edition / suppression d'un client (expert + manager)
+  const startEditClient = (clientId: string) => {
+    const cl = allClients.find(c => c.id === clientId);
+    if (!cl) return;
+    setEditClient(cl);
+    setEcName(cl.name || '');
+    setEcMF(cl.matricule_fiscal || '');
+    setEcEmail(cl.contact_email || '');
+    setEcPhone(cl.contact_phone || '');
+  };
+
+  const saveEditClient = async () => {
+    if (!editClient) return;
+    if (!ecName.trim()) { alert('Nom requis'); return; }
+    setEcSaving(true);
+    try {
+      await orgApi.updateClientInfo(editClient.id, {
+        name: ecName.trim(),
+        matricule_fiscal: ecMF.trim() || null,
+        contact_email: ecEmail.trim() || null,
+        contact_phone: ecPhone.trim() || null,
+      });
+      setEditClient(null);
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la modification');
+    } finally {
+      setEcSaving(false);
+    }
+  };
+
+  const deleteClientById = async (clientId: string, clientName: string) => {
+    if (!window.confirm(`Supprimer le client « ${clientName} » ainsi que TOUS ses dossiers, tâches et temps ? Cette action est définitive.`)) return;
+    try {
+      await orgApi.deleteClient(clientId);
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la suppression');
     }
   };
 
@@ -334,6 +382,24 @@ export default function OrgDashboardExpert() {
                           {EXPORT_LABELS[d.export_status] || d.export_status}
                         </span>
                       )}
+                      {d.client_id && (
+                        <span className="ml-2 inline-flex align-middle gap-1">
+                          <button
+                            onClick={() => startEditClient(d.client_id)}
+                            title="Modifier le client"
+                            className="p-1 rounded-md text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            onClick={() => deleteClientById(d.client_id, d.client_name)}
+                            title="Supprimer le client et ses dossiers"
+                            className="p-1 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-gray-500 font-mono">{d.exercice}</td>
                     <td className="px-5 py-4 text-gray-600">
@@ -520,6 +586,59 @@ export default function OrgDashboardExpert() {
               </button>
               <button
                 onClick={() => { setShowNewDossier(false); setSelectedClient(''); setNewClientName(''); }}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Modifier un client (expert + manager) */}
+      {editClient && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <Pencil size={20} className="text-purple-600" />
+                Modifier le client
+              </h3>
+              <button onClick={() => setEditClient(null)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Nom du client *</label>
+              <input value={ecName} onChange={e => setEcName(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Matricule fiscal</label>
+              <input value={ecMF} onChange={e => setEcMF(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Email</label>
+                <input type="email" value={ecEmail} onChange={e => setEcEmail(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Téléphone</label>
+                <input value={ecPhone} onChange={e => setEcPhone(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={saveEditClient}
+                disabled={ecSaving || !ecName.trim()}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-all"
+              >
+                <Save size={15} />
+                {ecSaving ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+              <button
+                onClick={() => setEditClient(null)}
                 className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
               >
                 Annuler
