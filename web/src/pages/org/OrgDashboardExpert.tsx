@@ -258,34 +258,34 @@ export default function OrgDashboardExpert() {
       {/* Tâches à vérifier — faites par les comptables, en attente de validation */}
       {verifyTasks.length > 0 && (
         <div data-testid="a-verifier">
-          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2">
+          <h3 className="text-[13px] font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
             ✅ À vérifier
             <span className="text-gray-400 font-normal">— tâches terminées par les comptables, en attente de votre validation</span>
-            <span className="ml-auto text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
+            <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {verifyTasks.map(vt => {
               const badge = verifyBadge(vt.verify_left_hours);
               return (
-                <div key={vt.id} data-testid="verify-task-card" className="bg-white border border-amber-200 rounded-xl p-4 hover:shadow-md hover:border-amber-300 transition-all">
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <h4 className="font-bold text-sm text-gray-800 truncate" data-testid="verify-task-label">{vt.label}</h4>
-                    <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${badge.cls}`} data-testid="verify-task-delay">{badge.label}</span>
+                <div key={vt.id} data-testid="verify-task-card" className="bg-white border border-amber-200 rounded-lg px-3 py-2 hover:shadow-md hover:border-amber-300 transition-all">
+                  <div className="flex items-start justify-between gap-2 mb-0.5">
+                    <h4 className="font-bold text-[13px] leading-tight text-gray-800 truncate" data-testid="verify-task-label">{vt.label}</h4>
+                    <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${badge.cls}`} data-testid="verify-task-delay">{badge.label}</span>
                   </div>
                   <Link
-                    to={`/cabinet/dossier/${vt.dossier_id}`}
-                    className="block text-[11px] text-gray-500 truncate hover:text-amber-700"
+                    to={`/cabinet/dossier/${vt.dossier_id}?task=${vt.id}`}
+                    className="block text-[10px] text-gray-500 truncate hover:text-amber-700"
                     data-testid="verify-task-dossier"
                   >
                     📁 {vt.client_name} · Exercice {vt.exercice}
                   </Link>
-                  <p className="mt-1.5 text-[11px] text-purple-600 font-medium" data-testid="verify-task-doneby">
+                  <p className="mt-1 text-[10px] text-purple-600 font-medium" data-testid="verify-task-doneby">
                     👤 Travaillé par {vt.done_by_name || '—'}
                   </p>
                   <button
                     onClick={() => verifyOne(vt)}
                     disabled={verifyingId === vt.id}
-                    className="mt-2.5 w-full px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 transition-all"
+                    className="mt-2 w-full px-2 py-1 rounded-lg text-[11px] font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 transition-all"
                     data-testid="verify-task-btn"
                   >
                     {verifyingId === vt.id ? 'Validation…' : '✅ Valider la vérification'}

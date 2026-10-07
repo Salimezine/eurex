@@ -74,7 +74,7 @@ export default function NouvellesTaches() {
 
   return (
     <div data-testid="nouvelles-taches">
-      <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2 mb-2 flex-wrap">
+      <h3 className="text-[13px] font-semibold text-gray-700 flex items-center gap-2 mb-1.5 flex-wrap">
         <span className="flex items-center gap-1.5">
           🆕 Nouvelles tâches
           <span className="text-gray-400 font-normal">— dernières tâches ajoutées à vos dossiers</span>
@@ -82,13 +82,13 @@ export default function NouvellesTaches() {
         {freshCount > 0 && (
           <span
             data-testid="nouvelles-taches-badge"
-            className="text-[11px] font-bold text-white bg-red-600 px-2 py-0.5 rounded-full animate-pulse"
+            className="text-[10px] font-bold text-white bg-red-600 px-2 py-0.5 rounded-full animate-pulse"
           >
             🔴 {freshCount} nouvelle{freshCount > 1 ? 's' : ''}
           </span>
         )}
       </h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
         {tasks.map(rt => {
           const rest = restBadge(rt.days_left);
           const fresh = isNew(rt.created_at);
@@ -97,15 +97,15 @@ export default function NouvellesTaches() {
               key={rt.id}
               to={`/cabinet/dossier/${rt.dossier_id}?task=${rt.id}`}
               data-testid="recent-task-card"
-              className={`bg-white border rounded-xl p-4 hover:shadow-md transition-all group ${
+              className={`bg-white border rounded-lg px-3 py-2 hover:shadow-md transition-all group ${
                 fresh ? 'border-red-300 shadow-sm shadow-red-100' : 'border-indigo-200 hover:border-indigo-300'
               }`}
             >
-              <div className="flex items-start justify-between gap-2 mb-1">
-                <h4 className="font-bold text-sm text-gray-800 group-hover:text-indigo-700 truncate" data-testid="recent-task-label">{rt.label}</h4>
-                <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${rest.cls}`} data-testid="recent-task-rest">{rest.label}</span>
+              <div className="flex items-start justify-between gap-2 mb-0.5">
+                <h4 className="font-bold text-[13px] leading-tight text-gray-800 group-hover:text-indigo-700 truncate" data-testid="recent-task-label">{rt.label}</h4>
+                <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${rest.cls}`} data-testid="recent-task-rest">{rest.label}</span>
               </div>
-              <p className="text-[11px] text-gray-500 truncate" data-testid="recent-task-dossier">
+              <p className="text-[10px] text-gray-500 truncate" data-testid="recent-task-dossier">
                 📁 {rt.client_name} · Exercice {rt.exercice}
                 {fresh && (
                   <span
@@ -116,7 +116,7 @@ export default function NouvellesTaches() {
                   </span>
                 )}
               </p>
-              <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+              <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
                 <span className="text-gray-500 flex items-center gap-1" data-testid="recent-task-created">🕒 Ajoutée le {fmtCreatedAt(rt.created_at)}</span>
                 <span className="text-gray-400">{t(`status.${rt.status}`)}</span>
               </div>
