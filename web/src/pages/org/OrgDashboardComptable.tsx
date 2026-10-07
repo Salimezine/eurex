@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { orgApi, OrgClient, OrgMyGrant } from '../../lib/orgApi';
+import { orgApi, OrgClient, OrgMyGrant, OrgRecentTask } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
 import Skeleton, { SkeletonCardGrid } from '../../components/Skeleton';
@@ -12,9 +12,25 @@ import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search } from 'lucide-re
 
 type SortKey = 'name' | 'progress' | 'blocked';
 
+// created_at (UTC) -> heure Tunisie (UTC+1, pas d'heure d'ete) : DD/MM a HHhMM
+const fmtCreatedAt = (s: string) => {
+  const d = new Date(Date.parse(String(s).replace(' ', 'T') + 'Z') + 3600000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} a ${p(d.getUTCHours())}h${p(d.getUTCMinutes())}`;
+};
+
+const restBadge = (daysLeft: number | null) => {
+  if (daysLeft === null) return { cls: 'bg-gray-100 text-gray-500', label: 'Sans echeance' };
+  if (daysLeft < 0) return { cls: 'bg-red-100 text-red-700', label: `Retard +${-daysLeft} j` };
+  if (daysLeft === 0) return { cls: 'bg-amber-100 text-amber-700', label: "Echeance aujourd'hui" };
+  if (daysLeft === 1) return { cls: 'bg-amber-100 text-amber-700', label: 'Demain' };
+  return { cls: 'bg-indigo-100 text-indigo-700', label: `J-${daysLeft}` };
+};
+
 export default function OrgDashboardComptable() {
   const [clients, setClients] = useState<OrgClient[]>([]);
   const [myGrants, setMyGrants] = useState<OrgMyGrant[]>([]);
+  const [recentTasks, setRecentTasks] = useState<OrgRecentTask[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>('blocked');
@@ -22,8 +38,8 @@ export default function OrgDashboardComptable() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([orgApi.getClients(), orgApi.getMyGrants()])
-      .then(([cs, gs]) => { setClients(cs); setMyGrants(gs); setLoadError(false); })
+    Promise.all([orgApi.getClients(), orgApi.getMyGrants(), orgApi.getMyRecentTasks()])
+      .then(([cs, gs, rt]) => { setClients(cs); setMyGrants(gs); setRecentTasks(rt.tasks || []); setLoadError(false); })
       .catch(e => { console.error(e); setLoadError(true); })
       .finally(() => setLoading(false));
   };
@@ -64,6 +80,39 @@ export default function OrgDashboardComptable() {
         <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4 text-sm text-rose-700">
           <span>Chargement impossible : l'API est momentanément indisponible. Aucune donnée n'a été supprimée.</span>
           <button onClick={load} className="shrink-0 px-3 py-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors">Réessayer</button>
+        </div>
+      )}
+
+      {/* Nouvelles tâches — dernières tâches ajoutées aux dossiers accessibles */}
+      {recentTasks.length > 0 && (
+        <div data-testid="nouvelles-taches">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2">
+            🆕 Nouvelles tâches
+            <span className="text-gray-400 font-normal">— dernières tâches ajoutées à vos dossiers</span>
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {recentTasks.map(rt => {
+              const rest = restBadge(rt.days_left);
+              return (
+                <Link
+                  key={rt.id}
+                  to={`/cabinet/dossier/${rt.dossier_id}`}
+                  data-testid="recent-task-card"
+                  className="bg-white border border-indigo-200 rounded-xl p-4 hover:shadow-md hover:border-indigo-300 transition-all group"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <h4 className="font-bold text-sm text-gray-800 group-hover:text-indigo-700 truncate" data-testid="recent-task-label">{rt.label}</h4>
+                    <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${rest.cls}`} data-testid="recent-task-rest">{rest.label}</span>
+                  </div>
+                  <p className="text-[11px] text-gray-500 truncate" data-testid="recent-task-dossier">📁 {rt.client_name} · Exercice {rt.exercice}</p>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-gray-500 flex items-center gap-1" data-testid="recent-task-created">🕒 Ajoutée le {fmtCreatedAt(rt.created_at)}</span>
+                    <span className="text-gray-400">{t(`status.${rt.status}`)}</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
         </div>
       )}
 

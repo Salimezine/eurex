@@ -141,6 +141,19 @@ export interface OrgTask {
   verify_due_at?: string | null;
 }
 
+export interface OrgRecentTask {
+  id: string;
+  label: string;
+  status: OrgTask['status'];
+  created_at: string;
+  due_date: string | null;
+  days_left: number | null;
+  dossier_id: string;
+  exercice: number;
+  dossier_status: string;
+  client_name: string;
+}
+
 export interface OrgAlert {
   id: string;
   title: string;
@@ -268,6 +281,8 @@ export const orgApi = {
   getMyHours: (view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/me/hours?view=${view}`),
   // Heures d'un comptable (expert) — fiche comptable, memes vues
   getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}`),
+  // Nouvelles tâches des dossiers accessibles (dashboard)
+  getMyRecentTasks: (days: number = 30) => req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}`),
 
   // Tasks
   updateTask: (dossierId: string, taskId: string, status: string, blocked_reason?: string) =>

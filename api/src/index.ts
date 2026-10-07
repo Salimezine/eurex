@@ -2066,7 +2066,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             [null];
           for (const m of months) {
             const taskId = genId();
-            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?)').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
             if (tmpl.requires_document) {
               const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exercice}` : tmpl.label;
               await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, docLabel).run();
@@ -2168,6 +2168,25 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const view = new URL(request.url).searchParams.get('view') || 'days';
         return json(await buildHoursPayload(env, user.id, view));
+      }
+
+      // --- ORG: MES TACHES RECENTES (dashboard) — nouvelles tâches des dossiers accessibles ---
+      if (path === '/api/org/me/tasks/recent' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const days = Math.max(1, Math.min(90, Number(new URL(request.url).searchParams.get('days')) || 30));
+        const access = isSupervisor(user.role)
+          ? 'c.organization_id = ?'
+          : "(c.organization_id = ? AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))";
+        const binds: any[] = isSupervisor(user.role) ? [user.organization_id] : [user.organization_id, user.id, user.id];
+        const { results } = await env.DB.prepare(`SELECT t.id, t.label, t.status, t.created_at, t.due_date, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE ${access} AND t.created_at >= datetime('now', '-' || ? || ' days') ORDER BY t.created_at DESC, t.id DESC LIMIT 10`).bind(...binds, days).all();
+        // J-x rapporté à la date en Tunisie (UTC+1)
+        const today = new Date(Date.now() + 3600000).toISOString().slice(0, 10);
+        const tasks = (results as any[]).map(t => ({
+          ...t,
+          days_left: t.due_date ? Math.round((Date.parse(t.due_date + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400000) : null,
+        }));
+        return json({ tasks, days });
       }
 
       // --- ORG: HEURES D'UN COMPTABLE (expert/manager) — fiche comptable, memes vues ---
@@ -2419,7 +2438,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const last = await env.DB.prepare('SELECT MAX(order_index) as max_idx FROM org_tasks WHERE dossier_id = ?').bind(dossierId).first() as any;
         const nextIdx = (last?.max_idx || 0) + 1;
         const taskId = genId();
-        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month, due_date, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth, taskDue, export_scope === undefined ? null : parseExportScope(export_scope)).run();
+        await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, assigned_comptable_id, month, due_date, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, dossierId, label.trim(), 'a_faire', nextIdx, assigned_comptable_id || null, taskMonth, taskDue, export_scope === undefined ? null : parseExportScope(export_scope)).run();
         const progress = await orgRecalcProgress(dossierId);
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_added', 'task', taskId, JSON.stringify({ label: label.trim(), dossier_id: dossierId, order_index: nextIdx, month: taskMonth, due_date: taskDue, assigned_comptable_id: assigned_comptable_id || null })).run();
         return json({ ok: true, id: taskId, order_index: nextIdx, progress }, 201);
@@ -3260,18 +3279,18 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             if (freq === 'mensuelle') {
               // Tâche mensuelle : le statut du seed se place sur le mois courant (Septembre),
               // les 11 autres mois restent à faire.
-              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope) VALUES (?, ?, ?, ?, ?, ?, 9, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, 9, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
               for (let m = 1; m <= 12; m++) {
                 if (m === 9) continue;
-                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month, export_scope) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?)').bind(genId(), dd.id, templates[i][0], i + 1, m, templates[i][4]).run();
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, order_index, month, export_scope, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], i + 1, m, templates[i][4]).run();
               }
             } else if (freq === 'trimestrielle') {
               // Tâche trimestrielle : Janv, Avr, Juil, Oct
               for (const m of [1, 4, 7, 10]) {
-                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m, templates[i][4]).run();
+                await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, month, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, m, templates[i][4]).run();
               }
             } else {
-              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, export_scope) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
+              await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, blocked_reason, order_index, export_scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(genId(), dd.id, templates[i][0], status, reason, i + 1, templates[i][4]).run();
             }
           }
         }
