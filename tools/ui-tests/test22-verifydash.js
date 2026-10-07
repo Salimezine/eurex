@@ -44,6 +44,11 @@ async function loginAs(p, email, pwd) {
   };
   console.log('SETUP client=' + client.id + ' dossier=' + dossier.id + ' ' + zz);
 
+  // Tâche ajoutée MANUELLEMENT (created_by renseigné) : seule catégorie admise
+  // dans "🆕 Nouvelles tâches" — la checklist générée à l'ouverture en est exclue.
+  const recentTask = await j(API + '/api/org/dossiers/' + dossier.id + '/tasks', { method: 'POST', headers: HC, body: JSON.stringify({ label: 'ZZ-RECENT-' + Date.now().toString().slice(-6) }) });
+  console.log('recent_task=' + recentTask.id);
+
   let b;
   try {
     const g0 = await j(API + '/api/org/dossiers/' + dossier.id, { headers: HC });
