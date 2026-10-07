@@ -60,6 +60,15 @@ export interface OrgDossier {
   time_by_user: { user_name: string; seconds: number }[];
   is_granted?: boolean;
   grants?: OrgGrant[];
+  running_timers?: OrgRunningTimer[];
+}
+
+// Chronos actifs du dossier : 1 par comptable (plusieurs en parallele sur une tache)
+export interface OrgRunningTimer {
+  task_id: string;
+  user_id: string;
+  started_at: string;
+  user_name: string;
 }
 
 export interface OrgGrant {
@@ -142,6 +151,19 @@ export interface OrgTask {
   // Qui a travaille la tache (celui qui l'a passee en verification, ou l'expert si fait direct)
   done_by?: string | null;
   done_by_name?: string | null;
+  // Comptables taguees sur cette tache (collaboration inter-comptables)
+  collaborators?: OrgTaskCollaborator[];
+}
+
+export interface OrgTaskCollaborator {
+  user_id: string;
+  full_name: string;
+}
+
+export interface OrgCollabCandidate {
+  id: string;
+  full_name: string;
+  has_access: boolean;
 }
 
 // Taches en attente de verification (feed expert/manager)
@@ -297,6 +319,14 @@ export const orgApi = {
   revokeGrant: (dossierId: string, grantId: string) =>
     req<{ ok: boolean }>(`/org/dossiers/${dossierId}/grants/${grantId}`, { method: 'DELETE' }),
   getMyGrants: () => req<OrgMyGrant[]>('/org/grants/mine'),
+
+  // Collaboration : taguer un comptable sur une tache (acces auto au dossier)
+  listCollabCandidates: (dossierId: string) =>
+    req<OrgCollabCandidate[]>(`/org/dossiers/${dossierId}/collaborators/eligible`),
+  addCollaborator: (dossierId: string, taskId: string, userId: string, days: number) =>
+    req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/collaborators`, { method: 'POST', body: JSON.stringify({ user_id: userId, days }) }),
+  removeCollaborator: (dossierId: string, taskId: string, userId: string) =>
+    req<{ ok: boolean; grant_revoked: boolean }>(`/org/dossiers/${dossierId}/tasks/${taskId}/collaborators/${userId}`, { method: 'DELETE' }),
   // Mes heures : vues jours (7j) / mois / annee (realise vs norme 8h30)
   getMyHours: (view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/me/hours?view=${view}`),
   // Heures d'un comptable (expert) — fiche comptable, memes vues

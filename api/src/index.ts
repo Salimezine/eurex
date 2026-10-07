@@ -2001,6 +2001,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('DELETE FROM org_notes WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_dossier_grants WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_time_entries WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
+        await env.DB.prepare('DELETE FROM org_task_collaborators WHERE task_id IN (SELECT id FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?))').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_audit_log WHERE target_id = ? OR target_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId, delId).run();
         await env.DB.prepare('DELETE FROM org_dossiers WHERE client_id = ?').bind(delId).run();
@@ -2115,7 +2116,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results: grantRows } = await env.DB.prepare(`SELECT g.*, u.full_name as granted_to_name FROM org_dossier_grants g LEFT JOIN org_users u ON g.granted_to = u.id WHERE g.dossier_id = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) ORDER BY g.created_at DESC`).bind(orgDossierGetMatch[1]).all();
         const grants = grantRows as any[];
         const isGranted = !isSupervisor(user.role) && grants.some(g => g.granted_to === user.id);
-        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: isSupervisor(user.role), block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0, is_granted: isGranted, grants: isSupervisor(user.role) ? grants : [] });
+        // Collaborateurs taguees sur les taches (partage inter-comptables)
+        const { results: collabRows } = await env.DB.prepare('SELECT tc.task_id, tc.user_id, u.full_name FROM org_task_collaborators tc JOIN org_users u ON u.id = tc.user_id WHERE tc.task_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?)').bind(orgDossierGetMatch[1]).all();
+        const collabByTask: Record<string, any[]> = {};
+        for (const c of collabRows as any[]) {
+          if (!collabByTask[c.task_id]) collabByTask[c.task_id] = [];
+          collabByTask[c.task_id].push({ user_id: c.user_id, full_name: c.full_name });
+        }
+        for (const t of tasks as any[]) t.collaborators = collabByTask[t.id] || [];
+        // Chronos actifs de ce dossier : 1 par comptable, plusieurs en parallele sur la meme tache
+        const { results: runningRows } = await env.DB.prepare('SELECT te.task_id, te.user_id, te.started_at, u.full_name as user_name FROM org_time_entries te JOIN org_users u ON u.id = te.user_id WHERE te.dossier_id = ? AND te.stopped_at IS NULL ORDER BY te.started_at').bind(orgDossierGetMatch[1]).all();
+        return json({ ...dossier, tasks, documents, notes, time_entries: timeEntries, time_by_user: Object.values(timeByUser), task_stats: stats, doc_stats: docStats, can_close: canClose, can_force_close: isSupervisor(user.role), block_reasons: blockReasons, progress: stats.total > 0 ? Math.round(stats.fait / stats.total * 1000) / 10 : 0, is_granted: isGranted, grants: isSupervisor(user.role) ? grants : [], running_timers: runningRows });
       }
 
       // --- ORG: RENFORT — ouvrir un acces temporaire a un dossier (expert/manager) ---
@@ -2168,6 +2179,100 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!user) return json({ error: 'Non autorisé' }, 401);
         const { results } = await env.DB.prepare(`SELECT g.id, g.dossier_id, g.reason, g.days, g.expires_at, g.created_at, d.exercice, d.status, c.name as client_name, ub.full_name as granted_by_name FROM org_dossier_grants g JOIN org_dossiers d ON g.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users ub ON g.granted_by = ub.id WHERE g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) ORDER BY g.created_at DESC`).bind(user.id).all();
         return json(results);
+      }
+
+      // --- ORG: COLLABORATEURS — comptables taguables sur une tache ---
+      const orgCollabEligibleMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/collaborators\/eligible$/);
+      if (orgCollabEligibleMatch && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const dossierId = orgCollabEligibleMatch[1];
+        if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
+        const dossier = await env.DB.prepare('SELECT d.id, c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first() as any;
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        const { results: comps } = await env.DB.prepare("SELECT id, full_name FROM org_users WHERE organization_id = ? AND role = 'comptable' AND is_active = 1 AND id != ? ORDER BY full_name").bind(user.organization_id, user.id).all();
+        const { results: gr } = await env.DB.prepare(`SELECT granted_to FROM org_dossier_grants WHERE dossier_id = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId).all();
+        const granted = new Set((gr as any[]).map((r: any) => r.granted_to));
+        return json((comps as any[]).map(c => ({ id: c.id, full_name: c.full_name, has_access: c.id === dossier.assigned_comptable_id || granted.has(c.id) })));
+      }
+
+      // --- ORG: COLLABORATEUR — taguer un comptable sur une tache (acces auto au dossier) ---
+      const orgCollabAddMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/collaborators$/);
+      if (orgCollabAddMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const [dossierId, taskId] = [orgCollabAddMatch[1], orgCollabAddMatch[2]];
+        if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
+        const dossier = await env.DB.prepare('SELECT d.id, c.assigned_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(dossierId, user.organization_id).first() as any;
+        if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
+        const task = await env.DB.prepare('SELECT id, label FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        const body = await request.json() as any;
+        const targetId = body?.user_id;
+        const grantDays = body?.days === undefined || body?.days === null ? 7 : Number(body.days);
+        if (!targetId) return json({ error: 'Comptable requis' }, 400);
+        if (targetId === user.id) return json({ error: 'Vous êtes déjà sur cette tâche' }, 400);
+        if (![1, 7, 30].includes(grantDays)) return json({ error: 'Durée invalide (1, 7 ou 30 jours)' }, 400);
+        const target = await env.DB.prepare("SELECT id, full_name FROM org_users WHERE id = ? AND organization_id = ? AND role = 'comptable' AND is_active = 1").bind(targetId, user.organization_id).first() as any;
+        if (!target) return json({ error: 'Comptable introuvable' }, 400);
+        const dup = await env.DB.prepare('SELECT 1 AS x FROM org_task_collaborators WHERE task_id = ? AND user_id = ?').bind(taskId, targetId).first();
+        if (dup) return json({ error: 'Déjà collaborateur sur cette tâche' }, 400);
+        // Acces au dossier : assigne OU renfort deja actif ? sinon ouverture auto du renfort
+        const { results: gr } = await env.DB.prepare(`SELECT id, expires_at FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, targetId).all();
+        const alreadyGranted = (gr as any[]).length > 0;
+        const isAssigned = targetId === dossier.assigned_comptable_id;
+        let grantCreated = false;
+        let expiresAt: string | null = alreadyGranted ? (gr as any[])[0].expires_at || null : null;
+        if (!isAssigned && !alreadyGranted) {
+          const gid = genId();
+          const reason = `Collaboration : ${String(task.label).slice(0, 150)}`;
+          await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))`).bind(gid, dossierId, targetId, user.id, reason, grantDays, `+${grantDays} days`).run();
+          expiresAt = ((await env.DB.prepare('SELECT expires_at FROM org_dossier_grants WHERE id = ?').bind(gid).first()) as any)?.expires_at || null;
+          grantCreated = true;
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_created', 'dossier', dossierId, JSON.stringify({ granted_to: targetId, granted_to_name: target.full_name, days: grantDays, reason, source: 'task_collab' })).run();
+        }
+        await env.DB.prepare('INSERT INTO org_task_collaborators (task_id, user_id, added_by) VALUES (?, ?, ?)').bind(taskId, targetId, user.id).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_collab_added', 'task', taskId, JSON.stringify({ dossier_id: dossierId, user_id: targetId, user_name: target.full_name, grant_created: grantCreated, expires_at: expiresAt })).run();
+        return json({ ok: true, collaborator: { user_id: targetId, full_name: target.full_name }, grant_created: grantCreated, expires_at: expiresAt }, 201);
+      }
+
+      // --- ORG: COLLABORATEUR — retirer le tag (et l'acces auto s'il n'en reste aucun) ---
+      const orgCollabDelMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/collaborators\/([^/]+)$/);
+      if (orgCollabDelMatch && method === 'DELETE') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const [dossierId, taskId, targetId] = [orgCollabDelMatch[1], orgCollabDelMatch[2], orgCollabDelMatch[3]];
+        if (!await orgCanAccessDossier(user, dossierId)) return json({ error: 'Accès refusé' }, 403);
+        const row = await env.DB.prepare('SELECT 1 AS x FROM org_task_collaborators WHERE task_id = ? AND user_id = ? AND task_id IN (SELECT id FROM org_tasks WHERE dossier_id = ?)').bind(taskId, targetId, dossierId).first();
+        if (!row) return json({ error: 'Collaborateur introuvable' }, 404);
+        await env.DB.prepare('DELETE FROM org_task_collaborators WHERE task_id = ? AND user_id = ?').bind(taskId, targetId).run();
+        // Plus aucun tag dans ce dossier ? On retire aussi l'acces auto ouvert par le tag
+        let grantRevoked = false;
+        const { results: others } = await env.DB.prepare('SELECT tc.task_id FROM org_task_collaborators tc JOIN org_tasks t ON t.id = tc.task_id WHERE tc.user_id = ? AND t.dossier_id = ?').bind(targetId, dossierId).all();
+        if ((others as any[]).length === 0) {
+          const g = await env.DB.prepare(`SELECT id FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND granted_by = ? AND reason LIKE 'Collaboration%' AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, targetId, user.id).first() as any;
+          if (g) {
+            await env.DB.prepare("UPDATE org_dossier_grants SET revoked_at = datetime('now') WHERE id = ?").bind(g.id).run();
+            grantRevoked = true;
+            await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_revoked', 'dossier', dossierId, JSON.stringify({ grant_id: g.id, granted_to: targetId, source: 'task_collab_removed' })).run();
+            // L'acces disparaissant : on arrete ses chronos actifs sur ce dossier (sinon entree orpheline)
+            const { results: runnings } = await env.DB.prepare('SELECT id, task_id, started_at FROM org_time_entries WHERE dossier_id = ? AND user_id = ? AND stopped_at IS NULL').bind(dossierId, targetId).all();
+            for (const rt of runnings as any[]) {
+              const elapsed = Math.floor((Date.now() - new Date(rt.started_at + 'Z').getTime()) / 1000);
+              await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, rt.id).run();
+              await env.DB.prepare("UPDATE org_tasks SET total_time_seconds = COALESCE(total_time_seconds, 0) + ? WHERE id = ?").bind(elapsed, rt.task_id).run();
+              const still = await env.DB.prepare('SELECT 1 AS x FROM org_time_entries WHERE task_id = ? AND stopped_at IS NULL').bind(rt.task_id).first();
+              if (!still) {
+                await env.DB.prepare("UPDATE org_tasks SET timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(rt.task_id).run();
+              } else {
+                const nxt = await env.DB.prepare('SELECT user_id, started_at FROM org_time_entries WHERE task_id = ? AND stopped_at IS NULL ORDER BY started_at, id LIMIT 1').bind(rt.task_id).first() as any;
+                if (nxt) await env.DB.prepare("UPDATE org_tasks SET timer_started_at = ?, timer_user_id = ? WHERE id = ?").bind(nxt.started_at, nxt.user_id, rt.task_id).run();
+              }
+            }
+          }
+        }
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_collab_removed', 'task', taskId, JSON.stringify({ dossier_id: dossierId, user_id: targetId, grant_revoked: grantRevoked })).run();
+        return json({ ok: true, grant_revoked: grantRevoked });
       }
 
       // --- ORG: MES HEURES — vues days (7j) / month / year : realise vs norme 8h30 lun-ven ---
@@ -2256,20 +2361,25 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         // Check task exists
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
-        // Check no active timer on this task
-        if (task.timer_started_at) return json({ error: 'Timer déjà en cours', active: true, started_at: task.timer_started_at, user_id: task.timer_user_id }, 400);
-        // Stop any other active timer for this user
+        // Chrono deja actif de CE comptable sur cette tache ? (le chrono est par comptable)
+        const mineActive = await env.DB.prepare('SELECT 1 AS x FROM org_time_entries WHERE task_id = ? AND user_id = ? AND stopped_at IS NULL').bind(taskId, user.id).first();
+        if (mineActive) return json({ error: 'Votre chrono est déjà en cours sur cette tâche', active: true }, 400);
+        // Un seul chrono par comptable : on arrete les autres chronos de CE comptable
         const { results: activeTimers } = await env.DB.prepare('SELECT id, task_id, started_at FROM org_time_entries WHERE user_id = ? AND stopped_at IS NULL').bind(user.id).all();
         for (const at of activeTimers as any[]) {
           const elapsed = Math.floor((Date.now() - new Date(at.started_at + 'Z').getTime()) / 1000);
           await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, at.id).run();
-          await env.DB.prepare("UPDATE org_tasks SET total_time_seconds = COALESCE(total_time_seconds, 0) + ?, timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(elapsed, at.task_id).run();
+          await env.DB.prepare("UPDATE org_tasks SET total_time_seconds = COALESCE(total_time_seconds, 0) + ? WHERE id = ?").bind(elapsed, at.task_id).run();
+          // Le timer de la tache ne se vide que si plus aucun chrono actif dessus
+          const still = await env.DB.prepare('SELECT 1 AS x FROM org_time_entries WHERE task_id = ? AND stopped_at IS NULL').bind(at.task_id).first();
+          if (!still) await env.DB.prepare("UPDATE org_tasks SET timer_started_at = NULL, timer_user_id = NULL WHERE id = ?").bind(at.task_id).run();
         }
         // Create time entry
         const entryId = genId();
         await env.DB.prepare("INSERT INTO org_time_entries (id, dossier_id, task_id, user_id, started_at) VALUES (?, ?, ?, ?, datetime('now'))").bind(entryId, dossierId, taskId, user.id).run();
-        // Update task
-        await env.DB.prepare("UPDATE org_tasks SET timer_started_at = datetime('now'), timer_user_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(user.id, user.id, taskId).run();
+        // Timer de la tache = 1er chrono actif : un autre comptable peut chronometrer en parallele
+        const first = await env.DB.prepare('SELECT user_id, started_at FROM org_time_entries WHERE task_id = ? AND stopped_at IS NULL ORDER BY started_at, id LIMIT 1').bind(taskId).first() as any;
+        await env.DB.prepare("UPDATE org_tasks SET timer_started_at = ?, timer_user_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(first.started_at, first.user_id, user.id, taskId).run();
         // Audit log
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'timer_started', 'task', taskId, JSON.stringify({ dossier_id: dossierId })).run();
         return json({ ok: true, entry_id: entryId, started_at: new Date().toISOString() });
@@ -2284,16 +2394,21 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const [dossierId, taskId] = [orgTimerStopMatch[1], orgTimerStopMatch[2]];
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
-        if (!task.timer_started_at) return json({ error: 'Aucun timer actif' }, 400);
-        // Find the active entry
+        // Le chrono est par comptable : on cherche celui de CE comptable
         const entry = await env.DB.prepare('SELECT * FROM org_time_entries WHERE task_id = ? AND user_id = ? AND stopped_at IS NULL ORDER BY started_at DESC LIMIT 1').bind(taskId, user.id).first() as any;
-        if (!entry) return json({ error: 'Entrée timer non trouvée' }, 404);
+        if (!entry) return json({ error: 'Aucun chrono actif de votre côté' }, 400);
         const elapsed = Math.floor((Date.now() - new Date(entry.started_at + 'Z').getTime()) / 1000);
         // Stop entry
         await env.DB.prepare("UPDATE org_time_entries SET stopped_at = datetime('now'), duration_seconds = ? WHERE id = ?").bind(elapsed, entry.id).run();
         // Update task total
         const newTotal = (task.total_time_seconds || 0) + elapsed;
-        await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ?, timer_started_at = NULL, timer_user_id = NULL WHERE id = ?').bind(newTotal, taskId).run();
+        // Un autre comptable chronometre encore ? le timer de la tache reste ouvert sur son chrono
+        const remaining = await env.DB.prepare('SELECT user_id, started_at FROM org_time_entries WHERE task_id = ? AND stopped_at IS NULL ORDER BY started_at, id LIMIT 1').bind(taskId).first() as any;
+        if (remaining) {
+          await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ?, timer_started_at = ?, timer_user_id = ? WHERE id = ?').bind(newTotal, remaining.started_at, remaining.user_id, taskId).run();
+        } else {
+          await env.DB.prepare('UPDATE org_tasks SET total_time_seconds = ?, timer_started_at = NULL, timer_user_id = NULL WHERE id = ?').bind(newTotal, taskId).run();
+        }
         // Audit log
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'timer_stopped', 'task', taskId, JSON.stringify({ dossier_id: dossierId, duration_seconds: elapsed, total_seconds: newTotal })).run();
         return json({ ok: true, duration_seconds: elapsed, total_seconds: newTotal });
@@ -2308,7 +2423,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const [dossierId, taskId] = [orgAddTimeMatch[1], orgAddTimeMatch[2]];
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(taskId, dossierId).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
-        if (task.timer_started_at) return json({ error: 'Arrêtez le chrono d\'abord' }, 400);
+        // Le chrono est par comptable : seule la saisie pendant SON propre chrono est bloquee
+        const myRunning = await env.DB.prepare('SELECT 1 AS x FROM org_time_entries WHERE task_id = ? AND user_id = ? AND stopped_at IS NULL').bind(taskId, user.id).first();
+        if (myRunning) return json({ error: 'Arrêtez votre chrono d\'abord' }, 400);
         const { seconds, note } = await request.json() as any;
         const secs = Math.floor(Number(seconds));
         if (!Number.isFinite(secs) || secs <= 0) return json({ error: 'Durée invalide' }, 400);
@@ -2432,8 +2549,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskMatch[2], orgTaskMatch[1]).first() as any;
         if (!task) return json({ error: 'Tâche non trouvée' }, 404);
         if (task.timer_started_at) return json({ error: 'Arrêtez le chrono d\'abord' }, 400);
-        // Delete time entries for this task
+        // Delete time entries + tags de collaboration pour cette tache
         await env.DB.prepare('DELETE FROM org_time_entries WHERE task_id = ?').bind(orgTaskMatch[2]).run();
+        await env.DB.prepare('DELETE FROM org_task_collaborators WHERE task_id = ?').bind(orgTaskMatch[2]).run();
         // Delete task
         await env.DB.prepare('DELETE FROM org_tasks WHERE id = ?').bind(orgTaskMatch[2]).run();
         const progress = await orgRecalcProgress(orgTaskMatch[1]);

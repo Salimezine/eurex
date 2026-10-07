@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable } from '../../lib/orgApi';
+import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable, OrgCollabCandidate } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import {
@@ -97,6 +97,42 @@ export default function OrgDossierPage() {
     try { await orgApi.revokeGrant(dossier.id, grantId); load(); } catch (err: any) { alert(err.message); }
   };
 
+  // Collaboration : taguer un autre comptable sur une tache (acces auto au dossier)
+  const [collabCands, setCollabCands] = useState<OrgCollabCandidate[]>([]);
+  const [collabTaskId, setCollabTaskId] = useState<string | null>(null);
+  const [collabUser, setCollabUser] = useState('');
+  const [collabDays, setCollabDays] = useState(7);
+  const [collabBusy, setCollabBusy] = useState(false);
+
+  const openCollab = async (taskId: string) => {
+    if (collabTaskId === taskId) { setCollabTaskId(null); return; }
+    setCollabTaskId(taskId);
+    setCollabUser('');
+    setCollabDays(7);
+    if (!collabCands.length) {
+      try { setCollabCands(await orgApi.listCollabCandidates(id!)); } catch (err: any) { alert(err.message); setCollabTaskId(null); }
+    }
+  };
+  const submitCollab = async (taskId: string) => {
+    if (!dossier || !collabUser) return;
+    setCollabBusy(true);
+    try {
+      await orgApi.addCollaborator(dossier.id, taskId, collabUser, collabDays);
+      setCollabTaskId(null);
+      load();
+      try { setCollabCands(await orgApi.listCollabCandidates(dossier.id)); } catch {}
+    } catch (err: any) { alert(err.message); }
+    finally { setCollabBusy(false); }
+  };
+  const removeCollab = async (taskId: string, userId: string) => {
+    if (!dossier) return;
+    try {
+      await orgApi.removeCollaborator(dossier.id, taskId, userId);
+      load();
+      try { setCollabCands(await orgApi.listCollabCandidates(dossier.id)); } catch {}
+    } catch (err: any) { alert(err.message); }
+  };
+
   useEffect(() => { load(); }, [id]);
 
   // Lien direct vers une tâche : /cabinet/dossier/<id>?task=<taskId>
@@ -125,7 +161,7 @@ export default function OrgDossierPage() {
 
   // Live timer tick
   useEffect(() => {
-    const hasActiveTimer = dossier?.tasks?.some(t => t.timer_started_at);
+    const hasActiveTimer = dossier?.tasks?.some(t => t.timer_started_at) || !!dossier?.running_timers?.length;
     if (!hasActiveTimer) return;
     const interval = setInterval(() => setTimerNow(Date.now()), 1000);
     return () => clearInterval(interval);
@@ -905,49 +941,143 @@ export default function OrgDossierPage() {
 
                 {isExpanded && (
                   <div className="px-3 pb-3 pt-1 border-t border-gray-100">
-                    {/* Timer section */}
+                    {/* Timer section : chrono par comptable (plusieurs comptables en parallele sur la meme tache) */}
                     <div className="flex items-center gap-3 mb-3 p-2 bg-gray-50 rounded-lg">
-                      {task.timer_started_at ? (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                            <span className="text-xs text-gray-500">Depuis</span>
-                            <span className="text-sm font-mono font-bold text-red-600">
-                              {formatTime(getLiveElapsed(task.timer_started_at))}
+                      {(() => {
+                        const running = (dossier?.running_timers || []).filter(r => r.task_id === task.id);
+                        const mine = running.find(r => r.user_id === state.user?.id);
+                        const others = running.filter(r => r.user_id !== state.user?.id);
+                        const othersNames = others.map(o => o.user_name).join(', ');
+                        if (mine) {
+                          return (
+                            <>
+                              <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                                <span className="text-xs text-gray-500">Depuis</span>
+                                <span className="text-sm font-mono font-bold text-red-600" data-testid="my-timer-elapsed">
+                                  {formatTime(getLiveElapsed(mine.started_at))}
+                                </span>
+                              </div>
+                              {others.length > 0 && (
+                                <span className="text-[11px] text-orange-600 font-medium" data-testid="other-timers">
+                                  + {othersNames} chronomètre aussi
+                                </span>
+                              )}
+                              <button
+                                data-testid="timer-stop"
+                                onClick={() => stopTimer(task.id)}
+                                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-all"
+                              >
+                                ⏹ Arrêter
+                              </button>
+                            </>
+                          );
+                        }
+                        return (
+                          <>
+                            <span className="text-xs text-gray-400">
+                              {task.total_time_seconds > 0 ? (
+                                <>⏱ Temps total: <strong className="text-gray-600">{formatTime(task.total_time_seconds)}</strong></>
+                              ) : (
+                                '⏱ Pas encore chronométré'
+                              )}
                             </span>
-                          </div>
-                          <button
-                            onClick={() => stopTimer(task.id)}
-                            className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-all"
-                          >
-                            ⏹ Arrêter
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-xs text-gray-400">
-                            {task.total_time_seconds > 0 ? (
-                              <>⏱ Temps total: <strong className="text-gray-600">{formatTime(task.total_time_seconds)}</strong></>
-                            ) : (
-                              '⏱ Pas encore chronométré'
+                            {others.length > 0 && (
+                              <span className="text-[11px] text-orange-600 font-medium" data-testid="other-timers">
+                                ⏱ {othersNames} chronomètre
+                              </span>
                             )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setTimeTaskId(timeTaskId === task.id ? null : task.id); setTimeH(''); setTimeM(''); setTimeNote(''); }}
+                              disabled={task.status === 'fait'}
+                              title="Ajouter du temps passé manuellement"
+                              className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                            >
+                              ➕ Temps
+                            </button>
+                            <button
+                              data-testid="timer-start"
+                              onClick={() => startTimer(task.id)}
+                              disabled={task.status === 'fait'}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                            >
+                              ▶ Commencer
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Collaboration : taguer un autre comptable sur cette tache */}
+                    <div className="flex flex-wrap items-center gap-2 mb-3 p-2 bg-indigo-50/60 border border-indigo-100 rounded-lg" onClick={e => e.stopPropagation()}>
+                      <span className="text-xs font-semibold text-indigo-700">👥 Collaboration</span>
+                      {(task.collaborators || []).map(c => (
+                        <span
+                          key={c.user_id}
+                          data-testid="task-collab"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[11px] font-medium"
+                        >
+                          {c.full_name}
+                          <button
+                            onClick={() => removeCollab(task.id, c.user_id)}
+                            title="Retirer le collaborateur"
+                            data-testid="task-collab-remove"
+                            className="text-indigo-400 hover:text-indigo-700 font-bold leading-none"
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      ))}
+                      {collabTaskId !== task.id && (
+                        <button
+                          onClick={() => openCollab(task.id)}
+                          data-testid="task-collab-add"
+                          className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-all"
+                        >
+                          + Taguer un comptable
+                        </button>
+                      )}
+                      {collabTaskId === task.id && (
+                        <div className="flex flex-wrap items-center gap-1.5 w-full">
+                          <select
+                            value={collabUser}
+                            onChange={e => setCollabUser(e.target.value)}
+                            data-testid="task-collab-select"
+                            className="border border-indigo-200 rounded-lg px-2 py-1 text-xs bg-white focus:ring-2 focus:ring-indigo-500 outline-none max-w-[190px]"
+                          >
+                            <option value="">Choisir un comptable…</option>
+                            {collabCands.map(c => (
+                              <option key={c.id} value={c.id}>{c.full_name}{c.has_access ? ' (accès)' : ''}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={collabDays}
+                            onChange={e => setCollabDays(Number(e.target.value))}
+                            data-testid="task-collab-days"
+                            className="border border-indigo-200 rounded-lg px-2 py-1 text-xs bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                          >
+                            <option value={1}>1 jour</option>
+                            <option value={7}>7 jours</option>
+                            <option value={30}>30 jours</option>
+                          </select>
+                          <button
+                            onClick={() => submitCollab(task.id)}
+                            disabled={!collabUser || collabBusy}
+                            data-testid="task-collab-confirm"
+                            className="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                          >
+                            {collabBusy ? '…' : '✓ Taguer'}
+                          </button>
+                          <button
+                            onClick={() => setCollabTaskId(null)}
+                            className="px-2 py-1 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:bg-indigo-100 transition-all"
+                          >
+                            ✕
+                          </button>
+                          <span className="text-[10px] text-indigo-500 w-full">
+                            Le comptable reçoit un accès temporaire au dossier et chronomètre sa part des heures.
                           </span>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setTimeTaskId(timeTaskId === task.id ? null : task.id); setTimeH(''); setTimeM(''); setTimeNote(''); }}
-                            disabled={task.status === 'fait'}
-                            title="Ajouter du temps passé manuellement"
-                            className="ml-auto px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                          >
-                            ➕ Temps
-                          </button>
-                          <button
-                            onClick={() => startTimer(task.id)}
-                            disabled={task.status === 'fait'}
-                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                          >
-                            ▶ Commencer
-                          </button>
-                        </>
+                        </div>
                       )}
                     </div>
 
