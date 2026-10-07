@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { ChevronUp, ChevronDown } from 'lucide-react';
 import { orgApi, OrgRecentTask } from '../lib/orgApi';
 import { t } from '../lib/orgI18n';
+import { useCardMin } from '../lib/useCardMin';
 
 const parse = (s: string) => Date.parse(String(s).replace(' ', 'T') + 'Z');
 
@@ -31,6 +33,7 @@ export default function NouvellesTaches() {
   const [tasks, setTasks] = useState<OrgRecentTask[]>([]);
   const [toast, setToast] = useState<OrgRecentTask | null>(null);
   const knownIds = useRef<Set<string> | null>(null);
+  const { min, toggleMin } = useCardMin('eurex_nt_min');
 
   useEffect(() => {
     let alive = true;
@@ -77,7 +80,7 @@ export default function NouvellesTaches() {
       <h3 className="text-[13px] font-semibold text-gray-700 flex items-center gap-2 mb-1.5 flex-wrap">
         <span className="flex items-center gap-1.5">
           🆕 Nouvelles tâches
-          <span className="text-gray-400 font-normal">— dernières tâches ajoutées à vos dossiers</span>
+          {!min && <span className="text-gray-400 font-normal">— dernières tâches ajoutées à vos dossiers</span>}
         </span>
         {freshCount > 0 && (
           <span
@@ -87,8 +90,21 @@ export default function NouvellesTaches() {
             🔴 {freshCount} nouvelle{freshCount > 1 ? 's' : ''}
           </span>
         )}
+        {min && (
+          <span data-testid="nouvelles-taches-count" className="ml-auto text-[10px] font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+            {tasks.length}
+          </span>
+        )}
+        <button
+          onClick={toggleMin}
+          title={t(min ? 'card.expand' : 'card.minimize')}
+          data-testid="nouvelles-taches-min"
+          className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+        >
+          {min ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        </button>
       </h3>
-      {/* comme les Échéances fiscales : la zone grandit avec le contenu, plafonne a max-h-72 puis scroll */}
+      {!min && (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
         {tasks.map(rt => {
           const rest = restBadge(rt.days_left);
@@ -125,6 +141,7 @@ export default function NouvellesTaches() {
           );
         })}
       </div>
+      )}
 
       {/* Notification rouge : nouvelle tâche détectée pendant la session */}
       {toast && (

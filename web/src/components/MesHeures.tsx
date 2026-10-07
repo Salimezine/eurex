@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
+import { ChevronUp, ChevronDown } from 'lucide-react';
 import { orgApi, OrgMyHours } from '../lib/orgApi';
+import { t } from '../lib/orgI18n';
+import { useCardMin } from '../lib/useCardMin';
 
 const DAY_LABELS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
 const MONTH_LABELS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
@@ -13,6 +16,7 @@ type View = 'days' | 'month' | 'year';
 export default function MesHeures({ userId, title }: { userId?: string; title?: string } = {}) {
   const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
+  const { min, toggleMin } = useCardMin('eurex_heures_min');
 
   const fetchHours = (v: View) =>
     (userId ? orgApi.getComptableHours(userId, v) : orgApi.getMyHours(v)).then(setHours).catch(() => {});
@@ -48,14 +52,23 @@ export default function MesHeures({ userId, title }: { userId?: string; title?: 
   if (!hours) return null;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-4" data-testid="mes-heures">
-      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+    <div className={`bg-white border border-gray-200 rounded-2xl ${min ? 'px-3 py-1.5' : 'p-4'}`} data-testid="mes-heures">
+      <div className={`flex items-center justify-between flex-wrap gap-2 ${min ? '' : 'mb-3'}`}>
         <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
           ⏱ {title || 'Mes heures'}
-          <span className="text-gray-400 font-normal">— norme 8h30 du lundi au vendredi · repos sam-dim</span>
+          {!min && (
+            <span className="text-gray-400 font-normal">— norme 8h30 du lundi au vendredi · repos sam-dim</span>
+          )}
         </h3>
+        {/* En carte minimale : le resume du jour tient dans l'entete */}
+        {min && (
+          <span data-testid="heures-today-chip" className="ml-auto text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">
+            Aujourd'hui {fmtHm(hours.today.worked_seconds)}{hours.today.rest ? ' · repos' : ' / 8h30'}
+          </span>
+        )}
         {/* Onglets de periode : jours / mois / annee */}
-        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1" role="tablist">
+        {!min && (
+        <div className="ml-auto flex items-center gap-1 bg-gray-100 rounded-lg p-1" role="tablist">
           {([
             { key: 'days' as View, label: 'Jours (7j)' },
             { key: 'month' as View, label: 'Mois' },
@@ -74,8 +87,19 @@ export default function MesHeures({ userId, title }: { userId?: string; title?: 
             </button>
           ))}
         </div>
+        )}
+        <button
+          onClick={toggleMin}
+          title={t(min ? 'card.expand' : 'card.minimize')}
+          data-testid="heures-minimize"
+          className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+        >
+          {min ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        </button>
       </div>
 
+      {!min && (
+      <>
       {/* Aujourd'hui */}
       <div className="flex items-center justify-between flex-wrap gap-2 text-sm">
         <span className="text-gray-500">
@@ -149,6 +173,8 @@ export default function MesHeures({ userId, title }: { userId?: string; title?: 
               ))}
         </tbody>
       </table>
+      </>
+      )}
     </div>
   );
 }

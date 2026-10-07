@@ -9,7 +9,8 @@ import OrgAlerts from '../../components/OrgAlerts';
 import MesHeures from '../../components/MesHeures';
 import NouvellesTaches from '../../components/NouvellesTaches';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
-import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X, Pencil, Trash2, Save } from 'lucide-react';
+import { useCardMin } from '../../lib/useCardMin';
+import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X, Pencil, Trash2, Save, ChevronUp, ChevronDown } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
 
@@ -55,6 +56,8 @@ export default function OrgDashboardExpert() {
   const [ecEmail, setEcEmail] = useState('');
   const [ecPhone, setEcPhone] = useState('');
   const [ecSaving, setEcSaving] = useState(false);
+  // Carte "À vérifier" repliable (etage memorise)
+  const { min: verifyMin, toggleMin: toggleVerifyMin } = useCardMin('eurex_verify_min');
 
   useEffect(() => {
     Promise.all([
@@ -260,10 +263,20 @@ export default function OrgDashboardExpert() {
         <div data-testid="a-verifier">
           <h3 className="text-[13px] font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
             ✅ À vérifier
-            <span className="text-gray-400 font-normal">— tâches terminées par les comptables, en attente de votre validation</span>
+            {!verifyMin && (
+              <span className="text-gray-400 font-normal">— tâches terminées par les comptables, en attente de votre validation</span>
+            )}
             <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
+            <button
+              onClick={toggleVerifyMin}
+              title={t(verifyMin ? 'card.expand' : 'card.minimize')}
+              data-testid="a-verifier-min"
+              className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            >
+              {verifyMin ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
           </h3>
-          {/* comme les Échéances fiscales : la zone grandit avec le contenu, plafonne a max-h-72 puis scroll */}
+          {!verifyMin && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
             {verifyTasks.map(vt => {
               const badge = verifyBadge(vt.verify_left_hours);
@@ -295,6 +308,7 @@ export default function OrgDashboardExpert() {
               );
             })}
           </div>
+          )}
         </div>
       )}
 

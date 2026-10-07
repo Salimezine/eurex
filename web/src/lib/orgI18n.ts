@@ -132,6 +132,10 @@ const translations: Record<string, Record<Lang, string>> = {
   'alerts.client_export': { fr: 'Statut export', ar: 'حالة التصدير' },
   'alerts.export_none': { fr: 'Non renseigné', ar: 'غير محدد' },
 
+  // Cartes repliables (minimisation)
+  'card.minimize': { fr: 'Minimiser la carte', ar: 'تصغير البطاقة' },
+  'card.expand': { fr: 'Afficher la carte', ar: 'إظهار البطاقة' },
+
   // Templates
   'templates.title': { fr: 'Modèles de tâches', ar: 'قوالب المهام' },
   'templates.add': { fr: 'Ajouter une tâche type', ar: 'إضافة مهمة نموذجية' },
