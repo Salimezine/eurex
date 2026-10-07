@@ -1840,6 +1840,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return arr.includes(exportStatus || 'non_exportatrice');
       };
 
+      // Avancement des cartes dashboard : seuls les MOIS ECOULES entrent dans le calcul
+      // (mois en cours exclu — en février on ne compte que janvier, en mars janvier+février).
+      // Les tâches annuelles (sans mois) ne sont comptées qu'à fin d'année (décembre).
+      const currentMonthTn = new Date(Date.now() + 3600000).getUTCMonth() + 1;
+      const inDashboardScope = (month: any): boolean =>
+        month === null || month === undefined ? currentMonthTn === 12 : Number(month) < currentMonthTn;
+
       // --- ORG: ME ---
       if (path === '/api/org/auth/me' && method === 'GET') {
         const user = await verifyOrgToken(request);
@@ -1913,9 +1920,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           let taskStats = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let docStats = { total: 0, received: 0 };
           if (d) {
-            const { results: tasks } = await env.DB.prepare('SELECT status, export_scope FROM org_tasks WHERE dossier_id = ?').bind(d.id).all();
+            const { results: tasks } = await env.DB.prepare('SELECT status, export_scope, month FROM org_tasks WHERE dossier_id = ?').bind(d.id).all();
             for (const t of tasks as any[]) {
               if (!exportScopeKeeps(t.export_scope, c.export_status)) continue;
+              if (!inDashboardScope(t.month)) continue;
               taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
             }
             const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
@@ -2958,10 +2966,11 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const normSec = (dowTn !== 0 && dowTn !== 6) ? 30600 : 0;
         const enriched = await Promise.all(results.map(async (c: any) => {
           const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
-          const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\'').bind(c.id, user.organization_id).all();
+          const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\'').bind(c.id, user.organization_id).all();
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           for (const t of taskStats as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
+            if (!inDashboardScope(t.month)) continue;
             s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           const runStart = parseUtc(runByUser.get(c.id));
