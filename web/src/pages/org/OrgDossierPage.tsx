@@ -100,14 +100,15 @@ export default function OrgDossierPage() {
   useEffect(() => { load(); }, [id]);
 
   // Lien direct vers une tâche : /cabinet/dossier/<id>?task=<taskId>
+  // (dépend de [id] : on revient lire le param quand on change de dossier)
   useEffect(() => {
     const tid = new URLSearchParams(window.location.search).get('task');
-    if (!tid) return;
+    if (!tid) { setHighlightTaskId(null); return; }
     setHighlightTaskId(tid);
     setExpandedTask(tid);
     setTab('checklist');
     setMonthFilter('tous');
-  }, []);
+  }, [id]);
 
   // Après chargement : scroll vers la tâche ciblée
   useEffect(() => {
