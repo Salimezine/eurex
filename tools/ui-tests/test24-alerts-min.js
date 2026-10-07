@@ -3,7 +3,7 @@
 const { chromium } = require('playwright');
 const BASE = process.env.BASE;
 const API = 'https://eurex-api.ezzinesalim21.workers.dev';
-const SAL = { email: 'salim@eurex.tn', pwd: 'salim1234567' };
+const EXP = { email: 'expert@eurex.tn', pwd: 'expert1234567' }; // le "+" Echance n'existe que pour l'expert
 let fails = 0;
 const ok = (c, m) => { console.log((c ? 'PASS: ' : 'FAIL: ') + m); if (!c) fails++; };
 async function j(url, opt) {
@@ -23,14 +23,14 @@ async function loginAs(p, email, pwd) {
 }
 
 (async () => {
-  await j(API + '/api/org/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: SAL.email, password: SAL.pwd }) });
+  await j(API + '/api/org/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EXP.email, password: EXP.pwd }) });
   let b;
   try {
     b = await chromium.launch();
     const p = await b.newPage();
     p.on('pageerror', e => console.log('!! PAGEERROR: ' + e.message));
 
-    await loginAs(p, SAL.email, SAL.pwd);
+    await loginAs(p, EXP.email, EXP.pwd);
     await p.goto(BASE + '/cabinet', { waitUntil: 'domcontentloaded' });
 
     const card = p.locator('[data-testid="org-alerts"]');
