@@ -51,7 +51,7 @@ async function loginAs(p, email, pwd) {
   // ---- setup : client + dossier (expert) assigne a Salim, tache ajoutee par Salim ----
   const client = await j(API + '/api/org/clients', { method: 'POST', headers: HE, body: JSON.stringify({ name: zz, assigned_comptable_id: idA }) });
   const dossier = await j(API + `/api/org/clients/${client.id}/dossiers`, { method: 'POST', headers: HE, body: JSON.stringify({ exercice: 2026 }) });
-  const task = await j(API + `/api/org/dossiers/${dossier.id}/tasks`, { method: 'POST', headers: HA, body: JSON.stringify({ label }) });
+  const task = await j(API + `/api/org/dossiers/${dossier.id}/tasks`, { method: 'POST', headers: HA, body: JSON.stringify({ label, month: new Date().getMonth() + 1 }) });
   console.log('SETUP client=' + client.id + ' dossier=' + dossier.id + ' task=' + task.id + ' ' + zz);
 
   let b;
@@ -71,12 +71,12 @@ async function loginAs(p, email, pwd) {
     p.on('pageerror', e => console.log('!! PAGEERROR: ' + e.message));
     p.on('dialog', async dg => { console.log('!! DIALOG[' + dg.type() + ']: ' + dg.message()); await dg.accept(); });
     await loginAs(p, A.email, A.pwd);
-    await p.goto(BASE + '/cabinet/dossier/' + dossier.id, { waitUntil: 'domcontentloaded' });
+    // deep link : filtre "Tous" + tache ouverte directement
+    await p.goto(BASE + '/cabinet/dossier/' + dossier.id + '?task=' + task.id, { waitUntil: 'domcontentloaded' });
     const row = p.locator('[data-testid="task-row"]').filter({ hasText: label });
     ok(await row.first().waitFor({ timeout: 25000 }).then(() => true).catch(() => false), 'U1: la tache de test est visible');
-    await row.first().click();
-    await p.waitForTimeout(400);
     const addBtn = p.locator('[data-testid="task-collab-add"]');
+    if (await addBtn.count() === 0) { await row.first().click(); await p.waitForTimeout(500); }
     ok(await addBtn.count() === 1, 'U2: bouton "+ Taguer un comptable" present');
     await addBtn.click();
     await p.waitForTimeout(500);
@@ -119,8 +119,8 @@ async function loginAs(p, email, pwd) {
     // ---- U6 : Salim voit le chrono de samar en cours ----
     await p.reload({ waitUntil: 'domcontentloaded' });
     const row2 = p.locator('[data-testid="task-row"]').filter({ hasText: label });
-    await row2.first().click();
-    await p.waitForTimeout(500);
+    await row2.first().waitFor({ timeout: 20000 }).catch(() => {});
+    if (await p.locator('[data-testid="other-timers"]').count() === 0) { await row2.first().click(); await p.waitForTimeout(500); }
     ok(await p.locator('[data-testid="other-timers"]').count() === 1, 'U6: indicateur "samar chronometre" visible pour Salim');
     ok(await p.locator('[data-testid="my-timer-elapsed"]').count() === 1, 'U7: chrono de Salim affiche');
 
