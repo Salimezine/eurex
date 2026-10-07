@@ -16,13 +16,13 @@ type SortKey = 'name' | 'progress' | 'blocked';
 const fmtCreatedAt = (s: string) => {
   const d = new Date(Date.parse(String(s).replace(' ', 'T') + 'Z') + 3600000);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} a ${p(d.getUTCHours())}h${p(d.getUTCMinutes())}`;
+  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} à ${p(d.getUTCHours())}h${p(d.getUTCMinutes())}`;
 };
 
 const restBadge = (daysLeft: number | null) => {
-  if (daysLeft === null) return { cls: 'bg-gray-100 text-gray-500', label: 'Sans echeance' };
+  if (daysLeft === null) return { cls: 'bg-gray-100 text-gray-500', label: 'Sans échéance' };
   if (daysLeft < 0) return { cls: 'bg-red-100 text-red-700', label: `Retard +${-daysLeft} j` };
-  if (daysLeft === 0) return { cls: 'bg-amber-100 text-amber-700', label: "Echeance aujourd'hui" };
+  if (daysLeft === 0) return { cls: 'bg-amber-100 text-amber-700', label: "Échéance aujourd'hui" };
   if (daysLeft === 1) return { cls: 'bg-amber-100 text-amber-700', label: 'Demain' };
   return { cls: 'bg-indigo-100 text-indigo-700', label: `J-${daysLeft}` };
 };
