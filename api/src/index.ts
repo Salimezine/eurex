@@ -2174,7 +2174,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       const orgCompHoursMatch = path.match(/^\/api\/org\/comptables\/([^/]+)\/hours$/);
       if (orgCompHoursMatch && method === 'GET') {
         const user = await verifyOrgToken(request);
-        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const target = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ?').bind(orgCompHoursMatch[1], user.organization_id).first();
         if (!target) return json({ error: 'Comptable introuvable' }, 404);
         const view = new URL(request.url).searchParams.get('view') || 'days';
