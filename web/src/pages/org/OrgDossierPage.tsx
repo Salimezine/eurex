@@ -69,6 +69,8 @@ export default function OrgDossierPage() {
   const [showAddDocFor, setShowAddDocFor] = useState<string | null>(null);
   const [newDocLabel, setNewDocLabel] = useState('');
   const [newDocUrl, setNewDocUrl] = useState('');
+  // arrivée depuis un lien direct (?task=<id>) : surligner la tâche
+  const [highlightTaskId, setHighlightTaskId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileTargetTask = useRef<string | null>(null);
 
@@ -96,6 +98,25 @@ export default function OrgDossierPage() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  // Lien direct vers une tâche : /cabinet/dossier/<id>?task=<taskId>
+  useEffect(() => {
+    const tid = new URLSearchParams(window.location.search).get('task');
+    if (!tid) return;
+    setHighlightTaskId(tid);
+    setExpandedTask(tid);
+    setTab('checklist');
+    setMonthFilter('tous');
+  }, []);
+
+  // Après chargement : scroll vers la tâche ciblée
+  useEffect(() => {
+    if (loading || !highlightTaskId) return;
+    const tries = [0, 300, 800];
+    tries.forEach(ms => setTimeout(() => {
+      document.getElementById('task-' + highlightTaskId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, ms));
+  }, [loading, dossier, highlightTaskId]);
 
   useEffect(() => {
     if (isExpert) orgApi.getComptables().then(cs => setComptables(cs.filter(c => c.role === 'comptable'))).catch(() => {});
@@ -753,7 +774,14 @@ export default function OrgDossierPage() {
             const taskDocs = docsMap[task.id] || [];
 
             return (
-              <div key={task.id} className={`bg-white border rounded-xl overflow-hidden transition-all ${isBlocked ? 'border-red-200' : 'border-gray-200'}`}>
+              <div
+                key={task.id}
+                id={`task-${task.id}`}
+                data-testid="task-row"
+                className={`bg-white border rounded-xl overflow-hidden transition-all ${
+                  isBlocked ? 'border-red-200' : 'border-gray-200'
+                } ${highlightTaskId === task.id ? 'border-red-500 ring-2 ring-red-400 shadow-lg shadow-red-100' : ''}`}
+              >
                 <div
                   className="flex items-center gap-3 p-3 cursor-pointer hover:bg-gray-50 transition-colors group/task"
                   onClick={() => setExpandedTask(isExpanded ? null : task.id)}
