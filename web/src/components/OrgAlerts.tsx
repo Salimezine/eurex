@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Bell, Plus, Check, Trash2, RotateCcw, Eye, EyeOff } from 'lucide-react';
+import { Bell, Plus, Check, Trash2, RotateCcw, ChevronUp, ChevronDown } from 'lucide-react';
 import { orgApi, OrgAlertFeed } from '../lib/orgApi';
 import { mergeFeed, urgentCount, alertState, formatDueDate, daysUntil, exportScopeLabel, FeedItem, AlertState } from '../lib/orgAlerts';
 import { useOrgAuth } from '../lib/orgAuth';
@@ -37,14 +37,22 @@ export default function OrgAlerts({ dossierId, personType, exportStatus }: Props
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [hidden, setHidden] = useState(() => {
-    try { return localStorage.getItem('eurex_alerts_hidden') === '1'; } catch { return false; }
+  // minimisation de la carte (repli sur une seule ligne) — memorisee dans localStorage
+  const [min, setMin] = useState(() => {
+    try {
+      const v = localStorage.getItem('eurex_alerts_min');
+      if (v !== null) return v === '1';
+      return localStorage.getItem('eurex_alerts_hidden') === '1'; // ancien etat "liste masquee"
+    } catch { return false; }
   });
 
-  const toggleHidden = () => {
-    const n = !hidden;
-    setHidden(n);
-    try { localStorage.setItem('eurex_alerts_hidden', n ? '1' : '0'); } catch { /* ignore */ }
+  const toggleMin = () => {
+    const n = !min;
+    setMin(n);
+    try {
+      localStorage.setItem('eurex_alerts_min', n ? '1' : '0');
+      localStorage.setItem('eurex_alerts_hidden', n ? '1' : '0'); // retrocompat
+    } catch { /* ignore */ }
   };
 
   const load = useCallback(async () => {
@@ -129,7 +137,7 @@ export default function OrgAlerts({ dossierId, personType, exportStatus }: Props
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+    <div className={`bg-white border border-gray-200 rounded-xl space-y-3 ${min ? 'px-3 py-1.5' : 'p-4'}`} data-testid="org-alerts">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
           <Bell size={14} className="text-amber-500" />
@@ -141,8 +149,8 @@ export default function OrgAlerts({ dossierId, personType, exportStatus }: Props
           )}
         </h3>
         <div className="flex items-center gap-2">
-          {!hidden && <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>}
-          {!hidden && (isExpert || dossierId) && (
+          {!min && <span className="text-[10px] text-gray-400 hidden sm:inline">{t('alerts.legend')}</span>}
+          {!min && (isExpert || dossierId) && (
             <button
               onClick={() => openModal()}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all"
@@ -152,16 +160,17 @@ export default function OrgAlerts({ dossierId, personType, exportStatus }: Props
             </button>
           )}
           <button
-            onClick={toggleHidden}
-            title={hidden ? t('alerts.show') : t('alerts.hide')}
+            onClick={toggleMin}
+            title={min ? t('alerts.show') : t('alerts.hide')}
+            data-testid="alerts-minimize"
             className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
           >
-            {hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+            {min ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
           </button>
         </div>
       </div>
 
-      {!hidden && (feed === null ? (
+      {!min && (feed === null ? (
         <div className="h-8 bg-gray-100 rounded-lg animate-pulse" />
       ) : items.length === 0 ? (
         <p className="text-xs text-gray-400 text-center py-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg">
