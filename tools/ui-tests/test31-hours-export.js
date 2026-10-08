@@ -14,7 +14,9 @@ async function j(url, opt) {
 }
 async function getRaw(url, headers) {
   const r = await fetch(url, { headers });
-  return { s: r.status, ct: r.headers.get('content-type') || '', cd: r.headers.get('content-disposition') || '', body: await r.text() };
+  // arrayBuffer -> utf8 : on garde le BOM (r.text() le décodeur le mange)
+  const body = Buffer.from(await r.arrayBuffer()).toString('utf8');
+  return { s: r.status, ct: r.headers.get('content-type') || '', cd: r.headers.get('content-disposition') || '', body };
 }
 async function loginAs(p, email, pwd) {
   await p.goto(BASE + '/', { waitUntil: 'domcontentloaded' });

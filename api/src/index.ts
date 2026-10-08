@@ -2539,7 +2539,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const s = Math.max(0, Math.floor(sec || 0));
           return `${Math.floor(s / 3600)}h${pad2(Math.floor((s % 3600) / 60))}`;
         };
-        const lines = [['date', 'debut', 'fin', 'duree', 'client', 'dossier', 'exercice', 'tache', 'collaborateur', 'note'].join(';')];
+        const lines = [['date', 'debut', 'fin', 'duree', 'client', 'dossier', 'exercice', 'tache', 'collaborateur', 'note'].map(esc).join(';')];
         let totalSec = 0;
         for (const r of rows) {
           const secs = Number(r.duration_seconds) || 0;
@@ -2550,7 +2550,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         lines.push(['', '', '', 'TOTAL', '', '', '', '', '', hm(totalSec)].map(esc).join(';'));
         const csv = '\uFEFF' + lines.join('\r\n');
         const fname = `heures_${exF || yearF || 'tout'}${monthF ? '-' + pad2(monthF) : ''}${targetUser ? '' : '_cabinet'}.csv`;
-        return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${fname}"`, 'Cache-Control': 'no-store' } });
+        return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${fname}"`, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' } });
       }
 
       // --- ORG: MES TACHES RECENTES (dashboard) — nouvelles tâches des dossiers accessibles ---
