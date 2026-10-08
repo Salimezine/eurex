@@ -11,7 +11,7 @@ export function fmtH(sec: number): string {
   if (!sec) return '0h';
   const h = Math.floor(sec / 3600);
   const m = Math.round((sec % 3600) / 60);
-  return m ? `${h}h${p2(m)}` : `${h}h`;
+  return `${h}h${p2(m)}`;
 }
 
 const fmtDate = (d: string) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '');
