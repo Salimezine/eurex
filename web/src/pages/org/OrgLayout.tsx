@@ -10,6 +10,7 @@ import OrgDashboardExpert from './OrgDashboardExpert';
 import OrgDossierPage from './OrgDossierPage';
 import OrgSettings from './OrgSettings';
 import OrgComptableDetail from './OrgComptableDetail';
+import OrgSearch from '../../components/OrgSearch';
 
 function OrgInner() {
   const { state } = useOrgAuth();
@@ -36,6 +37,7 @@ function OrgInner() {
   return (
     <div className="flex-1">
       <div className="max-w-7xl mx-auto px-4 py-6" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
+        <OrgSearch />
         <Routes>
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
           <Route path="/dossier/:id" element={<OrgDossierPage />} />

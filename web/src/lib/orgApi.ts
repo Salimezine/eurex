@@ -374,6 +374,10 @@ export const orgApi = {
   restoreReporting: (dossierId: string) =>
     req<{ ok: boolean; count: number; created: number; reporting: { total: number; hidden: number } }>(`/org/dossiers/${dossierId}/reporting/restore`, { method: 'POST' }),
 
+  // Recherche globale (clients, dossiers, taches, documents, notes)
+  search: (q: string) =>
+    req<{ q: string; clients: any[]; dossiers: any[]; tasks: any[]; documents: any[]; notes: any[] }>(`/org/search?q=${encodeURIComponent(q)}`),
+
   // Fiscal alerts (échéances)
   getAlerts: (dossierId?: string) =>
     req<OrgAlertFeed>(`/org/alerts${dossierId ? `?dossier_id=${dossierId}` : ''}`),

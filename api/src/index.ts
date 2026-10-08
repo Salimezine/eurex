@@ -3463,6 +3463,64 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json(enriched);
       }
 
+      // --- ORG: RECHERCHE GLOBALE (clients, dossiers, taches, documents, notes) ---
+      if (path === '/api/org/search' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const q = (new URL(request.url).searchParams.get('q') || '').trim();
+        const empty = { q, clients: [], dossiers: [], tasks: [], documents: [], notes: [] };
+        if (q.length < 2) return json(empty);
+        const like = `%${q}%`;
+        const sup = isSupervisor(user.role);
+        // Portee : expert/manager = tout le cabinet ; comptable = clients assignes + renforts actifs
+        const scopeCli = sup ? '' : ' AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossiers dd JOIN org_dossier_grants g ON g.dossier_id = dd.id WHERE dd.client_id = c.id AND g.granted_to = ? AND ' + ORG_GRANT_ACTIVE + '))';
+        const scopeDos = sup ? '' : ' AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND ' + ORG_GRANT_ACTIVE + '))';
+
+        const bC: any[] = [user.organization_id, like, like, ...(sup ? [] : [user.id, user.id])];
+        const { results: clients } = await env.DB.prepare(
+          `SELECT c.id, c.name, c.matricule_fiscal,
+             (SELECT d.id FROM org_dossiers d WHERE d.client_id = c.id ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC LIMIT 1) as dossier_id,
+             (SELECT d.exercice FROM org_dossiers d WHERE d.client_id = c.id ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC LIMIT 1) as exercice
+           FROM org_clients c WHERE c.organization_id = ? AND (c.name LIKE ? OR c.matricule_fiscal LIKE ?)${scopeCli}
+           ORDER BY c.name LIMIT 6`
+        ).bind(...bC).all();
+
+        const bD: any[] = [user.organization_id, like, like, ...(sup ? [] : [user.id, user.id])];
+        const { results: dossiers } = await env.DB.prepare(
+          `SELECT d.id, d.exercice, d.status, d.cached_progress, c.name as client_name
+           FROM org_dossiers d JOIN org_clients c ON c.id = d.client_id
+           WHERE c.organization_id = ? AND (c.name LIKE ? OR d.id LIKE ?)${scopeDos}
+           ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC, c.name LIMIT 6`
+        ).bind(...bD).all();
+
+        const bT: any[] = [user.organization_id, like, ...(sup ? [] : [user.id, user.id, user.id])];
+        const { results: tasks } = await env.DB.prepare(
+          `SELECT t.id, t.label, t.status, t.month, t.due_date, t.dossier_id, c.name as client_name, d.exercice
+           FROM org_tasks t JOIN org_dossiers d ON d.id = t.dossier_id JOIN org_clients c ON c.id = d.client_id
+           WHERE c.organization_id = ? AND t.label LIKE ? AND t.hidden = 0
+           ${sup ? '' : 'AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_task_collaborators tc WHERE tc.task_id = t.id AND tc.user_id = ?) OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND ' + ORG_GRANT_ACTIVE + '))'}
+           ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC, t.order_index LIMIT 6`
+        ).bind(...bT).all();
+
+        const bO: any[] = [user.organization_id, like, ...(sup ? [] : [user.id, user.id])];
+        const { results: documents } = await env.DB.prepare(
+          `SELECT o.id, o.label, o.task_id, o.dossier_id, o.received, c.name as client_name, d.exercice
+           FROM org_expected_documents o JOIN org_dossiers d ON d.id = o.dossier_id JOIN org_clients c ON c.id = d.client_id
+           WHERE c.organization_id = ? AND o.label LIKE ?${scopeDos}
+           ORDER BY (d.status = 'en_cours') DESC, o.label LIMIT 6`
+        ).bind(...bO).all();
+
+        const bN: any[] = [user.organization_id, like, ...(sup ? [] : [user.id, user.id])];
+        const { results: notes } = await env.DB.prepare(
+          `SELECT n.id, substr(n.content, 1, 90) as content, n.dossier_id, n.created_at, c.name as client_name, d.exercice
+           FROM org_notes n JOIN org_dossiers d ON d.id = n.dossier_id JOIN org_clients c ON c.id = d.client_id
+           WHERE c.organization_id = ? AND n.content LIKE ?${scopeDos}
+           ORDER BY n.created_at DESC LIMIT 6`
+        ).bind(...bN).all();
+
+        return json({ q, clients, dossiers, tasks, documents, notes });
+      }
+
       // --- ORG: EXERCICES DISPONIBLES (selecteur du dashboard) ---
       if (path === '/api/org/exercices' && method === 'GET') {
         const user = await verifyOrgToken(request);

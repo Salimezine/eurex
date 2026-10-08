@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable, OrgCollabCandidate } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
@@ -40,6 +40,7 @@ const STATUS_COLORS: Record<string, string> = {
 export default function OrgDossierPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { state } = useOrgAuth();
   const isExpert = state.user?.role === 'expert' || state.user?.role === 'manager';
   const [dossier, setDossier] = useState<OrgDossier | null>(null);
@@ -155,15 +156,22 @@ export default function OrgDossierPage() {
   useEffect(() => { load(); }, [id]);
 
   // Lien direct vers une tâche : /cabinet/dossier/<id>?task=<taskId>
-  // (dépend de [id] : on revient lire le param quand on change de dossier)
+  // et/ou vers un onglet : ?tab=documents|notes|timeline|year (depuis la recherche globale)
+  // (re-exécuté aussi quand les params changent : résultat de recherche cliqué sur le même dossier)
   useEffect(() => {
-    const tid = new URLSearchParams(window.location.search).get('task');
-    if (!tid) { setHighlightTaskId(null); return; }
-    setHighlightTaskId(tid);
-    setExpandedTask(tid);
-    setTab('checklist');
-    setMonthFilter('tous');
-  }, [id]);
+    const params = new URLSearchParams(location.search);
+    const tid = params.get('task');
+    if (tid) {
+      setHighlightTaskId(tid);
+      setExpandedTask(tid);
+      setMonthFilter('tous');
+      setTab('checklist');
+    } else {
+      setHighlightTaskId(null);
+    }
+    const tb = params.get('tab');
+    if (tb && ['checklist', 'documents', 'notes', 'timeline', 'year'].includes(tb)) setTab(tb as Tab);
+  }, [id, location.search]);
 
   // Après chargement : scroll vers la tâche ciblée
   useEffect(() => {
