@@ -255,6 +255,81 @@ async function ensureCurrentExercice(env: Env, orgId: string): Promise<void> {
   }
 }
 
+// Relances automatiques (notifications internes) — générées à la lecture, idempotentes
+// (id déterministe + INSERT OR IGNORE, donc une seule notif par cible et par jour) :
+//  1) tâche en retard               -> comptable assigné (tâche puis dossier)
+//  2) échéance dans la fenêtre lead  -> comptable du dossier (ou experts si échéance globale)
+//  3) vérification dépassée          -> experts/managers
+async function ensureNotifications(env: Env, orgId: string): Promise<void> {
+  try {
+    const today = new Date(Date.now() + 3600000).toISOString().slice(0, 10);
+    const ins = async (id: string, userId: string, dossierId: string | null, message: string) => {
+      await env.DB.prepare('INSERT OR IGNORE INTO org_notifications (id, user_id, dossier_id, message) VALUES (?, ?, ?, ?)').bind(id, userId, dossierId, message).run();
+    };
+
+    // 1) Tâches en retard (date butoir passée, pas « fait »)
+    const { results: late } = await env.DB.prepare(
+      `SELECT t.id, t.label, t.due_date, t.dossier_id, c.name as client_name, COALESCE(t.assigned_comptable_id, c.assigned_comptable_id) as uid
+       FROM org_tasks t JOIN org_dossiers d ON d.id = t.dossier_id JOIN org_clients c ON c.id = d.client_id
+       WHERE c.organization_id = ? AND d.status = 'en_cours' AND t.hidden = 0 AND t.status != 'fait'
+         AND t.due_date IS NOT NULL AND t.due_date < ? AND COALESCE(t.assigned_comptable_id, c.assigned_comptable_id) IS NOT NULL
+       ORDER BY t.due_date ASC LIMIT 200`
+    ).bind(orgId, today).all();
+    for (const t of late as any[]) {
+      const dd = String(t.due_date);
+      await ins(`late:${t.id}:${today}`, t.uid, t.dossier_id,
+        `🔴 En retard depuis le ${dd.slice(8)}/${dd.slice(5, 7)} : « ${t.label} » — ${t.client_name}`);
+    }
+
+    // 2) Échéances non faites arrivant à échéance (fenêtre = lead_days), y compris dépassées
+    const { results: alerts } = await env.DB.prepare(
+      `SELECT a.id, a.title, a.due_date, a.lead_days, a.recurrence, a.dossier_id, c.assigned_comptable_id as client_uid
+       FROM org_fiscal_alerts a
+       LEFT JOIN org_dossiers d ON d.id = a.dossier_id
+       LEFT JOIN org_clients c ON c.id = d.client_id
+       WHERE a.organization_id = ? AND a.due_date IS NOT NULL
+         AND a.due_date <= date(?, '+' || COALESCE(a.lead_days, 7) || ' days')
+         AND (a.done = 0 OR a.done IS NULL)
+         AND (a.recurrence IS NULL OR NOT EXISTS (SELECT 1 FROM org_alert_dones od WHERE od.alert_id = a.id AND od.due_date = a.due_date))
+       ORDER BY a.due_date ASC LIMIT 150`
+    ).bind(orgId, today).all();
+    let supIds: string[] = [];
+    if (alerts.length) {
+      const sups = (await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND is_active = 1 AND role IN ('expert', 'manager')").bind(orgId).all()).results;
+      supIds = (sups as any[]).map(u => String(u.id));
+    }
+    for (const a of alerts as any[]) {
+      const diff = Math.round((Date.parse(String(a.due_date) + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400000);
+      const when = diff < 0 ? `dépassée de ${-diff} j` : diff === 0 ? 'aujourd’hui' : `dans ${diff} j`;
+      const dd = String(a.due_date);
+      const msg = `⏰ Échéance « ${a.title} » le ${dd.slice(8)}/${dd.slice(5, 7)} (${when})`;
+      const targets = a.dossier_id ? (a.client_uid ? [String(a.client_uid)] : supIds) : supIds;
+      for (const uid of targets) await ins(`alert:${a.id}:${a.due_date}`, uid, a.dossier_id, msg);
+    }
+
+    // 3) Tâches en vérification dont le délai de validation est passé -> experts
+    const { results: verifies } = await env.DB.prepare(
+      `SELECT t.id, t.label, t.dossier_id, c.name as client_name
+       FROM org_tasks t JOIN org_dossiers d ON d.id = t.dossier_id JOIN org_clients c ON c.id = d.client_id
+       WHERE c.organization_id = ? AND t.status = 'a_verifier' AND t.hidden = 0
+         AND t.verify_due_at IS NOT NULL AND t.verify_due_at < datetime('now')
+       ORDER BY t.verify_due_at ASC LIMIT 100`
+    ).bind(orgId).all();
+    if (verifies.length) {
+      if (!supIds.length) {
+        const sups = (await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND is_active = 1 AND role IN ('expert', 'manager')").bind(orgId).all()).results;
+        supIds = (sups as any[]).map(u => String(u.id));
+      }
+      for (const t of verifies as any[]) {
+        for (const uid of supIds) await ins(`verify:${t.id}:${today}`, uid, t.dossier_id,
+          `🟠 Validation dépassée : « ${t.label} » — ${t.client_name}`);
+      }
+    }
+  } catch (e) {
+    console.error('ensureNotifications', e);
+  }
+}
+
 // Cron 1er janvier : passage automatique pour toutes les organisations
 async function rolloverAllOrganizations(env: Env): Promise<void> {
   const { results } = await env.DB.prepare('SELECT id FROM organizations').all();
@@ -3369,6 +3444,33 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE id = ?').bind(orgAlertMatch[1]).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'alert_deleted\', \'alert\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgAlertMatch[1], JSON.stringify({ title: row.title, due_date: row.due_date })).run();
         return json({ ok: true });
+      }
+
+      // --- ORG: NOTIFICATIONS INTERNES (relances automatiques) ---
+      if (path === '/api/org/notifications' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        await ensureNotifications(env, user.organization_id);
+        const { results } = await env.DB.prepare('SELECT id, dossier_id, message, read, created_at FROM org_notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 50').bind(user.id).all();
+        const unread = await env.DB.prepare('SELECT COUNT(*) as n FROM org_notifications WHERE user_id = ? AND read = 0').bind(user.id).first() as any;
+        return json({ notifications: results, unread: Number(unread?.n || 0) });
+      }
+
+      if (path === '/api/org/notifications/read' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const body = await request.json() as any;
+        if (body.all) {
+          await env.DB.prepare('UPDATE org_notifications SET read = 1 WHERE user_id = ? AND read = 0').bind(user.id).run();
+          return json({ ok: true, unread: 0 });
+        }
+        const id = String(body.id || '').trim();
+        if (!id) return json({ error: 'id requis' }, 400);
+        const row = await env.DB.prepare('SELECT id FROM org_notifications WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+        if (!row) return json({ error: 'Notification introuvable' }, 404);
+        await env.DB.prepare('UPDATE org_notifications SET read = 1 WHERE id = ?').bind(id).run();
+        const unread = await env.DB.prepare('SELECT COUNT(*) as n FROM org_notifications WHERE user_id = ? AND read = 0').bind(user.id).first() as any;
+        return json({ ok: true, unread: Number(unread?.n || 0) });
       }
 
       // --- ORG: EXPERT — COMPTABLES ---

@@ -421,6 +421,14 @@ export const orgApi = {
   deleteAlert: (id: string) =>
     req<{ ok: boolean }>(`/org/alerts/${id}`, { method: 'DELETE' }),
 
+  // Notifications internes (relances automatiques)
+  getNotifications: () =>
+    req<{ notifications: any[]; unread: number }>('/org/notifications'),
+  readNotification: (id: string) =>
+    req<{ ok: boolean; unread: number }>('/org/notifications/read', { method: 'POST', body: JSON.stringify({ id }) }),
+  readAllNotifications: () =>
+    req<{ ok: boolean; unread: number }>('/org/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) }),
+
   // Documents
   updateDocument: (dossierId: string, docId: string, received: boolean, note?: string) =>
     req<any>(`/org/dossiers/${dossierId}/documents/${docId}`, { method: 'PATCH', body: JSON.stringify({ received, received_note: note ?? null }) }),

@@ -11,6 +11,7 @@ import OrgDossierPage from './OrgDossierPage';
 import OrgSettings from './OrgSettings';
 import OrgComptableDetail from './OrgComptableDetail';
 import OrgSearch from '../../components/OrgSearch';
+import OrgNotifications from '../../components/OrgNotifications';
 import OrgPlanning from './OrgPlanning';
 
 function OrgInner() {
@@ -55,6 +56,7 @@ function OrgInner() {
           >
             📅 Planning
           </button>
+          <OrgNotifications />
         </div>
         <Routes>
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
