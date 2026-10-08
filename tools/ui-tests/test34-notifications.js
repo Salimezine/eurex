@@ -55,7 +55,7 @@ const d1 = sql => execSync(
     // --- Setup API ---
     const c = await j(API + '/api/org/clients', { method: 'POST', headers: HE, body: JSON.stringify({ name: zz, assigned_comptable_id: 'user_comp_001' }) });
     clientId = c.body.id;
-    const d = await j(API + '/api/org/clients/' + c.id + '/dossiers', { method: 'POST', headers: HE, body: JSON.stringify({ exercice: 2026 }) });
+    const d = await j(API + '/api/org/clients/' + clientId + '/dossiers', { method: 'POST', headers: HE, body: JSON.stringify({ exercice: 2026 }) });
     dossierId = d.body.id;
 
     // 1) Tâche en retard (hier) -> notification Salim
@@ -125,14 +125,15 @@ const d1 = sql => execSync(
       ok(page.url().includes('/cabinet/dossier/' + dossierId), 'B3: clic notif -> dossier (' + page.url().split('/cabinet')[1] + ')');
 
       await page.goto(BASE + '/cabinet', { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-testid="notif-bell"]', { timeout: 20000 });
-      await page.waitForTimeout(800);
+      // attendre que le rechargement de la cloche ait bien eu lieu (load() est async)
+      await page.waitForSelector('[data-testid="notif-unread"]', { timeout: 25000 });
       await page.click('[data-testid="notif-bell"]');
       await page.waitForSelector('[data-testid="notif-list"]', { timeout: 10000 });
       const markAll = page.locator('[data-testid="notif-mark-all"]');
+      await markAll.waitFor({ timeout: 15000 }).catch(() => {});
       ok(await markAll.isVisible(), 'B4a: bouton « Tout marquer comme lu » visible');
       await markAll.click();
-      await page.waitForTimeout(1200);
+      await page.waitForFunction(() => !document.querySelector('[data-testid="notif-unread"]'), null, { timeout: 15000 }).catch(() => {});
       const badgeAfter = await page.locator('[data-testid="notif-unread"]').count();
       ok(badgeAfter === 0, 'B4b: badge disparu après « tout lu »');
 
