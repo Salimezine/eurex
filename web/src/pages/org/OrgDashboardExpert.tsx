@@ -364,7 +364,7 @@ export default function OrgDashboardExpert() {
         </div>
         <div className="flex items-center gap-2">
           <OrgAccountButton />
-          <ClientsImport comptables={comptables} onImported={load} />
+          <ClientsImport comptables={comptables} onImported={fetchDashboard} />
           <button
             onClick={() => setShowNewDossier(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
