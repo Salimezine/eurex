@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { getLang, onLangChange, t, Lang } from '../../lib/orgI18n';
 import { SkeletonAuth } from '../../components/Skeleton';
@@ -11,10 +11,14 @@ import OrgDossierPage from './OrgDossierPage';
 import OrgSettings from './OrgSettings';
 import OrgComptableDetail from './OrgComptableDetail';
 import OrgSearch from '../../components/OrgSearch';
+import OrgPlanning from './OrgPlanning';
 
 function OrgInner() {
   const { state } = useOrgAuth();
   const [lang, setLangState] = useState<Lang>(getLang());
+  const location = useLocation();
+  const navigate = useNavigate();
+  const onPlanning = location.pathname.startsWith('/cabinet/planning');
 
   useEffect(() => {
     return onLangChange(() => setLangState(getLang()));
@@ -37,9 +41,24 @@ function OrgInner() {
   return (
     <div className="flex-1">
       <div className="max-w-7xl mx-auto px-4 py-6" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
-        <OrgSearch />
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <OrgSearch />
+          </div>
+          <button
+            onClick={() => navigate('/cabinet/planning')}
+            data-testid="planning-nav"
+            title="Planning des échéances et tâches par date"
+            className={`mb-4 shrink-0 px-3 py-2.5 rounded-xl text-sm font-semibold border transition-all ${onPlanning
+              ? 'bg-purple-600 border-purple-600 text-white shadow-lg shadow-purple-200'
+              : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300 hover:text-purple-700'}`}
+          >
+            📅 Planning
+          </button>
+        </div>
         <Routes>
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
+          <Route path="/planning" element={<OrgPlanning />} />
           <Route path="/dossier/:id" element={<OrgDossierPage />} />
           <Route path="/settings" element={isExpert ? <OrgSettings /> : <Navigate to="/cabinet" />} />
           <Route path="/comptable/:id" element={isExpert ? <OrgComptableDetail /> : <Navigate to="/cabinet" />} />
