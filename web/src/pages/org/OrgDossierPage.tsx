@@ -770,6 +770,7 @@ export default function OrgDossierPage() {
         ]).map(t2 => (
           <button
             key={t2.key}
+            data-testid={`tab-${t2.key}`}
             onClick={() => setTab(t2.key)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'

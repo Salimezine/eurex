@@ -122,21 +122,13 @@ async function loginAs(p, email, pwd) {
       await nrows.first().click();
       await page.waitForTimeout(1500);
       ok(page.url().includes('?tab=notes'), 'B5b: clic -> ?tab=notes');
-      const activeNotes = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const notesBtn = btns.find(b => b.textContent.trim() === 'Notes');
-        return !!(notesBtn && notesBtn.className.includes('bg-white'));
-      });
+      const activeNotes = await page.locator('[data-testid="tab-notes"]').evaluate(b => b.className.includes('bg-white'));
       ok(activeNotes, 'B5c: onglet Notes actif');
       ok((await page.locator('body').innerText()).includes(noteContent), 'B5d: la note est visible');
 
       await page.goto(BASE + '/cabinet/dossier/' + dossier.id + '?tab=documents', { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(1500);
-      const activeDocs = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const b = btns.find(x => x.textContent.trim() === 'Documents');
-        return !!(b && b.className.includes('bg-white'));
-      });
+      const activeDocs = await page.locator('[data-testid="tab-documents"]').evaluate(b => b.className.includes('bg-white'));
       ok(activeDocs, 'B6: ?tab=documents ouvre directement l\'onglet Documents');
 
       await page.fill('[data-testid="search-input"]', zz);
