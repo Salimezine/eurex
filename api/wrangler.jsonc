@@ -9,6 +9,11 @@
       "binding": "DB",
       "database_name": "eurex-db",
       "database_id": "6505a544-f2d2-4010-9f7b-2da31edd9e93"
+    },
+    {
+      "binding": "COPY_DB",
+      "database_name": "eurex-db-copy",
+      "database_id": "e6385f73-6d50-4f2a-9b04-b7ebb8dbdf27"
     }
   ],
   "kv_namespaces": [
@@ -21,8 +26,9 @@
     "binding": "AI"
   },
   // 1er janvier 00:15 UTC : passage automatique au nouvel exercice
+  // Tous les jours 02:00 UTC (03:00 TN) : copie de sauvegarde vers eurex-db-copy
   "triggers": {
-    "crons": ["15 0 1 1 *"]
+    "crons": ["15 0 1 1 *", "0 2 * * *"]
   },
   "vars": {
     "ENVIRONMENT": "production"

@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  COPY_DB?: D1Database;
   AI: Ai;
   ENVIRONMENT: string;
   AI_FALLBACK_URLS?: string;
@@ -4143,10 +4144,47 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
   },
   // Cron 1er janvier (00:15 UTC) : passage automatique au nouvel exercice
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(rolloverAllOrganizations(env));
+  // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (event.cron === '15 0 1 1 *') {
+      ctx.waitUntil(rolloverAllOrganizations(env));
+    }
+    if (event.cron === '0 2 * * *') {
+      ctx.waitUntil(syncToCopy(env).then(
+        r => console.log('sync-copy OK: ' + r.tables + ' tables, ' + r.rows + ' lignes'),
+        err => console.error('sync-copy FAILED: ' + (err?.message || err)),
+      ));
+    }
   },
 };
+
+// Copie de sauvegarde quotidienne : recopie integrale de DB (eurex-db) vers COPY_DB
+// (eurex-db-copy). Chaque table est vidée puis réécrite — INSERT en paquets (limite
+// de 100 paramètres liés par requête). Les tables internes d1_* ne sont pas copiées.
+async function syncToCopy(env: Env): Promise<{ tables: number; rows: number }> {
+  if (!env.COPY_DB) throw new Error('COPY_DB non configuré');
+  const { results: tblRows } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*' ORDER BY name").all();
+  let rows = 0;
+  for (const t of tblRows as any[]) {
+    const name = String(t.name);
+    const { results } = await env.DB.prepare(`SELECT * FROM "${name}"`).all();
+    const data = results as any[];
+    await env.COPY_DB.prepare(`DELETE FROM "${name}"`).run();
+    if (!data.length) continue;
+    // Colonnes déclarées explicitement : l'ordre des lignes de SELECT * n'a pas d'importance
+    const cols = Object.keys(data[0]);
+    const colSql = cols.map(c => `"${c}"`).join(', ');
+    const ph = '(' + cols.map(() => '?').join(', ') + ')';
+    const insertSql = `INSERT INTO "${name}" (${colSql}) VALUES ${ph}`;
+    let batch: any[] = [];
+    for (const row of data) {
+      batch.push(env.COPY_DB.prepare(insertSql).bind(...cols.map(c => row[c] ?? null)));
+      if (batch.length >= 50) { await env.COPY_DB.batch(batch); rows += batch.length; batch = []; }
+    }
+    if (batch.length) { await env.COPY_DB.batch(batch); rows += batch.length; }
+  }
+  return { tables: (tblRows as any[]).length, rows };
+}
 
 // --- FISC ECRITURES GENERATOR ---
 function generateFISCecritures(dmi: any, dossierId: string, societeId: string) {
