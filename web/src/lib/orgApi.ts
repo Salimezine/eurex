@@ -297,6 +297,16 @@ export const orgApi = {
   // Clients — exercice optionnel : dossier de cet exercice (tous statuts), sans lui = dernier en_cours
   getClients: (exercice?: number | null) => req<OrgClient[]>(`/org/clients${exercice ? `?exercice=${exercice}` : ''}`),
   createClient: (d: any) => req<any>('/org/clients', { method: 'POST', body: JSON.stringify(d) }),
+  // Import en masse de clients (CSV parsé côté UI) : création + dossier(s) optionnel(s)
+  importClients: (payload: { clients: any[]; create_dossier?: boolean; exercice?: number }) =>
+    req<{
+      created: { line: number; name: string; id: string; dossier_id: string | null }[];
+      skipped: { line: number; name: string; reason: string }[];
+      errors: { line: number; name: string; error: string }[];
+      warnings: { line: number; name: string; error: string }[];
+      counts: { created: number; dossiers: number; skipped: number; errors: number; warnings: number };
+      exercice: number | null;
+    }>('/org/clients/import', { method: 'POST', body: JSON.stringify(payload) }),
     reassignClient: (id: string, comptableId: string) =>
       req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
     updateClient: (id: string, patch: { person_type?: string | null; export_status?: string | null }) =>

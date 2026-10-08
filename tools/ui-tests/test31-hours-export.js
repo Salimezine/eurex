@@ -29,7 +29,7 @@ async function loginAs(p, email, pwd) {
   await p.waitForTimeout(1500);
 }
 // lignes « données » du CSV (hors en-tête et hors ligne TOTAL)
-const dataLines = body => body.replace(/^\uFEFF/, '').split('\r\n').filter(l => l && !l.startsWith('"date"') && !l.startsWith('"","","","TOTAL"'));
+const dataLines = body => body.replace(/^\uFEFF/, '').split('\r\n').filter(l => l && !l.startsWith('"date"') && !l.includes('"TOTAL"'));
 
 (async () => {
   const lh = await j(API + '/api/org/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EXP.email, password: EXP.pwd }) });
@@ -66,7 +66,9 @@ const dataLines = body => body.replace(/^\uFEFF/, '').split('\r\n').filter(l => 
     ok(a1.body.includes('EXP-NOTE-' + ts) && a1.body.includes('EXP-EXPNOTE-' + ts), 'A1e: les 2 saisies (Salim + expert) sont exportées');
     ok(a1.body.includes('""quote""'), 'A1f: échappement des guillemets (note avec ")');
     ok(a1.body.includes('"TOTAL"'), 'A1g: ligne TOTAL présente');
-    ok(dataLines(a1.body).length === 2, 'A1h: exactement 2 lignes de données (' + dataLines(a1.body).length + ')');
+    const lines1 = dataLines(a1.body);
+    if (lines1.length !== 2) console.log('DEBUG dataLines(' + lines1.length + '):', JSON.stringify(lines1, null, 1).slice(0, 1500));
+    ok(lines1.length === 2, 'A1h: exactement 2 lignes de données (' + lines1.length + ')');
 
     const a2 = await getRaw(EXP_URL + '?exercice=2026', HE);
     ok(a2.s === 200 && dataLines(a2.body).length === 2, 'A2: filtre exercice=2026 garde les 2 saisies');

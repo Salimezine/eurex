@@ -2131,6 +2131,70 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ id, name, person_type: pType, export_status: eStatus }, 201);
       }
 
+      // --- ORG: IMPORT EN MASSE DE CLIENTS (CSV parsé côté UI -> JSON) ---
+      if (path === '/api/org/clients/import' && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: "L'import de clients est réservée à l'expert" }, 403);
+        const body = await request.json() as any;
+        const rows = Array.isArray(body?.clients) ? body.clients : null;
+        if (!rows) return json({ error: 'Liste clients requise' }, 400);
+        if (!rows.length) return json({ error: 'Aucune ligne à importer' }, 400);
+        if (rows.length > 500) return json({ error: 'Maximum 500 lignes par import' }, 400);
+        const createDossier = body?.create_dossier !== false;
+        const exYear = Number(body?.exercice) || new Date(Date.now() + 3600000).getUTCFullYear();
+        const created: any[] = [];
+        const skipped: any[] = [];
+        const errors: any[] = [];
+        const warnings: any[] = [];
+        let dossierCount = 0;
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i] || {};
+          const line = Number(row.line) || i + 1;
+          const name = String(row.name || '').trim().slice(0, 200);
+          if (!name) { errors.push({ line, name: '', error: 'Nom requis' }); continue; }
+          let eStatus: string | null = null;
+          if (row.export_status) {
+            if (!EXPORT_STATUSES.includes(row.export_status)) { errors.push({ line, name, error: 'Statut export invalide' }); continue; }
+            eStatus = row.export_status;
+          }
+          const email = row.contact_email ? String(row.contact_email).trim() : null;
+          if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errors.push({ line, name, error: 'Email invalide' }); continue; }
+          let compId: string | null = row.assigned_comptable_id ? String(row.assigned_comptable_id).trim() : null;
+          if (compId) {
+            const comp = await env.DB.prepare("SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = 'comptable' AND is_active = 1").bind(compId, user.organization_id).first();
+            if (!comp) { errors.push({ line, name, error: 'Comptable introuvable' }); continue; }
+          }
+          const dup = await env.DB.prepare('SELECT id FROM org_clients WHERE organization_id = ? AND name = ?').bind(user.organization_id, name).first();
+          if (dup) { skipped.push({ line, name, reason: 'Client déjà existant' }); continue; }
+          const id = genId();
+          await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone, person_type, export_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(id, user.organization_id, compId, name, row.matricule_fiscal ? String(row.matricule_fiscal).trim() : null, email, row.contact_phone ? String(row.contact_phone).trim() : null,
+              row.person_type === 'morale' || row.person_type === 'physique' ? row.person_type : null, eStatus).run();
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name, import: true })).run();
+          let dossierId: string | null = null;
+          if (createDossier) {
+            if (!compId) {
+              warnings.push({ line, name, error: 'Aucun comptable affecté : client créé sans dossier' });
+            } else {
+              try {
+                dossierId = await createDossierWithTasks(env, { orgId: user.organization_id, clientId: id, exercice: exYear, compId, actorId: user.id, actorName: user.full_name });
+                dossierCount++;
+              } catch (e: any) {
+                warnings.push({ line, name, error: 'Dossier non créé : ' + (e?.message || 'erreur') });
+              }
+            }
+          }
+          created.push({ line, name, id, dossier_id: dossierId });
+        }
+        return json({
+          created, skipped, errors, warnings,
+          counts: { created: created.length, dossiers: dossierCount, skipped: skipped.length, errors: errors.length, warnings: warnings.length },
+          exercice: createDossier ? exYear : null,
+        }, 201);
+      }
+
       const orgClientMatch = path.match(/^\/api\/org\/clients\/([^/]+)$/);
       if (orgClientMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
