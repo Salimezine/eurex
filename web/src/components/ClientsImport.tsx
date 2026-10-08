@@ -102,7 +102,7 @@ export function parseClientsCsv(text: string, comptables: OrgComptable[]): { row
 
 const TEMPLATE = [
   'name;matricule_fiscal;contact_email;contact_phone;comptable;export_status',
-  'Exemple SARL;12345678/A/M/000;contact@exemple.tn;+216 71 000 000;salim@eurex.tn;exportatrice',
+  'Exemple SARL;12345678/A/M/000;contact@exemple.tn;+216 71 000 000;salim.ezzine@eurextunisie.com;exportatrice',
   'Exemple 2;99887766;info@exemple2.tn;;Salim;semi_exportatrice',
 ].join('\r\n');
 
@@ -204,7 +204,7 @@ export default function ClientsImport({ comptables, onImported }: { comptables: 
               onChange={e => { setText(e.target.value); setResult(null); }}
               data-testid="import-textarea"
               rows={6}
-              placeholder={'name;matricule_fiscal;comptable;export_status\nSARL Alpha;12345678/A/M/000;salim@eurex.tn;exportatrice'}
+              placeholder={'name;matricule_fiscal;comptable;export_status\nSARL Alpha;12345678/A/M/000;salim.ezzine@eurextunisie.com;exportatrice'}
               className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-purple-500 outline-none"
             />
 

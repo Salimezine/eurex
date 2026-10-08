@@ -1,9 +1,9 @@
 const { chromium } = require('playwright');
 const BASE = process.env.BASE;
 const API = 'https://eurex-api.ezzinesalim21.workers.dev';
-const EXP = { email: 'expert@eurex.tn', pwd: 'expert1234567' };
-const SAL = { email: 'salim@eurex.tn', pwd: 'salim1234567' };
-const SAM = { email: 'samar@eurex.tn', pwd: 'samar1234567' };
+const EXP = { email: 'omar.bouhlila@eurextunisie.com', pwd: 'expert1234567' };
+const SAL = { email: 'salim.ezzine@eurextunisie.com', pwd: 'salim1234567' };
+const SAM = { email: 'samar.daboussi@eurextunisie.com', pwd: 'samar1234567' };
 let fails = 0;
 const ok = (c, m) => { console.log((c ? 'PASS: ' : 'FAIL: ') + m); if (!c) fails++; };
 async function j(url, opt) {

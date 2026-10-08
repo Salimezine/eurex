@@ -1,8 +1,8 @@
 const { chromium } = require('playwright');
 const BASE = process.env.BASE;
 const API = 'https://eurex-api.ezzinesalim21.workers.dev';
-const EXP = { email: 'expert@eurex.tn', pwd: 'expert1234567' };
-const SAL = { email: 'salim@eurex.tn', pwd: 'salim1234567' };
+const EXP = { email: 'omar.bouhlila@eurextunisie.com', pwd: 'expert1234567' };
+const SAL = { email: 'salim.ezzine@eurextunisie.com', pwd: 'salim1234567' };
 let fails = 0;
 const ok = (c, m) => { console.log((c ? 'PASS: ' : 'FAIL: ') + m); if (!c) fails++; };
 async function j(url, opt) {
@@ -105,7 +105,7 @@ async function loginAs(p, email, pwd) {
       await page.waitForSelector('[data-testid="import-modal"]', { timeout: 8000 });
       ok(true, 'B1b: modale d\'import ouverte');
 
-      const csv = `name;comptable;export_status\n${uiA};salim@eurex.tn;exportatrice\n${uiB};;`;
+      const csv = `name;comptable;export_status\n${uiA};salim.ezzine@eurextunisie.com;exportatrice\n${uiB};;`;
       await page.fill('[data-testid="import-textarea"]', csv);
       await page.click('[data-testid="import-analyze"]');
       await page.waitForSelector('[data-testid="import-preview-row"]', { timeout: 8000 });

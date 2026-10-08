@@ -2221,6 +2221,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (rows.length > 500) return json({ error: 'Maximum 500 lignes par import' }, 400);
         const createDossier = body?.create_dossier !== false;
         const exYear = Number(body?.exercice) || new Date(Date.now() + 3600000).getUTCFullYear();
+        // Prefetch en 3 lectures seulement (plan gratuit : max 50 lectures par invocation) —
+        // ensuite le traitement par ligne n'emt que des ecritures.
+        const { results: existingClients } = await env.DB.prepare('SELECT name FROM org_clients WHERE organization_id = ?').bind(user.organization_id).all();
+        const existingNames = new Set((existingClients as any[]).map(r => String(r.name)));
+        const { results: compRows } = await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND role = 'comptable' AND is_active = 1").bind(user.organization_id).all();
+        const validComps = new Set((compRows as any[]).map(r => String(r.id)));
+        const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(user.organization_id).all();
+        const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
         const created: any[] = [];
         const skipped: any[] = [];
         const errors: any[] = [];
@@ -2239,32 +2247,56 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const email = row.contact_email ? String(row.contact_email).trim() : null;
           if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errors.push({ line, name, error: 'Email invalide' }); continue; }
           let compId: string | null = row.assigned_comptable_id ? String(row.assigned_comptable_id).trim() : null;
-          if (compId) {
-            const comp = await env.DB.prepare("SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = 'comptable' AND is_active = 1").bind(compId, user.organization_id).first();
-            if (!comp) { errors.push({ line, name, error: 'Comptable introuvable' }); continue; }
-          }
-          const dup = await env.DB.prepare('SELECT id FROM org_clients WHERE organization_id = ? AND name = ?').bind(user.organization_id, name).first();
-          if (dup) { skipped.push({ line, name, reason: 'Client déjà existant' }); continue; }
+          if (compId && !validComps.has(compId)) { errors.push({ line, name, error: 'Comptable introuvable' }); continue; }
+          if (existingNames.has(name)) { skipped.push({ line, name, reason: 'Client déjà existant' }); continue; }
+          existingNames.add(name);
           const id = genId();
-          await env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone, person_type, export_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(id, user.organization_id, compId, name, row.matricule_fiscal ? String(row.matricule_fiscal).trim() : null, email, row.contact_phone ? String(row.contact_phone).trim() : null,
-              row.person_type === 'morale' || row.person_type === 'physique' ? row.person_type : null, eStatus).run();
-          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name, import: true })).run();
-          let dossierId: string | null = null;
-          if (createDossier) {
-            if (!compId) {
-              warnings.push({ line, name, error: 'Aucun comptable affecté : client créé sans dossier' });
-            } else {
-              try {
-                dossierId = await createDossierWithTasks(env, { orgId: user.organization_id, clientId: id, exercice: exYear, compId, actorId: user.id, actorName: user.full_name });
-                dossierCount++;
-              } catch (e: any) {
-                warnings.push({ line, name, error: 'Dossier non créé : ' + (e?.message || 'erreur') });
+          try {
+            const stmts: any[] = [
+              env.DB.prepare('INSERT INTO org_clients (id, organization_id, assigned_comptable_id, name, matricule_fiscal, contact_email, contact_phone, person_type, export_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                .bind(id, user.organization_id, compId, name, row.matricule_fiscal ? String(row.matricule_fiscal).trim() : null, email, row.contact_phone ? String(row.contact_phone).trim() : null,
+                  row.person_type === 'morale' || row.person_type === 'physique' ? row.person_type : null, eStatus),
+              env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                .bind(genId(), user.organization_id, user.id, user.full_name, 'client_created', 'client', id, JSON.stringify({ name, import: true })),
+            ];
+            let dossierId: string | null = null;
+            if (createDossier && compId) {
+              dossierId = genId();
+              stmts.push(env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(dossierId, id, exYear));
+              for (const tmpl of templates as any[]) {
+                // Modele rattache a un client precis : ignore pour les autres dossiers
+                if (tmpl.client_id && tmpl.client_id !== id) continue;
+                const months: (number | null)[] = tmpl.month ? [tmpl.month] :
+                  tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] :
+                  tmpl.frequency === 'trimestrielle' ? [1, 4, 7, 10] :
+                  [null];
+                for (const m of months) {
+                  const taskId = genId();
+                  stmts.push(env.DB.prepare("INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, 'a_faire', ?, ?, ?, ?, ?, datetime('now'))")
+                    .bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null));
+                  if (tmpl.requires_document) {
+                    const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exYear}` : tmpl.label;
+                    stmts.push(env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)')
+                      .bind(genId(), dossierId, taskId, docLabel));
+                  }
+                }
               }
+              stmts.push(env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                .bind(genId(), user.organization_id, user.id, user.full_name, 'dossier_created', 'dossier', dossierId, JSON.stringify({ exercice: exYear, client_id: id, assigned_comptable_id: compId, import: true })));
+              dossierCount++;
             }
+            // Ecritures par paquets (pas de lecture) — les taches d un nouveau dossier
+            // sont toutes a_faire : cached_progress reste 0 (defaut).
+            for (let s = 0; s < stmts.length; s += 50) {
+              await env.DB.batch(stmts.slice(s, s + 50));
+            }
+            if (createDossier && !compId) {
+              warnings.push({ line, name, error: 'Aucun comptable affecté : client créé sans dossier' });
+            }
+            created.push({ line, name, id, dossier_id: dossierId });
+          } catch (e: any) {
+            warnings.push({ line, name, error: 'Ligne échouée : ' + (e?.message || 'erreur') });
           }
-          created.push({ line, name, id, dossier_id: dossierId });
         }
         return json({
           created, skipped, errors, warnings,
