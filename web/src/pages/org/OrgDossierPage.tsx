@@ -97,6 +97,25 @@ export default function OrgDossierPage() {
     try { await orgApi.revokeGrant(dossier.id, grantId); load(); } catch (err: any) { alert(err.message); }
   };
 
+  // Tâche optionnelle « Reporting mensuel » : masquer (exclue des compteurs) / restaurer
+  const [reportingBusy, setReportingBusy] = useState(false);
+  const reportingIsHidden = !dossier?.reporting?.total || (dossier?.reporting?.hidden || 0) > 0;
+  const toggleReporting = async () => {
+    if (!dossier) return;
+    if (reportingIsHidden) {
+      if (!confirm('Restaurer la tâche « Reporting mensuel » dans ce dossier ?')) return;
+    } else {
+      if (!confirm('Masquer la tâche « Reporting mensuel » ? Elle sera exclue des compteurs et de la progression.')) return;
+    }
+    setReportingBusy(true);
+    try {
+      if (reportingIsHidden) await orgApi.restoreReporting(dossier.id);
+      else await orgApi.hideReporting(dossier.id);
+      load();
+    } catch (err: any) { alert(err.message); }
+    finally { setReportingBusy(false); }
+  };
+
   // Collaboration : taguer un autre comptable sur une tache (acces auto au dossier)
   const [collabCands, setCollabCands] = useState<OrgCollabCandidate[]>([]);
   const [collabTaskId, setCollabTaskId] = useState<string | null>(null);
@@ -759,6 +778,21 @@ export default function OrgDossierPage() {
       {/* Tab: Checklist */}
       {tab === 'checklist' && (
         <div className="space-y-2">
+          {/* Tâche optionnelle : Reporting mensuel (masquer / restaurer par dossier) */}
+          <div className="flex justify-end">
+            <button
+              data-testid="reporting-toggle"
+              onClick={toggleReporting}
+              disabled={reportingBusy}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all disabled:opacity-50 ${
+                reportingIsHidden
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300'
+                  : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300 hover:text-purple-700'
+              }`}
+            >
+              {reportingIsHidden ? '↩️ Restaurer « Reporting mensuel »' : '🙈 Masquer « Reporting mensuel »'}
+            </button>
+          </div>
           {/* Filtre par mois */}
           <div className="flex flex-wrap gap-1.5">
             {monthChips.map(chip => (
@@ -1155,6 +1189,33 @@ export default function OrgDossierPage() {
                         </button>
                       </div>
                     )}
+
+                    {/* Saisies temps de CETTE tâche : chaque ajout (avec sa note) s'inscrit ici */}
+                    {(() => {
+                      const entries = (dossier.time_entries || []).filter((e: any) => e.task_id === task.id);
+                      if (!entries.length) return null;
+                      return (
+                        <div className="mt-1 mb-3 space-y-1" onClick={e => e.stopPropagation()}>
+                          <span className="text-[11px] font-semibold text-gray-500" data-testid="task-time-entries">
+                            ⏱ Saisies ({entries.length})
+                          </span>
+                          {entries.map((e: any) => (
+                            <div
+                              key={e.id}
+                              data-testid="task-time-entry"
+                              className="flex flex-wrap items-center gap-2 text-[11px] bg-purple-50/50 border border-purple-100 rounded-lg px-2 py-1"
+                            >
+                              <span className="font-mono font-bold text-purple-700">{formatTime(e.duration_seconds || 0)}</span>
+                              <span className="text-gray-500">{e.user_name}</span>
+                              <span className="text-gray-400">
+                                {new Date(e.started_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              {e.note && <span className="text-purple-600 italic flex-1 min-w-[120px]">📝 {e.note}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     <div className="flex flex-wrap gap-2">
                       {/* Edit label button */}

@@ -61,6 +61,8 @@ export interface OrgDossier {
   is_granted?: boolean;
   grants?: OrgGrant[];
   running_timers?: OrgRunningTimer[];
+  // Tâche optionnelle « Reporting mensuel » : état masqué/restaurable du dossier
+  reporting?: { total: number; hidden: number };
 }
 
 // Chronos actifs du dossier : 1 par comptable (plusieurs en parallele sur une tache)
@@ -365,6 +367,12 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ due_date: dueDate }) }),
   setTaskVerifyDue: (dossierId: string, taskId: string, hours: number) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ verify_due_hours: hours }) }),
+
+  // Tâche optionnelle « Reporting mensuel » : masquer (compteurs exclus) / restaurer
+  hideReporting: (dossierId: string) =>
+    req<{ ok: boolean; count: number; reporting: { total: number; hidden: number } }>(`/org/dossiers/${dossierId}/reporting/hide`, { method: 'POST' }),
+  restoreReporting: (dossierId: string) =>
+    req<{ ok: boolean; count: number; created: number; reporting: { total: number; hidden: number } }>(`/org/dossiers/${dossierId}/reporting/restore`, { method: 'POST' }),
 
   // Fiscal alerts (échéances)
   getAlerts: (dossierId?: string) =>
