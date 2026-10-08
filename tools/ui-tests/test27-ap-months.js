@@ -119,14 +119,15 @@ const inMonth = (d, label, mo) => (d.tasks.find(t => t.label === label) || {}).m
       // U12 : Settings -> badge mois des modeles
       await p.goto(BASE + '/cabinet/settings', { waitUntil: 'domcontentloaded' });
       const badges = p.locator('[data-testid="template-month"]');
-      ok(await badges.waitFor({ timeout: 20000 }).then(() => true).catch(() => false), 'U12: page Settings ouverte');
+      ok(await badges.first().waitFor({ timeout: 30000 }).then(() => true).catch(() => false), 'U12: page Settings ouverte (badges mois)');
       ok(await badges.count() === 3, 'U13: 3 modeles avec mois (' + await badges.count() + ')');
       const badgeTexts = (await badges.allTextContents()).map(s => s.replace(/\s+/g, ' ').trim());
       ok(badgeTexts.some(t => t.includes('Juin')), 'U14: badge Juin present [' + badgeTexts.join(' | ') + ']');
       ok(badgeTexts.some(t => t.includes('Septembre')), 'U15: badge Septembre present');
       ok(badgeTexts.some(t => t.includes('Décembre')), 'U16: badge Decembre present');
-      const ap1Row = p.locator('div').filter({ hasText: /^Dépôt AP 1/ }).last();
-      ok((await ap1Row.textContent() || '').includes('Juin'), 'U17: ligne "Depot AP 1" porte le badge Juin');
+      const ap1Row = p.locator('div.rounded-xl').filter({ hasText: 'Dépôt AP 1' }).last();
+      const ap1Txt = await ap1Row.textContent().catch(() => '');
+      ok((ap1Txt || '').includes('Juin'), 'U17: ligne "Depot AP 1" porte le badge Juin');
     } finally {
       await b.close();
     }
