@@ -159,6 +159,8 @@ async function createDossierWithTasks(env: Env, opts: { orgId: string; clientId:
   const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
   const { results: templates } = await env.DB.prepare('SELECT * FROM org_task_templates WHERE organization_id = ? ORDER BY order_index').bind(orgId).all();
   for (const tmpl of templates as any[]) {
+    // Modele rattache a un client precis : ignore pour les autres dossiers
+    if (tmpl.client_id && tmpl.client_id !== clientId) continue;
     // Modele rattache a un mois precis (ex: Depots AP) : un seul exemplaire dans ce mois
     const months: (number | null)[] = tmpl.month ? [tmpl.month] :
       tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] :
@@ -2325,6 +2327,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('DELETE FROM org_task_collaborators WHERE task_id IN (SELECT id FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?))').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_audit_log WHERE target_id = ? OR target_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId, delId).run();
+        await env.DB.prepare('DELETE FROM org_task_templates WHERE client_id = ?').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_dossiers WHERE client_id = ?').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_clients WHERE id = ?').bind(delId).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_deleted', 'client', delId, JSON.stringify({ name: client.name })).run();
@@ -3905,19 +3908,23 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       if (path === '/api/org/templates' && method === 'GET') {
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
-        const { results } = await env.DB.prepare('SELECT t.*, u.full_name as assigned_comptable_name FROM org_task_templates t LEFT JOIN org_users u ON t.assigned_comptable_id = u.id WHERE t.organization_id = ? ORDER BY t.order_index').bind(user.organization_id).all();
+        const { results } = await env.DB.prepare('SELECT t.*, u.full_name as assigned_comptable_name, cl.name as client_name FROM org_task_templates t LEFT JOIN org_users u ON t.assigned_comptable_id = u.id LEFT JOIN org_clients cl ON t.client_id = cl.id WHERE t.organization_id = ? ORDER BY t.order_index').bind(user.organization_id).all();
         return json(results);
       }
       if (path === '/api/org/templates' && method === 'POST') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { label, requires_document, assigned_comptable_id, frequency, export_scope, month } = await request.json() as any;
+        const { label, requires_document, assigned_comptable_id, frequency, export_scope, month, client_id } = await request.json() as any;
         if (!label) return json({ error: 'Libellé requis' }, 400);
         if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
         if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
         if (month !== undefined && month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) return json({ error: 'Mois invalide (1 à 12)' }, 400);
         if (frequency !== undefined && frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') {
           return json({ error: 'Fréquence invalide' }, 400);
+        }
+        if (client_id !== undefined && client_id !== null) {
+          const cl = await env.DB.prepare('SELECT id FROM org_clients WHERE id = ? AND organization_id = ?').bind(client_id, user.organization_id).first();
+          if (!cl) return json({ error: 'Client introuvable' }, 400);
         }
         const tmplFreq = frequency === 'mensuelle' || frequency === 'trimestrielle' ? frequency : 'annuelle';
         if (assigned_comptable_id) {
@@ -3926,19 +3933,23 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const { results: maxOrder } = await env.DB.prepare('SELECT MAX(order_index) as mx FROM org_task_templates WHERE organization_id = ?').bind(user.organization_id).all() as any[];
         const id = genId();
-        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency, export_scope, month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq, export_scope === undefined ? null : parseExportScope(export_scope), month ?? null).run();
-        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq, export_scope: export_scope === undefined ? null : parseExportScope(export_scope), month: month ?? null }, 201);
+        await env.DB.prepare('INSERT INTO org_task_templates (id, organization_id, label, order_index, requires_document, assigned_comptable_id, frequency, export_scope, month, client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user.organization_id, label, (maxOrder[0]?.mx || 0) + 1, requires_document ? 1 : 0, assigned_comptable_id || null, tmplFreq, export_scope === undefined ? null : parseExportScope(export_scope), month ?? null, client_id || null).run();
+        return json({ id, label, assigned_comptable_id: assigned_comptable_id || null, frequency: tmplFreq, export_scope: export_scope === undefined ? null : parseExportScope(export_scope), month: month ?? null, client_id: client_id || null }, 201);
       }
       const orgTmplMatch = path.match(/^\/api\/org\/templates\/([^/]+)$/);
       if (orgTmplMatch && method === 'PATCH') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
-        const { assigned_comptable_id, label, requires_document, frequency, export_scope, month } = await request.json() as any;
+        const { assigned_comptable_id, label, requires_document, frequency, export_scope, month, client_id } = await request.json() as any;
         const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplMatch[1], user.organization_id).first() as any;
         if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
         if (month !== undefined && month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) return json({ error: 'Mois invalide (1 à 12)' }, 400);
         if (export_scope !== undefined && export_scope !== null && !Array.isArray(export_scope)) return json({ error: 'Portée export invalide' }, 400);
         if (Array.isArray(export_scope) && export_scope.some((s: any) => !EXPORT_STATUSES.includes(s))) return json({ error: 'Portée export invalide' }, 400);
+        if (client_id !== undefined && client_id !== null) {
+          const cl = await env.DB.prepare('SELECT id FROM org_clients WHERE id = ? AND organization_id = ?').bind(client_id, user.organization_id).first();
+          if (!cl) return json({ error: 'Client introuvable' }, 400);
+        }
         if (assigned_comptable_id !== undefined && assigned_comptable_id !== null) {
           const comp = await env.DB.prepare('SELECT id FROM org_users WHERE id = ? AND organization_id = ? AND role = ?').bind(assigned_comptable_id, user.organization_id, 'comptable').first();
           if (!comp) return json({ error: 'Comptable introuvable' }, 400);
@@ -3948,6 +3959,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (assigned_comptable_id !== undefined) { updates.push('assigned_comptable_id = ?'); binds.push(assigned_comptable_id || null); }
         if (label !== undefined && label.trim()) { updates.push('label = ?'); binds.push(label.trim()); }
         if (requires_document !== undefined) { updates.push('requires_document = ?'); binds.push(requires_document ? 1 : 0); }
+        if (client_id !== undefined) { updates.push('client_id = ?'); binds.push(client_id || null); }
         if (frequency !== undefined) {
           if (frequency !== 'mensuelle' && frequency !== 'trimestrielle' && frequency !== 'annuelle') return json({ error: 'Fréquence invalide' }, 400);
           updates.push('frequency = ?'); binds.push(frequency);
@@ -3959,8 +3971,44 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (updates.length === 0) return json({ error: 'Rien à modifier' }, 400);
         binds.push(orgTmplMatch[1], user.organization_id);
         await env.DB.prepare(`UPDATE org_task_templates SET ${updates.join(', ')} WHERE id = ? AND organization_id = ?`).bind(...binds).run();
-        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document, frequency, month })).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'template_updated', 'template', orgTmplMatch[1], JSON.stringify({ assigned_comptable_id: assigned_comptable_id !== undefined ? (assigned_comptable_id || null) : undefined, label, requires_document, frequency, month, client_id })).run();
         return json({ ok: true });
+      }
+      const orgTmplApplyMatch = path.match(/^\/api\/org\/templates\/([^/]+)\/apply$/);
+      if (orgTmplApplyMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const tmpl = await env.DB.prepare('SELECT * FROM org_task_templates WHERE id = ? AND organization_id = ?').bind(orgTmplApplyMatch[1], user.organization_id).first() as any;
+        if (!tmpl) return json({ error: 'Modèle non trouvé' }, 404);
+        // Dossiers encore ouverts (scope du cabinet, ou du client cible si le modele en a un)
+        let dSql = "SELECT d.id, d.exercice FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.status = 'en_cours'";
+        const dBinds: any[] = [user.organization_id];
+        if (tmpl.client_id) { dSql += ' AND c.id = ?'; dBinds.push(tmpl.client_id); }
+        dSql += ' ORDER BY c.name LIMIT 500';
+        const { results: dRows } = await env.DB.prepare(dSql).bind(...dBinds).all();
+        const months: (number | null)[] = tmpl.month ? [tmpl.month] :
+          tmpl.frequency === 'mensuelle' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] :
+          tmpl.frequency === 'trimestrielle' ? [1, 4, 7, 10] :
+          [null];
+        const orgMonthNames = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+        let created = 0;
+        for (const d of dRows as any[]) {
+          for (const m of months) {
+            const exists = await env.DB.prepare('SELECT 1 AS x FROM org_tasks WHERE dossier_id = ? AND label = ? AND COALESCE(month, 0) = COALESCE(?, 0)').bind(d.id, tmpl.label, m).first();
+            if (exists) continue;
+            const taskId = genId();
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, d.id, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
+            if (tmpl.requires_document) {
+              const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${d.exercice}` : tmpl.label;
+              await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), d.id, taskId, docLabel).run();
+            }
+            created++;
+          }
+          await orgRecalcProgress(env.DB, d.id);
+        }
+        const dossiers = (dRows as any[]).length;
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'template_applied\', \'template\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, tmpl.id, JSON.stringify({ label: tmpl.label, created, dossiers })).run();
+        return json({ ok: true, created, dossiers });
       }
       if (orgTmplMatch && method === 'DELETE') {
         const user = await verifyOrgToken(request);

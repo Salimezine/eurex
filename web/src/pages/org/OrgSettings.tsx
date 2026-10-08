@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { orgApi, OrgTemplate, OrgComptable, OrgFrequency } from '../../lib/orgApi';
+import { orgApi, OrgTemplate, OrgComptable, OrgFrequency, OrgClient } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import { monthLabel } from '../../lib/orgMonths';
@@ -34,6 +34,9 @@ export default function OrgSettings() {
   const [newRequiresDoc, setNewRequiresDoc] = useState(false);
   const [newAssignedComp, setNewAssignedComp] = useState('');
   const [newFrequency, setNewFrequency] = useState<OrgFrequency>('annuelle');
+  const [newMonth, setNewMonth] = useState('');
+  const [newClientId, setNewClientId] = useState('');
+  const [clients, setClients] = useState<OrgClient[]>([]);
   const [newCompName, setNewCompName] = useState('');
   const [newCompEmail, setNewCompEmail] = useState('');
   const [newCompPassword, setNewCompPassword] = useState('');
@@ -49,8 +52,8 @@ export default function OrgSettings() {
   const comps = comptables.filter(c => c.role === 'comptable');
 
   useEffect(() => {
-    Promise.all([orgApi.getTemplates(), orgApi.getComptables()])
-      .then(([t, c]) => { setTemplates(t); setComptables(c); })
+    Promise.all([orgApi.getTemplates(), orgApi.getComptables(), orgApi.getClients()])
+      .then(([t, c, cl]) => { setTemplates(t); setComptables(c); setClients(cl); })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
@@ -58,10 +61,12 @@ export default function OrgSettings() {
   const addTemplate = async () => {
     if (!newLabel.trim()) return;
     try {
-      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc, newAssignedComp || null, newFrequency);
+      await orgApi.createTemplate(newLabel.trim(), newRequiresDoc, newAssignedComp || null, newFrequency, newMonth ? Number(newMonth) : null, newClientId || null);
       setNewLabel('');
       setNewRequiresDoc(false);
       setNewAssignedComp('');
+      setNewMonth('');
+      setNewClientId('');
       setTemplates(await orgApi.getTemplates());
     } catch (err: any) {
       alert(err.message);
@@ -82,7 +87,27 @@ export default function OrgSettings() {
   const changeFrequency = async (id: string, frequency: OrgFrequency) => {
     try {
       await orgApi.updateTemplate(id, { frequency });
-      setTemplates(templates.map(t => t.id === id ? { ...t, frequency } : t));
+      // L'API detache le mois quand on passe en mensuelle/trimestrielle
+      setTemplates(templates.map(t => t.id === id ? { ...t, frequency, month: frequency === 'annuelle' ? t.month : null } : t));
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const changeMonth = async (id: string, month: number | null) => {
+    try {
+      await orgApi.updateTemplate(id, { month });
+      setTemplates(templates.map(t => t.id === id ? { ...t, month } : t));
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const applyTemplate = async (id: string) => {
+    if (!confirm('Créer cette tâche dans tous les dossiers ouverts qui ne l\'ont pas encore ?')) return;
+    try {
+      const r = await orgApi.applyTemplate(id);
+      alert(`${r.created} tâche(s) créée(s) dans ${r.dossiers} dossier(s)`);
     } catch (err: any) {
       alert(err.message);
     }
@@ -208,6 +233,7 @@ export default function OrgSettings() {
                 {t('templates.requires_doc')}
               </label>
               <select
+                data-testid="template-freq-new"
                 value={newFrequency}
                 onChange={e => setNewFrequency(e.target.value as OrgFrequency)}
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
@@ -216,6 +242,30 @@ export default function OrgSettings() {
                 <option value="annuelle">{t('templates.freq_annual')}</option>
                 <option value="trimestrielle">{t('templates.freq_quarterly')}</option>
                 <option value="mensuelle">{t('templates.freq_monthly')}</option>
+              </select>
+              <select
+                data-testid="template-month-new"
+                value={newMonth}
+                onChange={e => setNewMonth(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                title="Mois précis de la tâche (optionnel)"
+              >
+                <option value="">Mois : — (selon fréquence)</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => (
+                  <option key={m} value={m}>{monthLabel(m)}</option>
+                ))}
+              </select>
+              <select
+                data-testid="template-client-new"
+                value={newClientId}
+                onChange={e => setNewClientId(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none max-w-[180px]"
+                title="Client cible (optionnel)"
+              >
+                <option value="">Client : tous les dossiers</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
               </select>
               <select
                 value={newAssignedComp}
@@ -237,7 +287,7 @@ export default function OrgSettings() {
           </div>
 
           {templates.map(tmpl => (
-            <div key={tmpl.id} className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3">
+            <div key={tmpl.id} data-testid="template-row" className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3">
               <span className="text-gray-300 text-sm">#{tmpl.order_index}</span>
               <span className="flex-1 text-sm font-medium text-gray-700">
                 {tmpl.label}
@@ -251,6 +301,28 @@ export default function OrgSettings() {
                   </span>
                 ) : null}
               </span>
+              <span
+                data-testid="template-target"
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border whitespace-nowrap ${
+                  tmpl.client_name ? 'bg-pink-50 text-pink-600 border-pink-100' : 'bg-gray-50 text-gray-500 border-gray-200'
+                }`}
+                title="Cible du modèle"
+              >
+                {tmpl.client_name ? `👤 ${tmpl.client_name}` : '🏢 Tous les dossiers'}
+              </span>
+              <select
+                data-testid="template-month-select"
+                value={tmpl.month || ''}
+                onChange={e => changeMonth(tmpl.id, e.target.value ? Number(e.target.value) : null)}
+                onClick={e => e.stopPropagation()}
+                className="border border-gray-200 rounded-lg px-2 py-1 text-[11px] focus:ring-2 focus:ring-purple-500 outline-none"
+                title="Mois précis de la tâche (— = selon fréquence)"
+              >
+                <option value="">Mois : auto</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => (
+                  <option key={m} value={m}>{monthLabel(m)}</option>
+                ))}
+              </select>
               <select
                 value={tmpl.frequency || 'annuelle'}
                 onChange={e => changeFrequency(tmpl.id, e.target.value as OrgFrequency)}
@@ -283,6 +355,14 @@ export default function OrgSettings() {
                   <option key={c.id} value={c.id}>{c.full_name}</option>
                 ))}
               </select>
+              <button
+                data-testid="template-apply"
+                onClick={() => applyTemplate(tmpl.id)}
+                className="p-1.5 text-gray-400 hover:text-purple-600 transition-colors"
+                title="Appliquer aux dossiers existants"
+              >
+                <RefreshCw size={14} />
+              </button>
               <button
                 onClick={() => deleteTemplate(tmpl.id)}
                 className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"

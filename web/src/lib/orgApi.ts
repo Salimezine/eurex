@@ -282,6 +282,9 @@ export interface OrgTemplate {
   month?: number | null;
   assigned_comptable_id: string | null;
   assigned_comptable_name: string | null;
+  // Modele rattache a UN client (null = tous les dossiers du cabinet)
+  client_id?: string | null;
+  client_name?: string | null;
 }
 
 export interface TimelineEvent {
@@ -505,9 +508,12 @@ export const orgApi = {
 
   // Templates
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),
-  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency, month?: number | null) =>
-    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle', month: month ?? null }) }),
-  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency; month?: number | null }) =>
+  createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency, month?: number | null, clientId?: string | null) =>
+    req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle', month: month ?? null, client_id: clientId || null }) }),
+  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency; month?: number | null; client_id?: string | null }) =>
     req<any>(`/org/templates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  // Application retroactive du modele aux dossiers encore ouverts (idempotent)
+  applyTemplate: (id: string) =>
+    req<{ ok: boolean; created: number; dossiers: number }>(`/org/templates/${id}/apply`, { method: 'POST' }),
   deleteTemplate: (id: string) => req<any>(`/org/templates/${id}`, { method: 'DELETE' }),
 };
