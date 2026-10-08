@@ -130,8 +130,10 @@ async function loginAs(p, email, pwd) {
       ok(dsUi.length === 1, 'B4b: dossier créé depuis l UI');
 
       await page.click('[data-testid="import-close"]');
+      await page.waitForTimeout(800);
+      await page.click('[data-testid="dash-tab-global"]');
       await page.waitForTimeout(1200);
-      ok((await page.locator('[data-testid="dossier-row"]:has-text("' + uiA + '")').count()) >= 1, 'B5: dossier visible dans la table du dashboard');
+      ok((await page.locator('[data-testid="dossier-row"]:has-text("' + uiA + '")').count()) >= 1, 'B5: dossier visible dans la table (vue globale)');
       ok(errors.length === 0, 'B6: aucune erreur JS (' + errors.length + ')');
     } catch (e) {
       ok(false, 'ERREUR UI: ' + e.message);
