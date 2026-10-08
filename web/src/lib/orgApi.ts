@@ -360,6 +360,10 @@ export const orgApi = {
     const qs = p.toString();
     return req<string>(`/org/hours/export${qs ? `?${qs}` : ''}`);
   },
+  // Rapport mensuel (synthese exportable) : perimetre gere par l'API (expert = cabinet, comptable = ses dossiers)
+  getMonthlyReport: (exercice: number, month: number) =>
+    req<any>(`/org/reports/monthly?exercice=${exercice}&month=${month}`),
+
   // Telechargement navigateur d'un CSV (blob -> ancre)
   downloadCsv: (csv: string, filename: string) => {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));

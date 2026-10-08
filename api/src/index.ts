@@ -3473,6 +3473,125 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true, unread: Number(unread?.n || 0) });
       }
 
+      // --- ORG: RAPPORT MENSUEL (synthèse exportable : état des dossiers + heures + échéances) ---
+      if (path === '/api/org/reports/monthly' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const sp = new URL(request.url).searchParams;
+        const nowTn = new Date(Date.now() + 3600000);
+        const curYear = nowTn.getUTCFullYear();
+        const curMonth = nowTn.getUTCMonth() + 1;
+        const exercice = Number(sp.get('exercice')) || curYear;
+        const month = Math.min(12, Math.max(1, Number(sp.get('month')) || curMonth));
+        const p2 = (n: number) => String(n).padStart(2, '0');
+        const mStart = `${exercice}-${p2(month)}-01`;
+        const mEnd = `${exercice}-${p2(month)}-${p2(new Date(Date.UTC(exercice, month, 0)).getUTCDate())}`;
+        const mNext = month === 12 ? `${exercice + 1}-01-01` : `${exercice}-${p2(month + 1)}-01`;
+        const todayStr = nowTn.toISOString().slice(0, 10);
+        // Retards = en retard à la date de rapport (passé) ou à aujourd'hui (mois courant)
+        const lateCutoff = mEnd < todayStr ? mNext : todayStr;
+        const MONTHS = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+        const isSup = isSupervisor(user.role);
+        // Périmètre : expert = tout le cabinet ; comptable = dossiers assignés + renforts actifs
+        const scope = isSup ? '' : ` AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now'))))`;
+        const scopeBinds = isSup ? [] : [user.id, user.id];
+
+        const { results: dRows } = await env.DB.prepare(
+          `SELECT d.id, d.status, d.exercice, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ?${scope} ORDER BY c.name`
+        ).bind(user.organization_id, exercice, ...scopeBinds).all();
+
+        const { results: tRows } = await env.DB.prepare(
+          `SELECT t.dossier_id, COUNT(*) as total, SUM(CASE WHEN t.status = 'fait' THEN 1 ELSE 0 END) as done FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND t.hidden = 0${scope} GROUP BY t.dossier_id`
+        ).bind(user.organization_id, exercice, ...scopeBinds).all();
+        const tByD = new Map((tRows as any[]).map(r => [String(r.dossier_id), r]));
+
+        const { results: docRows } = await env.DB.prepare(
+          `SELECT e.dossier_id, COUNT(*) as total, SUM(CASE WHEN e.received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents e JOIN org_dossiers d ON e.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ?${scope} GROUP BY e.dossier_id`
+        ).bind(user.organization_id, exercice, ...scopeBinds).all();
+        const docByD = new Map((docRows as any[]).map(r => [String(r.dossier_id), r]));
+
+        // Heures du mois (jour local TN = started_at + 60 min) ; le comptable n'a que les siennes
+        const hFrom = ` FROM org_time_entries te JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope}`;
+        const hBinds = [user.organization_id, exercice, mStart, mNext, ...(isSup ? [] : [user.id]), ...scopeBinds];
+        const { results: hDRows } = await env.DB.prepare(`SELECT te.dossier_id, COALESCE(SUM(te.duration_seconds), 0) as secs${hFrom} GROUP BY te.dossier_id`).bind(...hBinds).all();
+        const hByD = new Map((hDRows as any[]).map(r => [String(r.dossier_id), Number(r.secs) || 0]));
+        const { results: hURows } = await env.DB.prepare(
+          `SELECT te.user_id, u.full_name, COALESCE(SUM(te.duration_seconds), 0) as secs, COUNT(*) as entries FROM org_time_entries te JOIN org_users u ON te.user_id = u.id JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope} GROUP BY te.user_id ORDER BY secs DESC`
+        ).bind(...hBinds).all();
+
+        const { results: lateRows } = await env.DB.prepare(
+          `SELECT t.label, t.due_date, t.status, t.dossier_id, c.name || ' (' || d.exercice || ')' as dossier_label FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND t.hidden = 0 AND t.status != 'fait' AND t.due_date IS NOT NULL AND t.due_date < ?${scope} ORDER BY t.due_date ASC LIMIT 200`
+        ).bind(user.organization_id, exercice, lateCutoff, ...scopeBinds).all();
+
+        // Échéances dont une occurrence tombe dans le mois (expansion des récurrences)
+        let aScope = '';
+        const aBinds: any[] = [user.organization_id];
+        if (!isSup) {
+          aScope = ` AND a.dossier_id IS NOT NULL AND EXISTS (SELECT 1 FROM org_dossiers da JOIN org_clients ca ON da.client_id = ca.id WHERE da.id = a.dossier_id AND da.status = 'en_cours' AND (ca.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = da.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))`;
+          aBinds.push(user.id, user.id);
+        }
+        const { results: aRows } = await env.DB.prepare(`SELECT a.id, a.title, a.due_date, a.recurrence, a.months, a.done, a.dossier_id FROM org_fiscal_alerts a WHERE a.organization_id = ?${aScope} ORDER BY a.due_date ASC`).bind(...aBinds).all();
+        const dones = new Set<string>();
+        const alertIds = (aRows as any[]).map(r => String(r.id));
+        for (let i = 0; i < alertIds.length; i += 50) {
+          const chunk = alertIds.slice(i, i + 50);
+          const { results: dres } = await env.DB.prepare(`SELECT alert_id, due_date FROM org_alert_dones WHERE alert_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+          for (const d of dres as any[]) dones.add(`${d.alert_id}|${d.due_date}`);
+        }
+        const dLabel = new Map((dRows as any[]).map(r => [String(r.id), String(r.client_name) + ' (' + r.exercice + ')']));
+        const alerts: any[] = [];
+        for (const r of aRows as any[]) {
+          const base = { id: r.id, title: r.title, dossier_id: r.dossier_id, dossier_label: r.dossier_id ? (dLabel.get(String(r.dossier_id)) || null) : null };
+          if (!r.recurrence) {
+            if (String(r.due_date) >= mStart && String(r.due_date) <= mEnd) alerts.push({ ...base, due_date: r.due_date, done: !!r.done });
+            continue;
+          }
+          const [, am, ad] = String(r.due_date).split('-').map(Number);
+          let monthsArr: number[];
+          if (r.months) { try { monthsArr = JSON.parse(r.months); } catch { monthsArr = []; } }
+          else if (r.recurrence === 'mensuelle') monthsArr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+          else if (r.recurrence === 'trimestrielle') monthsArr = [am, (am + 2) % 12 + 1, (am + 5) % 12 + 1, (am + 8) % 12 + 1];
+          else monthsArr = [am];
+          if (!monthsArr.includes(month)) continue;
+          const dim = new Date(Date.UTC(exercice, month, 0)).getUTCDate();
+          const iso = `${exercice}-${p2(month)}-${p2(Math.min(ad, dim))}`;
+          alerts.push({ ...base, due_date: iso, done: dones.has(`${r.id}|${iso}`) });
+        }
+        alerts.sort((a, b) => a.due_date.localeCompare(b.due_date));
+
+        let tasksTotal = 0, tasksDone = 0, docsTotal = 0, docsReceived = 0, hoursSec = 0;
+        const dossierList = (dRows as any[]).map(d => {
+          const t = tByD.get(String(d.id)) as any;
+          const doc = docByD.get(String(d.id)) as any;
+          const tt = Number(t?.total || 0), td = Number(t?.done || 0);
+          const dt = Number(doc?.total || 0), dr = Number(doc?.received || 0);
+          const hs = hByD.get(String(d.id)) || 0;
+          const late = (lateRows as any[]).filter(x => String(x.dossier_id) === String(d.id)).length;
+          tasksTotal += tt; tasksDone += td; docsTotal += dt; docsReceived += dr; hoursSec += hs;
+          return { id: d.id, client_name: d.client_name, exercice: d.exercice, status: d.status, tasks_total: tt, tasks_done: td, tasks_late: late, docs_total: dt, docs_received: dr, hours_seconds: hs, progress: tt ? Math.round(td / tt * 1000) / 10 : 0 };
+        });
+
+        return json({
+          exercice, month, month_label: `${MONTHS[month - 1]} ${exercice}`,
+          generated_at: new Date().toISOString(),
+          scope: isSup ? 'cabinet' : 'comptable',
+          totals: {
+            dossiers: dossierList.length,
+            dossiers_clos: dossierList.filter(d => d.status === 'clos').length,
+            tasks_total: tasksTotal, tasks_done: tasksDone,
+            progress: tasksTotal ? Math.round(tasksDone / tasksTotal * 1000) / 10 : 0,
+            tasks_late: (lateRows as any[]).length,
+            docs_total: docsTotal, docs_received: docsReceived,
+            hours_seconds: hoursSec,
+            alerts_due: alerts.length, alerts_done: alerts.filter(a => a.done).length,
+          },
+          hours_by_user: (hURows as any[]).map(r => ({ user_id: r.user_id, full_name: r.full_name, seconds: Number(r.secs) || 0, entries: Number(r.entries) || 0 })),
+          dossiers: dossierList,
+          alerts,
+          late_tasks: (lateRows as any[]).map(x => ({ label: x.label, due_date: x.due_date, status: x.status, dossier_label: x.dossier_label })),
+        });
+      }
+
       // --- ORG: EXPERT — COMPTABLES ---
       if (path === '/api/org/comptables' && method === 'GET') {
         const user = await verifyOrgToken(request);

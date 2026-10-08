@@ -13,6 +13,7 @@ import OrgComptableDetail from './OrgComptableDetail';
 import OrgSearch from '../../components/OrgSearch';
 import OrgNotifications from '../../components/OrgNotifications';
 import OrgPlanning from './OrgPlanning';
+import OrgReport from './OrgReport';
 
 function OrgInner() {
   const { state } = useOrgAuth();
@@ -56,11 +57,22 @@ function OrgInner() {
           >
             📅 Planning
           </button>
+          <button
+            onClick={() => navigate('/cabinet/report')}
+            data-testid="report-nav"
+            title="Rapport mensuel (PDF / Excel)"
+            className={`mb-4 shrink-0 px-3 py-2.5 rounded-xl text-sm font-semibold border transition-all ${location.pathname.startsWith('/cabinet/report')
+              ? 'bg-purple-600 border-purple-600 text-white shadow-lg shadow-purple-200'
+              : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300 hover:text-purple-700'}`}
+          >
+            📊 Rapport
+          </button>
           <OrgNotifications />
         </div>
         <Routes>
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
           <Route path="/planning" element={<OrgPlanning />} />
+          <Route path="/report" element={<OrgReport />} />
           <Route path="/dossier/:id" element={<OrgDossierPage />} />
           <Route path="/settings" element={isExpert ? <OrgSettings /> : <Navigate to="/cabinet" />} />
           <Route path="/comptable/:id" element={isExpert ? <OrgComptableDetail /> : <Navigate to="/cabinet" />} />
