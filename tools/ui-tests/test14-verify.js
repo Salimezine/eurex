@@ -4,8 +4,9 @@ const BASE = process.env.BASE;
 let fails = 0;
 const ok = (c, m) => { console.log((c ? 'PASS: ' : 'FAIL: ') + m); if (!c) fails++; };
 
-const EXP_NON = { Tous:74, Annuel:10, Janv:6, 'Févr':5, Mars:5, Avr:6, Mai:5, Juin:5, Juil:6, 'Août':5, Sept:5, Oct:6, Nov:5, Déc:5 };
-const EXP_EXP = { Tous:84, Annuel:12, Janv:8, 'Févr':5, Mars:5, Avr:8, Mai:5, Juin:5, Juil:8, 'Août':5, Sept:5, Oct:8, Nov:5, Déc:5 };
+// AP 1/2/3 rattaches a juin/septembre/decembre (plus dans "Annuel")
+const EXP_NON = { Tous:74, Annuel:7, Janv:6, 'Févr':5, Mars:5, Avr:6, Mai:5, Juin:6, Juil:6, 'Août':5, Sept:6, Oct:6, Nov:5, Déc:6 };
+const EXP_EXP = { Tous:84, Annuel:9, Janv:8, 'Févr':5, Mars:5, Avr:8, Mai:5, Juin:6, Juil:8, 'Août':5, Sept:6, Oct:8, Nov:5, Déc:6 };
 const KEYS = ['Tous','Annuel','Janv','Févr','Mars','Avr','Mai','Juin','Juil','Août','Sept','Oct','Nov','Déc'];
 const CHIPS_RE = /^(Tous|Annuel|Janv\.?|Févr\.?|Mars|Avr\.?|Mai|Juin|Juil\.?|Août|Sept\.?|Oct\.?|Nov\.?|Déc\.?)\s*(\d+)$/;
 

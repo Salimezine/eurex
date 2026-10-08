@@ -62,7 +62,10 @@ const jlogin = email => j(API + '/api/org/auth/login', { method: 'POST', headers
     console.log('CLEANUP OK'); process.exit(1);
   }
   // expandre la tache -> panneau Validation
-  await p.locator('span', { hasText: t0.label }).first().click();
+  // (le lien depuis le dashboard ouvre deja la tache via ?task= ; re-cliquer la replierait)
+  if (!(await bodyText(p)).includes('Validation :')) {
+    await p.locator('span', { hasText: t0.label }).first().click();
+  }
   ok(await waitText(p, 'Validation :', true), 'V2: panneau Validation affiche');
   ok(await waitText(p, 'Fixer le délai', true), 'V3: bouton Fixer le delai (expert)');
   // fixer 6h
