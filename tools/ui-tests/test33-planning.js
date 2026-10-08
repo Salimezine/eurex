@@ -85,10 +85,14 @@ const nextPrefix = `${nextM.getUTCFullYear()}-${pad2(nextM.getUTCMonth() + 1)}`;
       ok(await page.locator('[data-testid="planning-page"]').count() === 1, 'B1c: page planning rendue');
 
       const cell20 = page.locator(`[data-testid="planning-day-${dayCell(20)}"]`);
-      ok(await cell20.count() === 1 && (await cell20.innerText()).includes(alertGlobal), 'B2: échéance globale le ' + dayCell(20));
       const cell12 = page.locator(`[data-testid="planning-day-${dayCell(12)}"]`);
-      ok(await cell12.count() === 1 && (await cell12.innerText()).includes(taskLabel), 'B3: tâche le ' + dayCell(12));
       const cell25 = page.locator(`[data-testid="planning-day-${dayCell(25)}"]`);
+      // la grille rend avant le feed : on attend les événements eux-mêmes
+      await cell20.locator('[data-testid="planning-event"]').first().waitFor({ timeout: 20000 }).catch(() => {});
+      await cell12.locator('[data-testid="planning-event"]').first().waitFor({ timeout: 20000 }).catch(() => {});
+      await cell25.locator('[data-testid="planning-event"]').first().waitFor({ timeout: 20000 }).catch(() => {});
+      ok(await cell20.count() === 1 && (await cell20.innerText()).includes(alertGlobal), 'B2: échéance globale le ' + dayCell(20));
+      ok(await cell12.count() === 1 && (await cell12.innerText()).includes(taskLabel), 'B3: tâche le ' + dayCell(12));
       ok(await cell25.count() === 1 && (await cell25.innerText()).includes(alertDossier), 'B4: échéance dossier le ' + dayCell(25));
 
       // Clic sur l'échéance liée au dossier -> ouvre le dossier
@@ -119,6 +123,9 @@ const nextPrefix = `${nextM.getUTCFullYear()}-${pad2(nextM.getUTCMonth() + 1)}`;
       const c20 = page.locator(`[data-testid="planning-day-${dayCell(20)}"]`);
       const c12 = page.locator(`[data-testid="planning-day-${dayCell(12)}"]`);
       const c25 = page.locator(`[data-testid="planning-day-${dayCell(25)}"]`);
+      await c12.locator('[data-testid="planning-event"]').first().waitFor({ timeout: 20000 }).catch(() => {});
+      await c25.locator('[data-testid="planning-event"]').first().waitFor({ timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(500);
       ok(await c20.count() === 1 && !(await c20.innerText()).includes(alertGlobal), 'C1: Salim ne voit PAS l échéance globale (portée)');
       ok(await c12.count() === 1 && (await c12.innerText()).includes(taskLabel), 'C2: Salim voit la tâche de son dossier');
       ok(await c25.count() === 1 && (await c25.innerText()).includes(alertDossier), 'C3: Salim voit l échéance de son dossier');
