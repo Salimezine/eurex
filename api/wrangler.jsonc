@@ -20,6 +20,10 @@
   "ai": {
     "binding": "AI"
   },
+  // 1er janvier 00:15 UTC : passage automatique au nouvel exercice
+  "triggers": {
+    "crons": ["15 0 1 1 *"]
+  },
   "vars": {
     "ENVIRONMENT": "production"
   }

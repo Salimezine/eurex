@@ -29,6 +29,8 @@ const translations: Record<string, Record<Lang, string>> = {
   'dash.blocked': { fr: 'Bloqué client', ar: 'محجوز لدى العميل' },
   'dash.open_dossier': { fr: 'Ouvrir le dossier', ar: 'فتح الملف' },
   'dash.since_days': { fr: 'depuis {n} jours', ar: 'منذ {n} أيام' },
+  'dash.exercice': { fr: 'Exercice', ar: 'السنة المالية' },
+  'dash.exercice_previous': { fr: 'exercice précédent', ar: 'سنة مالية سابقة' },
 
   // Status — 3 statuts visibles (En cours supprimé)
   'status.cloture': { fr: 'Clôturé', ar: 'مغلق' },

@@ -29,7 +29,8 @@ const restBadge = (daysLeft: number | null) => {
 // - badge rouge : nb de tâches créées dans les dernières 24h
 // - toast rouge : notification dès qu'une tâche apparaît pendant la session (refresh 30s)
 // - les liens pointent directement vers la tâche (?task=<id>) dans la page dossier
-export default function NouvellesTaches() {
+// - exercice optionnel : filtre la carte sur l'exercice choisi au dashboard
+export default function NouvellesTaches({ exercice }: { exercice?: number | null } = {}) {
   const [tasks, setTasks] = useState<OrgRecentTask[]>([]);
   const [toast, setToast] = useState<OrgRecentTask | null>(null);
   const knownIds = useRef<Set<string> | null>(null);
@@ -37,8 +38,12 @@ export default function NouvellesTaches() {
 
   useEffect(() => {
     let alive = true;
+    // changement d'exercice : on repart d'une liste propre (pas de toast fantome)
+    knownIds.current = null;
+    setToast(null);
+    setTasks([]);
     const pull = () => {
-      orgApi.getMyRecentTasks().then(r => {
+      orgApi.getMyRecentTasks(30, exercice).then(r => {
         if (!alive) return;
         const list = r.tasks || [];
         if (knownIds.current === null) {
@@ -63,7 +68,7 @@ export default function NouvellesTaches() {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, []);
+  }, [exercice]);
 
   // auto-masquage du toast
   useEffect(() => {

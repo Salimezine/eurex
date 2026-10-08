@@ -120,6 +120,7 @@ export interface OrgHoursMonth {
 
 export interface OrgMyHours {
   view: string;
+  exercice?: number | null;
   days: OrgHoursDay[];
   months: OrgHoursMonth[] | null;
   today: OrgHoursDay;
@@ -291,8 +292,8 @@ export interface TimelineEvent {
 }
 
 export const orgApi = {
-  // Clients
-  getClients: () => req<OrgClient[]>('/org/clients'),
+  // Clients — exercice optionnel : dossier de cet exercice (tous statuts), sans lui = dernier en_cours
+  getClients: (exercice?: number | null) => req<OrgClient[]>(`/org/clients${exercice ? `?exercice=${exercice}` : ''}`),
   createClient: (d: any) => req<any>('/org/clients', { method: 'POST', body: JSON.stringify(d) }),
     reassignClient: (id: string, comptableId: string) =>
       req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
@@ -329,14 +330,23 @@ export const orgApi = {
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}/collaborators`, { method: 'POST', body: JSON.stringify({ user_id: userId, days }) }),
   removeCollaborator: (dossierId: string, taskId: string, userId: string) =>
     req<{ ok: boolean; grant_revoked: boolean }>(`/org/dossiers/${dossierId}/tasks/${taskId}/collaborators/${userId}`, { method: 'DELETE' }),
-  // Mes heures : vues jours (7j) / mois / annee (realise vs norme 8h30)
-  getMyHours: (view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/me/hours?view=${view}`),
+  // Mes heures : vues jours (7j) / mois / annee (realise vs norme 8h30) — exercice optionnel
+  getMyHours: (view: 'days' | 'month' | 'year' = 'days', exercice?: number | null) =>
+    req<OrgMyHours>(`/org/me/hours?view=${view}${exercice ? `&exercice=${exercice}` : ''}`),
   // Heures d'un comptable (expert) — fiche comptable, memes vues
-  getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days') => req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}`),
-  // Nouvelles tâches des dossiers accessibles (dashboard)
-  getMyRecentTasks: (days: number = 30) => req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}`),
+  getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days', exercice?: number | null) =>
+    req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}${exercice ? `&exercice=${exercice}` : ''}`),
+  // Nouvelles tâches des dossiers accessibles (dashboard) — exercice optionnel
+  getMyRecentTasks: (days: number = 30, exercice?: number | null) =>
+    req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}${exercice ? `&exercice=${exercice}` : ''}`),
   // Taches en attente de verification (expert/manager) + validation en un clic
-  getTasksToVerify: () => req<{ tasks: OrgVerifyTask[] }>('/org/tasks/verify'),
+  getTasksToVerify: (exercice?: number | null) =>
+    req<{ tasks: OrgVerifyTask[] }>(`/org/tasks/verify${exercice ? `?exercice=${exercice}` : ''}`),
+  // Exercices presents sur les dossiers accessibles (options du selecteur du dashboard)
+  getExercices: () => req<{ exercices: number[] }>('/org/exercices'),
+  // Passage au nouvel exercice (auto : cron 1er janvier + securite au chargement)
+  rolloverExercices: (body: { year?: number; client_id?: string } = {}) =>
+    req<{ year: number; created: any[]; closed: any[] }>('/org/exercices/rollover', { method: 'POST', body: JSON.stringify(body) }),
   verifyTask: (dossierId: string, taskId: string) =>
     req<any>(`/org/dossiers/${dossierId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status: 'fait' }) }),
 
@@ -434,7 +444,7 @@ export const orgApi = {
     req<any>(`/org/comptables/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   updateProfile: (patch: { full_name?: string; email?: string }) =>
     req<any>('/org/auth/me', { method: 'PATCH', body: JSON.stringify(patch) }),
-  getAllDossiers: () => req<any[]>('/org/dossiers'),
+  getAllDossiers: (exercice?: number | null) => req<any[]>(`/org/dossiers${exercice ? `?exercice=${exercice}` : ''}`),
 
   // Templates
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),

@@ -10,6 +10,8 @@ import MesHeures from '../../components/MesHeures';
 import NouvellesTaches from '../../components/NouvellesTaches';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
 import { useCardMin } from '../../lib/useCardMin';
+import useExercice from '../../lib/useExercice';
+import ExerciceSelect from '../../components/ExerciceSelect';
 import { Users, BarChart3, AlertTriangle, Search, Filter, Plus, X, Pencil, Trash2, Save, ChevronUp, ChevronDown } from 'lucide-react';
 
 type Tab = 'comptables' | 'global';
@@ -58,19 +60,28 @@ export default function OrgDashboardExpert() {
   const [ecSaving, setEcSaving] = useState(false);
   // Carte "À vérifier" repliable (etage memorise)
   const { min: verifyMin, toggleMin: toggleVerifyMin } = useCardMin('eurex_verify_min');
+  // Exercice affiche : annee courante par defaut, choix memorise (retour au n-1)
+  const [exercice, setExercice] = useExercice();
+  const [exercices, setExercices] = useState<number[]>([]);
 
-  useEffect(() => {
+  const fetchDashboard = () =>
     Promise.all([
       orgApi.getComptables().then(onlyComptables),
-      orgApi.getAllDossiers(),
+      orgApi.getAllDossiers(exercice),
       orgApi.getClients(),
-    ]).then(([c, d, cl]) => {
+      orgApi.getExercices(),
+    ]).then(([c, d, cl, ex]) => {
       setComptables(c);
       setAllDossiers(d);
       setAllClients(cl);
+      const list = ex.exercices || [];
+      setExercices(list);
+      // Exercice choisi disparu (client supprime) : on retombe sur le plus recent
+      if (list.length && !list.includes(exercice)) setExercice(list[0]);
       setLoadError(false);
     }).catch(e => { console.error(e); setLoadError(true); }).finally(() => setLoading(false));
-  }, []);
+
+  useEffect(() => { fetchDashboard(); }, [exercice]);
 
   // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s (pausé si onglet cache)
   useEffect(() => {
@@ -82,11 +93,11 @@ export default function OrgDashboardExpert() {
 
   // Tâches à vérifier : indépendant du reste (un échec ne bloque pas le dashboard)
   useEffect(() => {
-    const loadVerify = () => orgApi.getTasksToVerify().then(r => setVerifyTasks(r.tasks || [])).catch(() => setVerifyTasks([]));
+    const loadVerify = () => orgApi.getTasksToVerify(exercice).then(r => setVerifyTasks(r.tasks || [])).catch(() => setVerifyTasks([]));
     loadVerify();
     const iv = setInterval(() => { if (!document.hidden) loadVerify(); }, 60000);
     return () => clearInterval(iv);
-  }, []);
+  }, [exercice]);
 
   const verifyOne = async (vt: OrgVerifyTask) => {
     if (!confirm(`Valider la tâche « ${vt.label} » (${vt.client_name}) ?`)) return;
@@ -104,16 +115,7 @@ export default function OrgDashboardExpert() {
   // Create dossier
   const load = () => {
     setLoading(true);
-    Promise.all([
-      orgApi.getComptables().then(onlyComptables),
-      orgApi.getAllDossiers(),
-      orgApi.getClients(),
-    ]).then(([c, d, cl]) => {
-      setComptables(c);
-      setAllDossiers(d);
-      setAllClients(cl);
-      setLoadError(false);
-    }).catch(e => { console.error(e); setLoadError(true); }).finally(() => setLoading(false));
+    fetchDashboard();
   };
 
   const createDossier = async () => {
@@ -221,6 +223,10 @@ export default function OrgDashboardExpert() {
           <button onClick={load} className="shrink-0 px-3 py-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors">Réessayer</button>
         </div>
       )}
+      {/* Selecteur d'exercice : filtre la table, KPIs, Nouvelles taches, A verifier, Mes heures */}
+      <div className="flex items-center justify-end">
+        <ExerciceSelect value={exercice} options={exercices} onChange={setExercice} />
+      </div>
       {/* KPIs — 2 catégories : fait / bloqué client */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
@@ -256,7 +262,7 @@ export default function OrgDashboardExpert() {
       </div>
 
       {/* Nouvelles tâches — dernières tâches ajoutées aux dossiers de l'organisation */}
-      <NouvellesTaches />
+      <NouvellesTaches exercice={exercice} />
 
       {/* Tâches à vérifier — faites par les comptables, en attente de validation */}
       {verifyTasks.length > 0 && (
@@ -313,7 +319,7 @@ export default function OrgDashboardExpert() {
       )}
 
       {/* Mes heures (les miennes) — realises vs norme 8h30, solde net de semaine */}
-      <MesHeures />
+      <MesHeures exercice={exercice} />
 
       {/* Échéances fiscales — alertes dates butoirs */}
       <OrgAlerts />

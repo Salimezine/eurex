@@ -9,6 +9,8 @@ import OrgAlerts from '../../components/OrgAlerts';
 import MesHeures from '../../components/MesHeures';
 import NouvellesTaches from '../../components/NouvellesTaches';
 import { EXPORT_LABELS } from '../../lib/orgAlerts';
+import useExercice from '../../lib/useExercice';
+import ExerciceSelect from '../../components/ExerciceSelect';
 import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search } from 'lucide-react';
 
 type SortKey = 'name' | 'progress' | 'blocked';
@@ -16,20 +18,31 @@ type SortKey = 'name' | 'progress' | 'blocked';
 export default function OrgDashboardComptable() {
   const [clients, setClients] = useState<OrgClient[]>([]);
   const [myGrants, setMyGrants] = useState<OrgMyGrant[]>([]);
+  const [exercices, setExercices] = useState<number[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>('blocked');
   const [search, setSearch] = useState('');
+  // Exercice affiche : annee courante par defaut, choix memorise (retour au n-1)
+  const [exercice, setExercice] = useExercice();
 
   const load = () => {
     setLoading(true);
-    Promise.all([orgApi.getClients(), orgApi.getMyGrants()])
-      .then(([cs, gs]) => { setClients(cs); setMyGrants(gs); setLoadError(false); })
+    Promise.all([orgApi.getClients(exercice), orgApi.getMyGrants(), orgApi.getExercices()])
+      .then(([cs, gs, ex]) => {
+        const list = ex.exercices || [];
+        setExercices(list);
+        // Exercice choisi disparu (client supprime) : on retombe sur le plus recent
+        if (list.length && !list.includes(exercice)) setExercice(list[0]);
+        setClients(cs);
+        setMyGrants(gs);
+        setLoadError(false);
+      })
       .catch(e => { console.error(e); setLoadError(true); })
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [exercice]);
 
   const filtered = clients
     .filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.matricule_fiscal?.includes(search))
@@ -38,6 +51,9 @@ export default function OrgDashboardComptable() {
       if (sort === 'progress') return a.progress - b.progress;
       return a.name.localeCompare(b.name);
     });
+
+  // Renforts limites a l'exercice affiche
+  const grantsVisible = myGrants.filter(g => !g.exercice || g.exercice === exercice);
 
   if (loading) return (
     <div className="space-y-4">
@@ -55,6 +71,7 @@ export default function OrgDashboardComptable() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-800">{t('dash.my_clients')}</h2>
         <div className="flex items-center gap-3">
+          <ExerciceSelect value={exercice} options={exercices} onChange={setExercice} />
           <span className="text-sm text-gray-500">{clients.length} client{clients.length > 1 ? 's' : ''}</span>
           <OrgAccountButton />
         </div>
@@ -69,23 +86,23 @@ export default function OrgDashboardComptable() {
       )}
 
       {/* Nouvelles tâches — dernières tâches ajoutées aux dossiers accessibles */}
-      <NouvellesTaches />
+      <NouvellesTaches exercice={exercice} />
 
       {/* Mes heures — realises vs norme 8h30 (lun-ven), repos sam-dim, solde net */}
-      <MesHeures />
+      <MesHeures exercice={exercice} />
 
       {/* Échéances fiscales — alertes dates butoirs */}
       <OrgAlerts />
 
       {/* Dossiers en renfort (acces temporaire ouvert par l'expert) */}
-      {myGrants.length > 0 && (
+      {grantsVisible.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2">
             🔧 Dossiers en renfort
             <span className="text-gray-400 font-normal">— accès temporaire ouvert par l'expert</span>
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {myGrants.map(g => (
+            {grantsVisible.map(g => (
               <Link
                 key={g.id}
                 to={`/cabinet/dossier/${g.dossier_id}`}

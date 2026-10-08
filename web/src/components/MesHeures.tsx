@@ -12,23 +12,28 @@ type View = 'days' | 'month' | 'year';
 // et solde net de semaine (rattrapage : le depassement d'un jour compense le ghyeb d'un autre).
 // 3 vues de periode : Jours (7 derniers) / Mois (jour par jour) / Annee (mois par mois).
 // Sans props : mes heures (/me/hours). Avec userId : heures d'un comptable (/comptables/{id}/hours).
+// exercice optionnel : filtre sur l'exercice choisi au dashboard (l'API force alors la vue annee).
 // Auto-suffisant : fetch au montage + rafraichissement 60s (pausé si onglet cache).
-export default function MesHeures({ userId, title }: { userId?: string; title?: string } = {}) {
+export default function MesHeures({ userId, title, exercice }: { userId?: string; title?: string; exercice?: number | null } = {}) {
   const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
   const { min, toggleMin } = useCardMin('eurex_heures_min');
 
   const fetchHours = (v: View) =>
-    (userId ? orgApi.getComptableHours(userId, v) : orgApi.getMyHours(v)).then(setHours).catch(() => {});
+    (userId ? orgApi.getComptableHours(userId, v, exercice) : orgApi.getMyHours(v, exercice)).then(h => {
+      // l'API impose la vue "annee" sur un exercice passe : on aligne les onglets
+      if (h && h.view && h.view !== v) setView(h.view as View);
+      setHours(h);
+    }).catch(() => {});
 
-  useEffect(() => { fetchHours(view); }, [view, userId]);
+  useEffect(() => { fetchHours(view); }, [view, userId, exercice]);
 
   useEffect(() => {
     const tick = () => { if (!document.hidden) fetchHours(view); };
     const iv = setInterval(tick, 60000);
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', tick); };
-  }, [view, userId]);
+  }, [view, userId, exercice]);
 
   const fmtHm = (sec?: number) => {
     const s = Math.max(0, Math.floor(sec || 0));
