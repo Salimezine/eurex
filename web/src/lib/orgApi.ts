@@ -338,6 +338,29 @@ export const orgApi = {
   // Heures d'un comptable (expert) — fiche comptable, memes vues
   getComptableHours: (userId: string, view: 'days' | 'month' | 'year' = 'days', exercice?: number | null) =>
     req<OrgMyHours>(`/org/comptables/${userId}/hours?view=${view}${exercice ? `&exercice=${exercice}` : ''}`),
+
+  // Export CSV des heures (CSV « ; » + BOM) : mes heures (comptable) / tout le cabinet ou un comptable (expert)
+  exportHoursCsv: (opts: { exercice?: number | null; user_id?: string; dossier_id?: string; year?: number; month?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.exercice) p.set('exercice', String(opts.exercice));
+    if (opts.year) p.set('year', String(opts.year));
+    if (opts.month) p.set('month', String(opts.month));
+    if (opts.user_id) p.set('user_id', opts.user_id);
+    if (opts.dossier_id) p.set('dossier_id', opts.dossier_id);
+    const qs = p.toString();
+    return req<string>(`/org/hours/export${qs ? `?${qs}` : ''}`);
+  },
+  // Telechargement navigateur d'un CSV (blob -> ancre)
+  downloadCsv: (csv: string, filename: string) => {
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
   // Nouvelles tâches des dossiers accessibles (dashboard) — exercice optionnel
   getMyRecentTasks: (days: number = 30, exercice?: number | null) =>
     req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}${exercice ? `&exercice=${exercice}` : ''}`),

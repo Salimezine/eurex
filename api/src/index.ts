@@ -2495,6 +2495,64 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json(await buildHoursPayload(env, user.id, view, exParam ? Number(exParam) : null));
       }
 
+      // --- ORG: EXPORT DES HEURES (CSV « ; » + BOM, lisible par Excel FR) ---
+      if (path === '/api/org/hours/export' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const sp = new URL(request.url).searchParams;
+        const sup = isSupervisor(user.role);
+        const yearF = sp.get('year') ? Number(sp.get('year')) : null;
+        const monthF = sp.get('month') ? Number(sp.get('month')) : null;
+        const exF = sp.get('exercice') ? Number(sp.get('exercice')) : null;
+        const dossierF = sp.get('dossier_id');
+        // Portee : expert/manager = tout le cabinet (ou un comptable via user_id) ; comptable = ses heures
+        const targetUser = sup ? (sp.get('user_id') || null) : user.id;
+        const binds: any[] = [user.organization_id];
+        let where = 'WHERE c.organization_id = ? AND te.stopped_at IS NOT NULL';
+        if (targetUser) { where += ' AND te.user_id = ?'; binds.push(targetUser); }
+        if (dossierF) { where += ' AND te.dossier_id = ?'; binds.push(dossierF); }
+        if (yearF) { where += " AND strftime('%Y', datetime(te.started_at, '+60 minutes')) = ?"; binds.push(String(yearF)); }
+        if (monthF) { where += " AND strftime('%m', datetime(te.started_at, '+60 minutes')) = ?"; binds.push(String(monthF).padStart(2, '0')); }
+        if (exF) { where += ' AND d.exercice = ?'; binds.push(exF); }
+        const { results } = await env.DB.prepare(
+          `SELECT te.started_at, te.stopped_at, te.duration_seconds, te.note, COALESCE(u.full_name, te.user_id) as user_name,
+                  t.label as task_label, d.exercice, c.name as client_name, te.dossier_id
+           FROM org_time_entries te
+           JOIN org_dossiers d ON d.id = te.dossier_id
+           JOIN org_clients c ON c.id = d.client_id
+           LEFT JOIN org_users u ON u.id = te.user_id
+           LEFT JOIN org_tasks t ON t.id = te.task_id
+           ${where}
+           ORDER BY te.started_at ASC
+           LIMIT 10000`
+        ).bind(...binds).all();
+        const rows = results as any[];
+        const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const pad2 = (n: number) => String(n).padStart(2, '0');
+        // started_at/stopped_at sont en UTC : on convertit en heure Tunisie (UTC+1)
+        const local = (s: any) => {
+          if (!s) return '';
+          const d = new Date(Date.parse(String(s).replace(' ', 'T') + 'Z') + 3600000);
+          return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+        };
+        const hm = (sec: number) => {
+          const s = Math.max(0, Math.floor(sec || 0));
+          return `${Math.floor(s / 3600)}h${pad2(Math.floor((s % 3600) / 60))}`;
+        };
+        const lines = [['date', 'debut', 'fin', 'duree', 'client', 'dossier', 'exercice', 'tache', 'collaborateur', 'note'].join(';')];
+        let totalSec = 0;
+        for (const r of rows) {
+          const secs = Number(r.duration_seconds) || 0;
+          totalSec += secs;
+          const deb = local(r.started_at);
+          lines.push([deb.slice(0, 10), deb, local(r.stopped_at), hm(secs), r.client_name, r.dossier_id, r.exercice, r.task_label || '', r.user_name, r.note || ''].map(esc).join(';'));
+        }
+        lines.push(['', '', '', 'TOTAL', '', '', '', '', '', hm(totalSec)].map(esc).join(';'));
+        const csv = '\uFEFF' + lines.join('\r\n');
+        const fname = `heures_${exF || yearF || 'tout'}${monthF ? '-' + pad2(monthF) : ''}${targetUser ? '' : '_cabinet'}.csv`;
+        return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${fname}"`, 'Cache-Control': 'no-store' } });
+      }
+
       // --- ORG: MES TACHES RECENTES (dashboard) — nouvelles tâches des dossiers accessibles ---
       if (path === '/api/org/me/tasks/recent' && method === 'GET') {
         const user = await verifyOrgToken(request);

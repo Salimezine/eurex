@@ -63,6 +63,16 @@ export default function OrgDashboardExpert() {
   // Exercice affiche : annee courante par defaut, choix memorise (retour au n-1)
   const [exercice, setExercice] = useExercice();
   const [exercices, setExercices] = useState<number[]>([]);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  // Export CSV de toutes les heures du cabinet (meme filtre d'exercice que les KPIs)
+  const exportHeuresCabinet = async () => {
+    setExportingCsv(true);
+    try {
+      const csv = await orgApi.exportHoursCsv({ exercice });
+      orgApi.downloadCsv(csv, `heures_cabinet_${exercice || 'tout'}.csv`);
+    } catch (e: any) { alert(e.message); }
+    setExportingCsv(false);
+  };
 
   const fetchDashboard = () =>
     Promise.all([
@@ -223,8 +233,17 @@ export default function OrgDashboardExpert() {
           <button onClick={load} className="shrink-0 px-3 py-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors">Réessayer</button>
         </div>
       )}
-      {/* Selecteur d'exercice : filtre la table, KPIs, Nouvelles taches, A verifier, Mes heures */}
-      <div className="flex items-center justify-end">
+      {/* Export CSV des heures du cabinet + selecteur d'exercice */}
+      <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={exportHeuresCabinet}
+          disabled={exportingCsv}
+          data-testid="export-heures-cabinet"
+          title="Exporter toutes les heures du cabinet en CSV (Excel : séparateur « ; »)"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 border border-gray-200 bg-white hover:bg-gray-50 hover:text-purple-700 disabled:opacity-50 transition-colors"
+        >
+          {exportingCsv ? '…' : '⬇ Export heures'}
+        </button>
         <ExerciceSelect value={exercice} options={exercices} onChange={setExercice} />
       </div>
       {/* KPIs — 2 catégories : fait / bloqué client */}

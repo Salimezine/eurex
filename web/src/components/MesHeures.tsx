@@ -17,7 +17,18 @@ type View = 'days' | 'month' | 'year';
 export default function MesHeures({ userId, title, exercice }: { userId?: string; title?: string; exercice?: number | null } = {}) {
   const [view, setView] = useState<View>('days');
   const [hours, setHours] = useState<OrgMyHours | null>(null);
+  const [exporting, setExporting] = useState(false);
   const { min, toggleMin } = useCardMin('eurex_heures_min');
+
+  // Export CSV des heures (même périmètre que la carte : moi, ou ce comptable si userId)
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const csv = await orgApi.exportHoursCsv({ exercice: exercice ?? undefined, user_id: userId });
+      orgApi.downloadCsv(csv, `${userId ? 'comptable_' : 'mes-heures_'}${exercice || 'tout'}.csv`);
+    } catch (e: any) { alert(e.message); }
+    setExporting(false);
+  };
 
   const fetchHours = (v: View) =>
     (userId ? orgApi.getComptableHours(userId, v, exercice) : orgApi.getMyHours(v, exercice)).then(h => {
@@ -92,6 +103,18 @@ export default function MesHeures({ userId, title, exercice }: { userId?: string
             </button>
           ))}
         </div>
+        )}
+        {/* Export CSV (meme perimetre que la carte) */}
+        {!min && (
+          <button
+            onClick={doExport}
+            disabled={exporting}
+            data-testid="heures-export"
+            title="Exporter les heures en CSV (séparateur « ; », ouvrable dans Excel)"
+            className="px-2.5 py-1 rounded-lg text-xs font-medium text-gray-500 border border-gray-200 hover:bg-gray-50 hover:text-purple-700 disabled:opacity-50 transition-colors"
+          >
+            {exporting ? '…' : '⬇ CSV'}
+          </button>
         )}
         <button
           onClick={toggleMin}
