@@ -10,7 +10,8 @@ export default function ExerciceSelect({ value, options, onChange }: {
   onChange: (y: number) => void;
 }) {
   const years = Array.from(new Set([value, ...(options.length ? options : [currentExercice()])])).sort((a, b) => b - a);
-  const isCurrent = value === currentExercice();
+  const cur = currentExercice();
+  const isCurrent = value === cur;
   return (
     <div className="flex items-center gap-2">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{t('dash.exercice')}</span>
@@ -28,8 +29,8 @@ export default function ExerciceSelect({ value, options, onChange }: {
         ))}
       </select>
       {!isCurrent && (
-        <span data-testid="dash-exercice-past" className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 whitespace-nowrap">
-          {t('dash.exercice_previous')}
+        <span data-testid="dash-exercice-badge" className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 whitespace-nowrap">
+          {value > cur ? t('dash.exercice_next') : t('dash.exercice_previous')}
         </span>
       )}
     </div>

@@ -31,6 +31,7 @@ const translations: Record<string, Record<Lang, string>> = {
   'dash.since_days': { fr: 'depuis {n} jours', ar: 'منذ {n} أيام' },
   'dash.exercice': { fr: 'Exercice', ar: 'السنة المالية' },
   'dash.exercice_previous': { fr: 'exercice précédent', ar: 'سنة مالية سابقة' },
+  'dash.exercice_next': { fr: 'exercice suivant', ar: 'سنة مالية قادمة' },
 
   // Status — 3 statuts visibles (En cours supprimé)
   'status.cloture': { fr: 'Clôturé', ar: 'مغلق' },

@@ -167,6 +167,7 @@ export default function OrgDashboardComptable() {
           return (
             <Link
               key={client.id}
+              data-testid="client-card"
               to={`/cabinet/dossier/${d?.id || ''}`}
               className={`group bg-white border rounded-2xl p-5 transition-all duration-300 hover:shadow-xl hover:shadow-purple-100/50 hover:-translate-y-1 relative overflow-hidden ${
                 hasBlocked ? 'border-red-200 bg-red-50/30 hover:border-red-300' : 'border-gray-200 hover:border-purple-300'

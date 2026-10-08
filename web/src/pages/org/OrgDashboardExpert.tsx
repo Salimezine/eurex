@@ -471,7 +471,7 @@ export default function OrgDashboardExpert() {
               </thead>
               <tbody>
                 {filteredDossiers.map(d => (
-                  <tr key={d.id} className="border-b border-gray-50 hover:bg-purple-50/30 transition-all duration-200">
+                  <tr key={d.id} data-testid="dossier-row" className="border-b border-gray-50 hover:bg-purple-50/30 transition-all duration-200">
                     <td className="px-5 py-4">
                       <Link to={`/cabinet/dossier/${d.id}`} className="font-semibold text-purple-700 hover:text-purple-900 hover:underline transition-colors">
                         {d.client_name}
