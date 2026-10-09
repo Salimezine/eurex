@@ -425,6 +425,15 @@ async function relayRequest(request: Request, base: string): Promise<Response> {
     const init: RequestInit = { method: request.method, headers: request.headers, redirect: 'manual' };
     if (request.method !== 'GET' && request.method !== 'HEAD') init.body = request.body;
     const res = await fetch(target, init);
+    const ct = res.headers.get('content-type') || '';
+    // Origine/tunnel coupe : cloudflared renvoie 502/504 (text/plain vide) ou page 503/530 HTML.
+    // Le code applicatif ne produit jamais 502/504 ; ses 503 sont en JSON et transitent tels quels.
+    const offline = res.status === 502 || res.status === 504 ||
+      ((res.status === 503 || res.status === 530) && ct.includes('text/html'));
+    if (offline) {
+      try { await res.body?.cancel(); } catch { /* deja consomme */ }
+      return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
+    }
     const headers = new Headers(res.headers);
     headers.set('Access-Control-Allow-Origin', '*');
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
