@@ -2,10 +2,13 @@
   "name": "eurex-api",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "local": "node --env-file-if-exists=local/.env local/server.ts",
+    "migrate": "node --env-file-if-exists=local/.env local/migrate.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.0.0",

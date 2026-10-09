@@ -50,3 +50,8 @@ tools/pdf-factures/fra.traineddata
 
 # Donnees uploadnees (artefacts locaux)
 uploads/
+
+# Migration locale (donnees du cabinet, jamais dans le repo)
+api/local/data/
+api/local/.env
+eurex-dump*.sql

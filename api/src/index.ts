@@ -5,6 +5,8 @@ export interface Env {
   ENVIRONMENT: string;
   AI_FALLBACK_URLS?: string;
   DOCS_KV?: any;
+  // Secret partage avec le serveur local du cabinet (wrangler secret put EUREX_INTERNAL_SECRET)
+  EUREX_INTERNAL_SECRET?: string;
 }
 
 function genId(): string {
@@ -393,6 +395,127 @@ function cors(): Response {
   });
 }
 
+// --- MIGRATION LOCALE : mode relais vers le PC du cabinet -------------------
+// Cle KV "__local/mode" = '1' : la base de donnees vit en local (SQLite), le Worker
+// ne fait que relayer les requetes vers l'URL du tunnel cloudflared (cote cabinet).
+// Cle "__local/url" = URL du tunnel (change a chaque redemarrage, rafraichie par heartbeat).
+let relayCache: { mode: boolean; url: string; ts: number } | null = null;
+
+async function localRelayState(env: Env): Promise<{ mode: boolean; url: string; ts: number }> {
+  if (relayCache && Date.now() - relayCache.ts < 10000) return relayCache;
+  let mode = false;
+  let url = '';
+  try {
+    if (env.DOCS_KV) {
+      mode = (await env.DOCS_KV.get('__local/mode')) === '1';
+      if (mode) url = (await env.DOCS_KV.get('__local/url')) || '';
+    }
+  } catch { /* KV indisponible : on reste en mode cloud (D1) */ }
+  relayCache = { mode, url, ts: Date.now() };
+  return relayCache;
+}
+
+function resetRelayCache(): void { relayCache = null; }
+
+// Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
+async function relayRequest(request: Request, base: string): Promise<Response> {
+  const url = new URL(request.url);
+  const target = base.replace(/\/+$/, '') + url.pathname + url.search;
+  try {
+    const init: RequestInit = { method: request.method, headers: request.headers, redirect: 'manual' };
+    if (request.method !== 'GET' && request.method !== 'HEAD') init.body = request.body;
+    const res = await fetch(target, init);
+    const headers = new Headers(res.headers);
+    headers.set('Access-Control-Allow-Origin', '*');
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  } catch (e: any) {
+    return json({
+      error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé (' + String(e?.message || e) + ')',
+    }, 503);
+  }
+}
+
+// Endpoints internes Worker <-> serveur local (secret obligatoire, fail-closed).
+async function handleInternal(request: Request, env: Env, path: string): Promise<Response> {
+  const secret = env.EUREX_INTERNAL_SECRET || '';
+  const got = request.headers.get('X-Internal-Secret') || '';
+  if (!secret || got !== secret) return json({ error: 'Forbidden' }, 403);
+  const kv = env.DOCS_KV;
+  if (!kv) return json({ error: 'DOCS_KV manquant' }, 500);
+
+  // IA : Workers AI reste sur Cloudflare (quota 10k/jour), le local ne fait que relayer.
+  if (path === '/internal/ai' && request.method === 'POST') {
+    const { model, opts } = await request.json() as any;
+    try {
+      const result = await env.AI.run(model, opts);
+      return json({ ok: true, result });
+    } catch (e: any) {
+      // Message conserve tel quel : le local detecte le quota et tente ses fallbacks
+      return json({ ok: false, error: String(e?.message || e) });
+    }
+  }
+
+  if (path === '/internal/register' && request.method === 'POST') {
+    const { url } = await request.json() as any;
+    if (!url) return json({ error: 'url requise' }, 400);
+    await kv.put('__local/url', String(url));
+    await kv.put('__local/mode', '1');
+    await kv.put('__local/seen', new Date().toISOString());
+    resetRelayCache();
+    return json({ ok: true, mode: 'local', url });
+  }
+
+  if (path === '/internal/heartbeat' && request.method === 'POST') {
+    const { url } = await request.json() as any;
+    const mode = (await kv.get('__local/mode')) === '1';
+    if (!mode) return json({ ok: true, mode: 'cloud' }); // pas encore bascule : on ne bascule pas tout seul
+    if (url) await kv.put('__local/url', String(url));
+    await kv.put('__local/seen', new Date().toISOString());
+    resetRelayCache();
+    return json({ ok: true, mode: 'local' });
+  }
+
+  // Rollback explicite : { mode: 'cloud' } repasse le Worker sur D1 (donnees de l'instant du dump),
+  // { mode: 'local' } reactive le relais (si une URL est deja enregistree).
+  if (path === '/internal/cloud_mode' && request.method === 'POST') {
+    const { mode } = await request.json() as any;
+    if (mode === 'cloud') { await kv.delete('__local/mode'); await kv.delete('__local/url'); }
+    else if (mode === 'local') { await kv.put('__local/mode', '1'); }
+    else return json({ error: "mode attendu: 'local' ou 'cloud'" }, 400);
+    resetRelayCache();
+    return json({ ok: true, mode });
+  }
+
+  // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
+  if (path === '/internal/backups' && request.method === 'GET') {
+    const { keys } = await kv.list({ prefix: 'backups/' });
+    return json({ keys: keys.map((k: any) => String(k.name).replace('backups/', '')).sort().reverse() });
+  }
+
+  if (path === '/internal/backup' && request.method === 'POST') {
+    const { name, data_b64 } = await request.json() as any;
+    if (!/^[0-9A-Za-z.\-]+$/.test(name || '')) return json({ error: 'nom invalide' }, 400);
+    const bytes = Uint8Array.from(atob(data_b64), c => c.charCodeAt(0));
+    await kv.put('backups/' + name, bytes);
+    const { keys } = await kv.list({ prefix: 'backups/' });
+    const names = keys.map((k: any) => String(k.name).replace('backups/', '')).sort();
+    while (names.length > 7) await kv.delete('backups/' + names.shift());
+    return json({ ok: true, name, size: bytes.length });
+  }
+
+  if (path === '/internal/backup' && request.method === 'GET') {
+    const name = new URL(request.url).searchParams.get('name') || '';
+    if (!/^[0-9A-Za-z.\-]+$/.test(name)) return json({ error: 'nom invalide' }, 400);
+    const buf = await kv.get('backups/' + name, 'arrayBuffer');
+    if (!buf) return json({ error: 'backup introuvable' }, 404);
+    return new Response(buf, {
+      headers: { 'Content-Type': 'application/gzip', 'Content-Disposition': 'attachment; filename="' + name + '"' },
+    });
+  }
+
+  return json({ error: 'Unknown internal endpoint' }, 404);
+}
+
 // --- EXCLUDED DAYS ---
 const EXCLUDED_DAYS = new Set([
   '2026-06-05', '2026-06-07', '2026-06-09', '2026-06-13',
@@ -491,7 +614,17 @@ export default {
 
     if (method === 'OPTIONS') return cors();
 
+    // Endpoints internes : gere ici meme en mode relais (secret obligatoire)
+    if (path.startsWith('/internal/')) return await handleInternal(request, env, path);
+
     try {
+      // Mode relais : la base vit en local, on relaye vers le PC du cabinet
+      const relay = await localRelayState(env);
+      if (relay.mode) {
+        if (relay.url) return await relayRequest(request, relay.url);
+        return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
+      }
+
       // --- SEED DATA ---
       if (path === '/api/seed' && method === 'POST') {
         const existing = await env.DB.prepare('SELECT id FROM societes LIMIT 1').first();
@@ -4185,6 +4318,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
   // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Mode local : le serveur du cabinet execute lui-meme ces crons sur SQLite
+    const relay = await localRelayState(env);
+    if (relay.mode) {
+      console.log('cron', event.cron, 'ignore (base locale)');
+      return;
+    }
     if (event.cron === '15 0 1 1 *') {
       ctx.waitUntil(rolloverAllOrganizations(env));
     }
