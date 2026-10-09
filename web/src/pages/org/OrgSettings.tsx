@@ -103,6 +103,18 @@ export default function OrgSettings() {
     }
   };
 
+  const toggleRequiresDoc = async (id: string) => {
+    const tmpl = templates.find(t => t.id === id);
+    if (!tmpl) return;
+    const next = tmpl.requires_document ? 0 : 1;
+    try {
+      await orgApi.updateTemplate(id, { requires_document: !!next });
+      setTemplates(templates.map(t => t.id === id ? { ...t, requires_document: next } : t));
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const applyTemplate = async (id: string) => {
     if (!confirm('Créer cette tâche dans tous les dossiers ouverts qui ne l\'ont pas encore ?')) return;
     try {
@@ -340,9 +352,18 @@ export default function OrgSettings() {
                 <option value="trimestrielle">{t('templates.freq_quarterly')}</option>
                 <option value="annuelle">{t('templates.freq_annual')}</option>
               </select>
-              {tmpl.requires_document ? (
-                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[11px] font-medium">📄 Doc requis</span>
-              ) : null}
+              <button
+                data-testid="template-requires-doc"
+                onClick={() => toggleRequiresDoc(tmpl.id)}
+                className={`px-2 py-0.5 rounded-full text-[11px] font-medium border transition-colors ${
+                  tmpl.requires_document
+                    ? 'bg-blue-100 text-blue-700 border-blue-200 hover:border-blue-400'
+                    : 'bg-gray-50 text-gray-400 border-gray-200 hover:border-gray-400'
+                }`}
+                title="Basculer : document requis pour valider la tâche"
+              >
+                📄 {tmpl.requires_document ? 'Doc requis' : 'Doc optionnel'}
+              </button>
               <select
                 value={tmpl.assigned_comptable_id || ''}
                 onChange={e => assignTemplate(tmpl.id, e.target.value || null)}

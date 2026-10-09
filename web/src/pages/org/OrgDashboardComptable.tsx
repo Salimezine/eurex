@@ -112,7 +112,9 @@ export default function OrgDashboardComptable() {
                   <h4 className="font-bold text-sm text-gray-800 group-hover:text-amber-700 truncate">{g.client_name}</h4>
                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 whitespace-nowrap">🔧 Renfort</span>
                 </div>
-                <p className="text-[11px] text-gray-500">Exercice {g.exercice} · expire le {String(g.expires_at).slice(0, 16)}</p>
+                <p className="text-[11px] text-gray-500">
+                  Exercice {g.exercice} · {g.days === 0 ? 'accès à vie' : `expire le ${String(g.expires_at).slice(0, 16)}`}
+                </p>
                 {g.reason && <p className="text-[11px] text-gray-500 italic truncate">« {g.reason} »</p>}
               </Link>
             ))}

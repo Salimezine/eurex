@@ -169,7 +169,9 @@ async function createDossierWithTasks(env: Env, opts: { orgId: string; clientId:
       [null];
     for (const m of months) {
       const taskId = genId();
-      await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
+      // « Reporting mensuel » : cree masque (optionnel par defaut, restaurable via le bouton)
+      const hidden = tmpl.label === 'Reporting mensuel' ? 1 : 0;
+      await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, hidden, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null, hidden).run();
       if (tmpl.requires_document) {
         const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exercice}` : tmpl.label;
         await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), dossierId, taskId, docLabel).run();
@@ -2272,8 +2274,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
                   [null];
                 for (const m of months) {
                   const taskId = genId();
-                  stmts.push(env.DB.prepare("INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, 'a_faire', ?, ?, ?, ?, ?, datetime('now'))")
-                    .bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null));
+                  const hidden = tmpl.label === 'Reporting mensuel' ? 1 : 0;
+                  stmts.push(env.DB.prepare("INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, hidden, created_at) VALUES (?, ?, ?, 'a_faire', ?, ?, ?, ?, ?, ?, datetime('now'))")
+                    .bind(taskId, dossierId, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null, hidden));
                   if (tmpl.requires_document) {
                     const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${exYear}` : tmpl.label;
                     stmts.push(env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)')
@@ -2525,7 +2528,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         const { granted_to, days, reason } = await request.json() as any;
         const grantDays = days === undefined || days === null ? 7 : Number(days);
-        if (![1, 7, 30].includes(grantDays)) return json({ error: 'Durée invalide (1, 7 ou 30 jours)' }, 400);
+        if (![1, 7, 30, 180, 365, 0].includes(grantDays)) return json({ error: 'Durée invalide (1, 7, 30, 180, 365 jours ou à vie)' }, 400);
         if (!reason || !String(reason).trim()) return json({ error: 'Motif du renfort requis' }, 400);
         if (!granted_to) return json({ error: 'granted_to requis' }, 400);
         const target = await env.DB.prepare('SELECT id, full_name FROM org_users WHERE id = ? AND organization_id = ? AND role = ? AND is_active = 1').bind(granted_to, user.organization_id, 'comptable').first() as any;
@@ -2533,7 +2536,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const dup = await env.DB.prepare(`SELECT 1 AS x FROM org_dossier_grants WHERE dossier_id = ? AND granted_to = ? AND ${ORG_GRANT_ACTIVE}`).bind(dossierId, granted_to).first();
         if (dup) return json({ error: 'Accès déjà ouvert pour ce comptable' }, 400);
         const id = genId();
-        await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))`).bind(id, dossierId, granted_to, user.id, String(reason).trim(), grantDays, `+${grantDays} days`).run();
+        // days = 0 : acces a vie (sentinel accepte par ORG_GRANT_ACTIVE : expires_at > maintenant)
+        const expiresSql = grantDays === 0 ? `'9999-12-31 23:59:59'` : `datetime('now', '+${grantDays} days')`;
+        await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, ${expiresSql})`).bind(id, dossierId, granted_to, user.id, String(reason).trim(), grantDays).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_created', 'dossier', dossierId, JSON.stringify({ granted_to, granted_to_name: target.full_name, days: grantDays, reason: String(reason).trim() })).run();
         return json({ id, dossier_id: dossierId, granted_to, granted_to_name: target.full_name, days: grantDays, reason: String(reason).trim() }, 201);
       }
@@ -2597,7 +2602,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const grantDays = body?.days === undefined || body?.days === null ? 7 : Number(body.days);
         if (!targetId) return json({ error: 'Comptable requis' }, 400);
         if (targetId === user.id) return json({ error: 'Vous êtes déjà sur cette tâche' }, 400);
-        if (![1, 7, 30].includes(grantDays)) return json({ error: 'Durée invalide (1, 7 ou 30 jours)' }, 400);
+        if (![1, 7, 30, 180, 365, 0].includes(grantDays)) return json({ error: 'Durée invalide (1, 7, 30, 180, 365 jours ou à vie)' }, 400);
         const target = await env.DB.prepare("SELECT id, full_name FROM org_users WHERE id = ? AND organization_id = ? AND role = 'comptable' AND is_active = 1").bind(targetId, user.organization_id).first() as any;
         if (!target) return json({ error: 'Comptable introuvable' }, 400);
         const dup = await env.DB.prepare('SELECT 1 AS x FROM org_task_collaborators WHERE task_id = ? AND user_id = ?').bind(taskId, targetId).first();
@@ -2611,7 +2616,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         if (!isAssigned && !alreadyGranted) {
           const gid = genId();
           const reason = `Collaboration : ${String(task.label).slice(0, 150)}`;
-          await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))`).bind(gid, dossierId, targetId, user.id, reason, grantDays, `+${grantDays} days`).run();
+          const collabExpiresSql = grantDays === 0 ? `'9999-12-31 23:59:59'` : `datetime('now', '+${grantDays} days')`;
+          await env.DB.prepare(`INSERT INTO org_dossier_grants (id, dossier_id, granted_to, granted_by, reason, days, expires_at) VALUES (?, ?, ?, ?, ?, ?, ${collabExpiresSql})`).bind(gid, dossierId, targetId, user.id, reason, grantDays).run();
           expiresAt = ((await env.DB.prepare('SELECT expires_at FROM org_dossier_grants WHERE id = ?').bind(gid).first()) as any)?.expires_at || null;
           grantCreated = true;
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'grant_created', 'dossier', dossierId, JSON.stringify({ granted_to: targetId, granted_to_name: target.full_name, days: grantDays, reason, source: 'task_collab' })).run();
@@ -4030,7 +4036,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             const exists = await env.DB.prepare('SELECT 1 AS x FROM org_tasks WHERE dossier_id = ? AND label = ? AND COALESCE(month, 0) = COALESCE(?, 0)').bind(d.id, tmpl.label, m).first();
             if (exists) continue;
             const taskId = genId();
-            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, d.id, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null).run();
+            const hidden = tmpl.label === 'Reporting mensuel' ? 1 : 0;
+            await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, hidden, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, ?, datetime(\'now\'))').bind(taskId, d.id, tmpl.label, tmpl.requires_document, tmpl.order_index, tmpl.assigned_comptable_id || null, m, tmpl.export_scope || null, hidden).run();
             if (tmpl.requires_document) {
               const docLabel = m ? `${tmpl.label} — ${orgMonthNames[m - 1]} ${d.exercice}` : tmpl.label;
               await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)').bind(genId(), d.id, taskId, docLabel).run();

@@ -510,7 +510,7 @@ export const orgApi = {
   getTemplates: () => req<OrgTemplate[]>('/org/templates'),
   createTemplate: (label: string, requiresDocument: boolean, assignedComptableId?: string | null, frequency?: OrgFrequency, month?: number | null, clientId?: string | null) =>
     req<any>('/org/templates', { method: 'POST', body: JSON.stringify({ label, requires_document: requiresDocument, assigned_comptable_id: assignedComptableId || null, frequency: frequency || 'annuelle', month: month ?? null, client_id: clientId || null }) }),
-  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency; month?: number | null; client_id?: string | null }) =>
+  updateTemplate: (id: string, patch: { assigned_comptable_id?: string | null; frequency?: OrgFrequency; month?: number | null; client_id?: string | null; requires_document?: boolean }) =>
     req<any>(`/org/templates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   // Application retroactive du modele aux dossiers encore ouverts (idempotent)
   applyTemplate: (id: string) =>

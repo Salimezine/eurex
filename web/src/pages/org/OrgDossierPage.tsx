@@ -357,6 +357,12 @@ export default function OrgDossierPage() {
     }
   };
 
+  // Retour a la page precedente (recherche, planning, dashboard...) — sinon dashboard
+  const goBack = () => {
+    if ((window.history.state?.idx ?? 0) > 0) navigate(-1);
+    else navigate('/cabinet');
+  };
+
   const openNextExercice = async () => {
     if (!dossier) return;
     if (!newDossierComp) { alert('Comptable requis : sélectionnez le comptable du dossier'); return; }
@@ -533,7 +539,7 @@ export default function OrgDossierPage() {
       />
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate('/cabinet')} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+        <button onClick={goBack} title="Page précédente" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
           <ArrowLeft size={20} className="text-gray-600" />
         </button>
         <div className="flex-1">
@@ -644,6 +650,9 @@ export default function OrgDossierPage() {
               <option value={1}>1 jour</option>
               <option value={7}>7 jours</option>
               <option value={30}>30 jours</option>
+              <option value={180}>6 mois</option>
+              <option value={365}>1 an</option>
+              <option value={0}>À vie</option>
             </select>
             <input
               type="text"
@@ -666,7 +675,9 @@ export default function OrgDossierPage() {
               {dossier.grants!.map(g => (
                 <div key={g.id} className="flex items-center gap-3 text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
                   <span className="font-semibold text-gray-800">{g.granted_to_name || g.granted_to}</span>
-                  <span className="text-gray-500 whitespace-nowrap">J-{g.days} · expire le {String(g.expires_at).slice(0, 16)}</span>
+                  <span className="text-gray-500 whitespace-nowrap">
+                    {g.days === 0 ? 'Accès à vie' : `${g.days === 180 ? '6 mois' : g.days === 365 ? '1 an' : `J-${g.days}`} · expire le ${String(g.expires_at).slice(0, 16)}`}
+                  </span>
                   {g.reason && <span className="text-gray-500 italic flex-1 truncate">« {g.reason} »</span>}
                   <button
                     onClick={() => revokeGrant(g.id)}
@@ -1103,6 +1114,9 @@ export default function OrgDossierPage() {
                             <option value={1}>1 jour</option>
                             <option value={7}>7 jours</option>
                             <option value={30}>30 jours</option>
+                            <option value={180}>6 mois</option>
+                            <option value={365}>1 an</option>
+                            <option value={0}>À vie</option>
                           </select>
                           <button
                             onClick={() => submitCollab(task.id)}

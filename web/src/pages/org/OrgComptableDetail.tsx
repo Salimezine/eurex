@@ -72,7 +72,7 @@ export default function OrgComptableDetail() {
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate('/cabinet')} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+        <button onClick={() => { if ((window.history.state?.idx ?? 0) > 0) navigate(-1); else navigate('/cabinet'); }} title="Page précédente" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
           <ArrowLeft size={20} className="text-gray-600" />
         </button>
         <div className="flex-1">
