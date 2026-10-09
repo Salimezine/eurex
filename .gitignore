@@ -55,3 +55,5 @@ uploads/
 api/local/data/
 api/local/.env
 eurex-dump*.sql
+api/supabase/data.sql
+api/supabase/*.psql

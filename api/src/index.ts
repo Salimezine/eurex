@@ -1,3 +1,5 @@
+import { getSupabaseAdapter } from './supabase-adapter.ts';
+
 export interface Env {
   DB: D1Database;
   COPY_DB?: D1Database;
@@ -7,6 +9,8 @@ export interface Env {
   DOCS_KV?: any;
   // Secret partage avec le serveur local du cabinet (wrangler secret put EUREX_INTERNAL_SECRET)
   EUREX_INTERNAL_SECRET?: string;
+  // URI PostgreSQL Supabase (wrangler secret put SUPABASE_DB_URL) — backend "supabase"
+  SUPABASE_DB_URL?: string;
 }
 
 function genId(): string {
@@ -417,6 +421,31 @@ async function localRelayState(env: Env): Promise<{ mode: boolean; url: string; 
 
 function resetRelayCache(): void { relayCache = null; }
 
+// --- BASCULE BACKEND : D1 / relais local / Supabase -------------------------
+// Cle KV "__backend/mode" = 'supabase' : le Worker execute les requetes lui-meme
+// contre PostgreSQL (Supabase) via l'adaptateur PG (env.DB remplace). Absente ou
+// autre : comportement precedent (relais local si "__local/mode", sinon D1).
+let backendCache: { mode: string; ts: number } | null = null;
+
+async function backendMode(env: Env): Promise<string> {
+  if (backendCache && Date.now() - backendCache.ts < 10000) return backendCache.mode;
+  let mode = 'd1';
+  try {
+    if (env.DOCS_KV) mode = (await env.DOCS_KV.get('__backend/mode')) || 'd1';
+  } catch { /* KV indisponible : on garde D1 */ }
+  backendCache = { mode, ts: Date.now() };
+  return mode;
+}
+
+function resetBackendCache(): void { backendCache = null; }
+
+// Basculee Supabase active : env.DB devient l'adaptateur PG (interface D1
+// identique, SQL source traduit a la volee). Sans URI : pas de changement.
+function withSupabaseDb(env: Env): Env {
+  if (!env.SUPABASE_DB_URL) return env;
+  return { ...env, DB: getSupabaseAdapter(env.SUPABASE_DB_URL) as unknown as D1Database };
+}
+
 // Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
 async function relayRequest(request: Request, base: string): Promise<Response> {
   const url = new URL(request.url);
@@ -493,6 +522,21 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     else return json({ error: "mode attendu: 'local' ou 'cloud'" }, 400);
     resetRelayCache();
     return json({ ok: true, mode });
+  }
+
+  // Bascule backend : 'supabase' = le Worker requete PostgreSQL directement,
+  // 'd1' = comportement precedent (D1 ou relais local). Prioritaire sur le relais.
+  if (path === '/internal/backend' && request.method === 'POST') {
+    const { backend } = await request.json() as any;
+    if (backend !== 'supabase' && backend !== 'd1') {
+      return json({ error: "backend attendu: 'supabase' ou 'd1'" }, 400);
+    }
+    await kv.put('__backend/mode', backend);
+    resetBackendCache();
+    return json({ ok: true, backend });
+  }
+  if (path === '/internal/backend' && request.method === 'GET') {
+    return json({ backend: await backendMode(env), has_url: Boolean(env.SUPABASE_DB_URL) });
   }
 
   // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
@@ -627,11 +671,17 @@ export default {
     if (path.startsWith('/internal/')) return await handleInternal(request, env, path);
 
     try {
-      // Mode relais : la base vit en local, on relaye vers le PC du cabinet
-      const relay = await localRelayState(env);
-      if (relay.mode) {
-        if (relay.url) return await relayRequest(request, relay.url);
-        return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
+      // Backend Supabase : le Worker parle directement a PostgreSQL (prioritaire)
+      const backend = await backendMode(env);
+      if (backend === 'supabase') {
+        env = withSupabaseDb(env);
+      } else {
+        // Mode relais : la base vit en local, on relaye vers le PC du cabinet
+        const relay = await localRelayState(env);
+        if (relay.mode) {
+          if (relay.url) return await relayRequest(request, relay.url);
+          return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
+        }
       }
 
       // --- SEED DATA ---
@@ -4327,6 +4377,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
   // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Backend Supabase : les crons D1 (sync vers COPY_DB) sont sans objet —
+    // la base managee gere sa propre sauvegarde ; le rollover local est gere
+    // par le serveur du cabinet (a migrer en fin de bascule, cf. api/supabase/README.md).
+    const backend = await backendMode(env);
+    if (backend === 'supabase') {
+      console.log('cron', event.cron, 'ignore (backend supabase)');
+      return;
+    }
     // Mode local : le serveur du cabinet execute lui-meme ces crons sur SQLite
     const relay = await localRelayState(env);
     if (relay.mode) {
