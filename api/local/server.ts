@@ -155,10 +155,27 @@ async function tick() {
 }
 
 // --- Relais : annonce au Worker l'URL du tunnel (P2 : /internal/*) ---------
+// Relu a chaque heartbeat : l'orchestrateur (demarrer.ps1) reecrit EUREX_TUNNEL_URL
+// dans local/.env quand cloudflared redemarre avec une nouvelle URL.
+function readTunnelUrl(): string {
+  try {
+    const envFile = path.join(__dir, '.env');
+    if (fs.existsSync(envFile)) {
+      const txt = fs.readFileSync(envFile, 'utf8').replace(/^\uFEFF/, '');
+      for (const line of txt.split(/\r?\n/)) {
+        const m = line.match(/^\s*EUREX_TUNNEL_URL\s*=\s*(.*)$/);
+        if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+      }
+    }
+  } catch { /* fichier absent : on garde la valeur au demarrage */ }
+  return TUNNEL_URL;
+}
+
 let lastBeat = 0;
 let lastBeatMode = '';
 async function heartbeat() {
-  if (!TUNNEL_URL || !SECRET) return;
+  const tunnelUrl = readTunnelUrl();
+  if (!tunnelUrl || !SECRET) return;
   const now = Date.now();
   if (now - lastBeat < 60_000) return;
   lastBeat = now;
@@ -166,7 +183,7 @@ async function heartbeat() {
     const res = await fetch(WORKER_URL + '/internal/heartbeat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': SECRET },
-      body: JSON.stringify({ url: TUNNEL_URL, db: path.basename(DB_PATH) }),
+      body: JSON.stringify({ url: tunnelUrl, db: path.basename(DB_PATH) }),
       signal: AbortSignal.timeout(10_000),
     });
     if (res.status === 404) return; // endpoint pas encore deploye (P2)
