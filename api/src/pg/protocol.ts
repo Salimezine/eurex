@@ -66,11 +66,26 @@ export function saslInitial(mechanism: string, data: string): Uint8Array {
   return w.frame('p');
 }
 
-// PasswordMessage (etapes SASL suivantes) : 'p' + donnees brutes
+// PasswordMessage (etapes SASL suivantes) : 'p' + donnees brutes.
+// SASLResponse n'est PAS termine par un zero byte — c'est pour SCRAM.
 export function passwordMessage(data: string): Uint8Array {
   const w = new Writer();
   const bytes = new TextEncoder().encode(data);
   w.bytes(bytes);
+  return w.frame('p');
+}
+
+// PasswordMessage pour l'authentification cleartext (code 3) et MD5 (code 5) :
+// 'p' + String terminee par un zero byte, comme l'impose le format de message
+// Postgres. Sans ce zero, le serveur ne sait plus ou s'arrete le mot de passe :
+// observe le 2026-10-10 contre Hyperdrive, qui repond FATAL 58000
+// "Internal error." juste apres avoir recu notre reponse MD5. node-postgres
+// separe egalement ces deux constructeurs (password() vs saslResponse()).
+export function passwordMessageNul(data: string): Uint8Array {
+  const w = new Writer();
+  const bytes = new TextEncoder().encode(data);
+  w.bytes(bytes);
+  w.i8(0);
   return w.frame('p');
 }
 

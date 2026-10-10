@@ -22,6 +22,14 @@
       "id": "9becacff0b9a4a07ab859e91e4208d92"
     }
   ],
+  // Chemin Worker -> PostgreSQL via Supabase : le TLS direct est impossible
+  // (CA privee Supabase rejetee par Cloudflare), Hyperdrive fait le relais.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "6dad0898ae134a2da1ae91acedbb82dc"
+    }
+  ],
   "ai": {
     "binding": "AI"
   },

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   startup, parseMessage, bindMessage, describePortal, executeMessage,
   syncMessage, terminateMessage, concatBytes, FrameParser,
+  passwordMessage, passwordMessageNul,
 } from '../src/pg/protocol.ts';
 
 function frame(type: string, body: number[]): Uint8Array {
@@ -158,4 +159,25 @@ test('Notice (N) : decodee sans casser le flux', () => {
   const got = parser.push(frame('N', body));
   assert.equal(got[0].t, 'notice');
   assert.equal(got[0].t === 'notice' && got[0].message, 'coucou');
+});
+
+test('passwordMessage : brut, SANS zero terminal (etapes SASL)', () => {
+  // SASLResponse = 'p' + longueur + donnees, sans terminaison C.
+  const b = passwordMessage('p=abc=');
+  assert.equal(String.fromCharCode(b[0]), 'p');
+  assert.equal(new DataView(b.buffer).getInt32(1, false), 4 + 6);
+  assert.equal(new TextDecoder().decode(b.slice(5)), 'p=abc=');
+  assert.notEqual(b[b.length - 1], 0);
+});
+
+test('passwordMessageNul : String terminee par zero (auth MD5/cleartext)', () => {
+  // Regression 2026-10-10 : l'absence de ce zero faisait echouer Hyperdrive
+  // avec FATAL 58000 "Internal error." apres la reponse MD5.
+  const md5 = 'md5d6f407104ca5ba8553d598fed7df90e0';
+  const b = passwordMessageNul(md5);
+  assert.equal(String.fromCharCode(b[0]), 'p');
+  // longueur = 4 (len) + 35 (mot de passe) + 1 (zero)
+  assert.equal(new DataView(b.buffer).getInt32(1, false), 4 + md5.length + 1);
+  assert.equal(b[b.length - 1], 0);
+  assert.equal(new TextDecoder().decode(b.slice(5, -1)), md5);
 });

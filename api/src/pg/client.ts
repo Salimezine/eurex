@@ -3,6 +3,7 @@
 // protocole etendu (Parse/Bind/Execute), file d'attente serialisant les
 // requetes sur une connexion unique.
 import { scramStart, scramFinal } from './scram.ts';
+import { md5PasswordResponse } from './md5.ts';
 import * as P from './protocol.ts';
 
 export interface PgTransport {
@@ -183,6 +184,12 @@ export class PgClient {
             if (!final) throw new PgConnError('SASLFinal inattendu');
             const serverFinal = new TextDecoder().decode(m.data);
             if (!final.verifyServer(serverFinal)) throw new PgConnError('SCRAM : signature serveur invalide');
+          } else if (m.kind === 5) {
+            // AuthenticationMD5Password — utilise par l'endpoint local
+            // d'Hyperdrive (les drivers standards le gerent, pas nous avant).
+            await transport.write(
+              P.passwordMessageNul(md5PasswordResponse(decodeURIComponent(this.url.password), user, m.data)),
+            );
           } else if (m.kind === 0) {
             // AuthenticationOk
           } else {

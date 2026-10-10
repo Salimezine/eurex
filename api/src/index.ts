@@ -9,8 +9,14 @@ export interface Env {
   DOCS_KV?: any;
   // Secret partage avec le serveur local du cabinet (wrangler secret put EUREX_INTERNAL_SECRET)
   EUREX_INTERNAL_SECRET?: string;
-  // URI PostgreSQL Supabase (wrangler secret put SUPABASE_DB_URL) — backend "supabase"
+  // URI PostgreSQL Supabase (wrangler secret put SUPABASE_DB_URL) — backend "supabase".
+  // Chemin historique : le TLS direct depuis un Worker echoue (Supabase presente
+  // une CA privee que Cloudflare rejete), il n'a donc jamais ete utilisable.
   SUPABASE_DB_URL?: string;
+  // Binding Hyperdrive (wrangler.jsonc) : Worker -> Hyperdrive (TCP interne,
+  // auth MD5) -> Supabase (TLS valide avec la CA Supabase televersee). C'est
+  // le seul chemin fonctionnel vers PostgreSQL depuis un Worker.
+  HYPERDRIVE?: { connectionString: string };
 }
 
 function genId(): string {
@@ -440,10 +446,20 @@ async function backendMode(env: Env): Promise<string> {
 function resetBackendCache(): void { backendCache = null; }
 
 // Basculee Supabase active : env.DB devient l'adaptateur PG (interface D1
-// identique, SQL source traduit a la volee). Sans URI : pas de changement.
+// identique, SQL source traduit a la volee). Sans chemin de connexion : pas de
+// changement. Hyperdrive est prioritaire sur la secret (voir Env).
 function withSupabaseDb(env: Env): Env {
-  if (!env.SUPABASE_DB_URL) return env;
-  return { ...env, DB: getSupabaseAdapter(env.SUPABASE_DB_URL) as unknown as D1Database };
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!dbUrl) return env;
+  return { ...env, DB: getSupabaseAdapter(dbUrl) as unknown as D1Database };
+}
+
+// Rend la connexion PostgreSQL ouverte pendant cette requete : un socket cree
+// dans le contexte d'une requete ne peut pas etre reutilise par la suivante.
+// No-op quand on est reste sur D1.
+function releaseSupabaseConn(env: Env): void {
+  const a = env.DB as unknown as { endRequest?: () => void } | null;
+  if (a && typeof a.endRequest === 'function') a.endRequest();
 }
 
 // Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
@@ -536,7 +552,7 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     return json({ ok: true, backend });
   }
   if (path === '/internal/backend' && request.method === 'GET') {
-    return json({ backend: await backendMode(env), has_url: Boolean(env.SUPABASE_DB_URL) });
+    return json({ backend: await backendMode(env), has_url: Boolean(env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL) });
   }
 
   // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
@@ -3965,7 +3981,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         // Comptable info
-        const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
+        const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at, last_seen_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
         if (!comptable) return json({ error: 'Comptable non trouvé' }, 404);
         // All dossiers assigned to this comptable
         const { results: dossiers } = await env.DB.prepare('SELECT d.*, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(compId, user.organization_id).all();
@@ -4371,6 +4387,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       return json({ error: 'Not found: ' + path }, 404);
     } catch (e: any) {
       return json({ error: e.message || 'Internal error' }, 500);
+    } finally {
+      releaseSupabaseConn(env);
     }
   },
   // Cron 1er janvier (00:15 UTC) : passage automatique au nouvel exercice

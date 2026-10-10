@@ -74,12 +74,31 @@ export class SupabaseStatement {
 }
 
 export class SupabaseAdapter {
-  private client: PgClient;
+  // Le socket est ouvert dans le contexte D'UNE requete et ne peut pas en
+  // traverser une autre (Workers : "Cannot perform I/O on behalf of a different
+  // request"). On garde l'adaptateur en singleton — pour son cache pkMap, qui
+  // lui est portable — mais la connexion est ouverte par requete puis rendue
+  // via endRequest(). Fabrique plutot que client : le constructeur accepte
+  // toujours un client direct (tests).
+  private mkClient: () => PgClient;
+  private client: PgClient | null = null;
   private pk: PkMap | null = null;
   private pkLoading: Promise<PkMap> | null = null;
 
-  constructor(client: PgClient) {
-    this.client = client;
+  constructor(client: PgClient | (() => PgClient)) {
+    this.mkClient = typeof client === 'function' ? client : () => client;
+  }
+
+  private get c(): PgClient {
+    if (!this.client) this.client = this.mkClient();
+    return this.client;
+  }
+
+  // Fin de requete : referme la connexion, la prochaine en ouvrira une autre.
+  endRequest(): void {
+    const c = this.client;
+    this.client = null;
+    if (c) { try { c.close(); } catch { /* deja ferme */ } }
   }
 
   prepare(sql: string): SupabaseStatement {
@@ -92,7 +111,7 @@ export class SupabaseAdapter {
   async batch(stmts: SupabaseStatement[]): Promise<any[]> {
     if (stmts.length === 0) return [];
     const pk = await this.pkMap();
-    return this.client.transaction(async (q) => {
+    return this.c.transaction(async (q) => {
       const out: any[] = [];
       for (const s of stmts) {
         const r = await q(toPg(s.sql, { pk }), s.params);
@@ -105,7 +124,7 @@ export class SupabaseAdapter {
 
   async exec(sql: string, params: unknown[]) {
     const pk = await this.pkMap();
-    return this.client.query(toPg(sql, { pk }), params);
+    return this.c.query(toPg(sql, { pk }), params);
   }
 
   // PK de toutes les tables (une requete) : necessaire a INSERT OR REPLACE
@@ -113,7 +132,7 @@ export class SupabaseAdapter {
     if (this.pk) return this.pk;
     if (!this.pkLoading) {
       this.pkLoading = (async () => {
-        const r = await this.client.query(
+        const r = await this.c.query(
           "SELECT tc.table_name AS tbl, kcu.column_name AS col FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public' ORDER BY tc.table_name, kcu.ordinal_position",
         );
         const map: PkMap = {};
@@ -132,17 +151,18 @@ export class SupabaseAdapter {
   }
 
   close(): void {
-    this.client.close();
+    this.endRequest();
   }
 }
 
-// Singleton par URL : une connexion reutilisee par isolate Worker
+// Singleton par URL : conserve le cache pkMap d'une requete a l'autre. La
+// connexion, elle, est ouverte par requete puis rendue (endRequest).
 const adapters = new Map<string, SupabaseAdapter>();
 
 export function getSupabaseAdapter(dbUrl: string, tf?: TransportFactory): SupabaseAdapter {
   let a = adapters.get(dbUrl);
   if (!a) {
-    a = new SupabaseAdapter(new PgClient(dbUrl, tf || cloudflareTransport));
+    a = new SupabaseAdapter(() => new PgClient(dbUrl, tf || cloudflareTransport));
     adapters.set(dbUrl, a);
   }
   return a;
