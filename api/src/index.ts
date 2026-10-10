@@ -574,6 +574,11 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
       }
     }
     await kv.put('__backend/mode', backend);
+    // Bascule vers Supabase : D1 cesse de recevoir les ecritures, donc il
+    // devient perime des cette bascule (meme logique que failoverToSupabase).
+    // Sans cela un retour manuel sur D1 serait autorise alors que tout ce qui
+    // a ete saisi depuis serait ecrase.
+    if (backend === 'supabase') await kv.put('__backend/d1_state', 'dirty');
     resetBackendCache();
     return json({ ok: true, backend });
   }

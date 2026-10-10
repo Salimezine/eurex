@@ -296,6 +296,11 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   208 requêtes, `/api/org/dossiers` 70, `/api/org/comptables` 19. Regroupés en 2 à
   5 requêtes chacun (IDs découpés par blocs de 80 pour rester sous la limite de
   100 paramètres liés de D1), la logique de statistiques JS reste identique.
+- **Hyperdrive met en cache les réponses SQL, indexées sur le texte de la
+  requête** : une suppression validée par PostgreSQL restait invisible sur
+  `GET /api/org/comptables` pendant ~10 min alors que le détail (autre SQL)
+  répondait déjà 404. Corrigé par `wrangler hyperdrive update <id>
+  --caching-disabled` — détails et protocole de constat en §7.
 
 ### Opérations
 
