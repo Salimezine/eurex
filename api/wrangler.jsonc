@@ -36,7 +36,7 @@
   // 1er janvier 00:15 UTC : passage automatique au nouvel exercice
   // Tous les jours 02:00 UTC (03:00 TN) : copie de sauvegarde vers eurex-db-copy
   "triggers": {
-    "crons": ["15 0 1 1 *", "0 2 * * *"]
+    "crons": ["15 0 1 1 *", "5 0 * * *", "0 2 * * *"]
   },
   "vars": {
     "ENVIRONMENT": "production"

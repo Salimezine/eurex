@@ -1,4 +1,5 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
+import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
 
 export interface Env {
   DB: D1Database;
@@ -394,6 +395,22 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+// Corps conserve pour le rejou apres bascule automatique : une requete ne peut
+// etre executee qu'une fois, son corps etant un flux qui se consomme. On ne
+// garde que les petits corps, pour ne pas faire grimper la memoire des uploads.
+// ATTENTION : appeler cette fonction consomme le corps de `request` ; il faut
+// ensuite servir `fresh()` et non `request` ( sinon "Body has already been used").
+const REPLAY_MAX_BYTES = 1_000_000;
+
+export async function bufferBody(request: Request): Promise<{ fresh: () => Request } | null> {
+  if (request.method === 'GET' || request.method === 'HEAD') return null; // sans corps : rejouable tel quel
+  const len = Number(request.headers.get('content-length') || 0);
+  if (!len || len > REPLAY_MAX_BYTES) return null;
+  let buf: ArrayBuffer;
+  try { buf = await request.arrayBuffer(); } catch { return null; }
+  return { fresh: () => new Request(request.url, { method: request.method, headers: request.headers, body: buf }) };
+}
+
 function cors(): Response {
   return new Response(null, {
     status: 204,
@@ -460,6 +477,76 @@ function withSupabaseDb(env: Env): Env {
 function releaseSupabaseConn(env: Env): void {
   const a = env.DB as unknown as { endRequest?: () => void } | null;
   if (a && typeof a.endRequest === 'function') a.endRequest();
+}
+
+// --- BASCULE AUTOMATIQUE D1 -> SUPABASE --------------------------------------
+// D1 plafonne les lignes lues par jour en gratuit (remis a zero a 00:00 UTC).
+// Quand le plafond saute, chaque requete echoue et l'application est down
+// jusqu'au lendemain : on passe donc automatiquement a Supabase, qui n'a pas
+// de plafond de lignes. Le retour se fait par le cron 00:05 UTC, apres
+// synchronisation (cf. resyncAndFlipBack).
+async function failoverToSupabase(e: unknown, env: Env): Promise<boolean> {
+  if (!isD1QuotaError(e)) return false;
+  const kv = env.DOCS_KV;
+  if (!kv) return false; // pas de KV : pas de bascule possible
+  try {
+    if ((await kv.get('__backend/mode') || 'd1') === 'supabase') return false; // deja bascule
+    // D1 contient les donnees d'avant la bascule : toute ecriture faite sur
+    // Supabase depuis le rend perime. Marque-le pour interdire un retour sans
+    // synchronisation prealable (cf. /internal/backend).
+    await kv.put('__backend/mode', 'supabase');
+    await kv.put('__backend/d1_state', 'dirty');
+    await kv.put('__backend/last_failover', new Date().toISOString());
+    resetBackendCache();
+    console.error('FALLBACK D1 -> Supabase :', String((e as any)?.message || e));
+    return true;
+  } catch (err) {
+    console.error('bascule automatique impossible :', String((err as any)?.message || err));
+    return false;
+  }
+}
+
+// Resync en cours : D1 est reecrit pendant que Supabase sert encore les
+// requetes. Les laisser passer laisserait des ecritures dans Supabase apres
+// que la copie ait eu lieu — elles seraient perdues au retour sur D1. On
+// attend donc (plafonne : le verrou se auto-expire en KV au bout de 15 min).
+async function waitWhileSyncing(env: Env): Promise<void> {
+  const kv = env.DOCS_KV;
+  if (!kv) return;
+  for (let i = 0; i < 100; i++) { // ~30 s au total
+    let flag: string | null = null;
+    try { flag = await kv.get(SYNC_KEY); } catch { return; } // KV indisponible : on sert
+    if (!flag) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+// Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
+// reporte dans D1 ce qui a change pendant la bascule, puis on y retourne.
+// Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser) ou si la
+// base vit en local (le cabinet est alors source de verite).
+async function resyncAndFlipBack(env: Env): Promise<void> {
+  try {
+    const mode = await backendMode(env);
+    if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
+    const relay = await localRelayState(env);
+    if (relay.mode) { console.log('[resync] ignoree (base locale)'); return; }
+    const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
+      onSuccess: async () => {
+        await env.DOCS_KV.put('__backend/mode', 'd1');
+        await env.DOCS_KV.put('__backend/d1_state', 'clean');
+        await env.DOCS_KV.put('__backend/last_resync', new Date().toISOString());
+        resetBackendCache();
+        console.log('[resync] bascule retour sur D1');
+      },
+      log: (m) => console.log('[resync]', m),
+    });
+    console.log('[resync]', JSON.stringify(report));
+  } catch (e: any) {
+    // Verrou libere par resyncSupabaseToD1 ; on reste sur Supabase, qui sert
+    // toujours les requetes. Le cron suivant reprendra (operation idempotente).
+    console.error('[resync] ECHEC :', String(e?.message || e));
+  }
 }
 
 // Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
@@ -543,16 +630,51 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
   // Bascule backend : 'supabase' = le Worker requete PostgreSQL directement,
   // 'd1' = comportement precedent (D1 ou relais local). Prioritaire sur le relais.
   if (path === '/internal/backend' && request.method === 'POST') {
-    const { backend } = await request.json() as any;
+    const body = await request.json() as any;
+    const backend = body.backend;
     if (backend !== 'supabase' && backend !== 'd1') {
       return json({ error: "backend attendu: 'supabase' ou 'd1'" }, 400);
+    }
+    // Retour sur D1 refuse tant que D1 n'a pas ete remis a jour : il contient
+    // les donnees d'avant la bascule, y retourner tout de suite effacerait ce
+    // qui a ete saisi depuis. Le cron 00:05 UTC le fait automatiquement.
+    if (backend === 'd1' && body.force !== true) {
+      const state = (await kv.get('__backend/d1_state')) || 'dirty';
+      if (state !== 'clean') {
+        return json({
+          error: "D1 est perime (etat 'dirty') : lancer d'abord POST /internal/resync, ou relancer avec {\"force\":true} en acceptant de perdre les saisies faites depuis la bascule.",
+        }, 409);
+      }
     }
     await kv.put('__backend/mode', backend);
     resetBackendCache();
     return json({ ok: true, backend });
   }
   if (path === '/internal/backend' && request.method === 'GET') {
-    return json({ backend: await backendMode(env), has_url: Boolean(env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL) });
+    return json({
+      backend: await backendMode(env),
+      has_url: Boolean(env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL),
+      d1_state: (await kv.get('__backend/d1_state')) || 'dirty',
+      syncing: Boolean(await kv.get(SYNC_KEY)),
+    });
+  }
+
+  // Synchronisation Supabase -> D1 puis retour sur D1. { "dry": true } ne fait
+  // que lire Supabase et rendre le plan (aucune ecriture ni bascule) : utile
+  // pour verifier le schema avant de laisser le cron faire la vraie copie.
+  if (path === '/internal/resync' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({})) as any;
+    const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
+      dry: Boolean(body?.dry),
+      onSuccess: body?.dry ? undefined : async () => {
+        await kv.put('__backend/mode', 'd1');
+        await kv.put('__backend/d1_state', 'clean');
+        await kv.put('__backend/last_resync', new Date().toISOString());
+        resetBackendCache();
+      },
+      log: (m) => console.log('[resync]', m),
+    });
+    return json(report, report.ok ? 200 : 500);
   }
 
   // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
@@ -686,10 +808,27 @@ export default {
     // Endpoints internes : gere ici meme en mode relais (secret obligatoire)
     if (path.startsWith('/internal/')) return await handleInternal(request, env, path);
 
+    // Corps conserve en memoire : quand D1 epuise son quota au milieu d'une
+    // requete, on bascule sur Supabase puis on rejoue — ce qui exige un corps
+    // non consomme. Seuls les petits corps sont gardes : un upload de fichier
+    // n'est pas rejouable et rendra un 503 explicite.
+    // Attention : la conservation consomme le flux d'origine, on sert donc
+    // desormais la copie (sinon "Body has already been used").
+    const buffered = await bufferBody(request);
+    if (buffered) request = buffered.fresh();
+
+    // Corps du dispatch, rejouable apres bascule automatique. L'indentation
+    // d'origine est conservee : le corps n'a pas bouge d'un seul caractere.
+    const run = async (): Promise<Response> => {
     try {
       // Backend Supabase : le Worker parle directement a PostgreSQL (prioritaire)
       const backend = await backendMode(env);
       if (backend === 'supabase') {
+        // Resync en cours : on attend la fin plutot que d'etre servi entre deux
+        // versions des donnees (voir waitWhileSyncing). Inutile en mode D1 —
+        // le verrou n'existe que pendant une resync, elle-meme uniquement en
+        // mode supabase.
+        await waitWhileSyncing(env);
         env = withSupabaseDb(env);
       } else {
         // Mode relais : la base vit en local, on relaye vers le PC du cabinet
@@ -4385,16 +4524,42 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
 
       return json({ error: 'Not found: ' + path }, 404);
-    } catch (e: any) {
-      return json({ error: e.message || 'Internal error' }, 500);
     } finally {
       releaseSupabaseConn(env);
+    }
+  };
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await run();
+      } catch (e: any) {
+        // D1 a epuise son quota de lignes lues : bascule automatique sur
+        // Supabase puis rejoue. La requete qui a touche le plafond est la seule
+        // a pouvoir echouer (et encore, seulement si son corps ne peut pas etre
+        // rejoue) ; toutes les suivantes passeront par Supabase.
+        if (attempt === 0 && (await failoverToSupabase(e, env))) {
+          if (buffered !== null || request.method === 'GET' || request.method === 'HEAD') {
+            if (buffered) request = buffered.fresh();
+            continue;
+          }
+          return json({ error: 'Bascule vers Supabase effectuée : cette requête n’a pas pu être rejouée (fichier trop volumineux). Renvoyez-la.' }, 503);
+        }
+        return json({ error: e?.message || 'Internal error' }, 500);
+      }
     }
   },
   // Cron 1er janvier (00:15 UTC) : passage automatique au nouvel exercice
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
+  // Cron quotidien (00:05 UTC) : resync Supabase -> D1 puis retour sur D1.
   // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Retour sur D1 : le quota gratuit se remet a zero a 00:00 UTC, on attend
+    // donc 00:05 pour refaire le point. Traite avant le test backend, puisque
+    // c'est justement le mode supabase que ce cron est cote a resoudre.
+    if (event.cron === '5 0 * * *') {
+      ctx.waitUntil(resyncAndFlipBack(env));
+      return;
+    }
     // Backend Supabase : les crons D1 (sync vers COPY_DB) sont sans objet —
     // la base managee gere sa propre sauvegarde ; le rollover local est gere
     // par le serveur du cabinet (a migrer en fin de bascule, cf. api/supabase/README.md).
