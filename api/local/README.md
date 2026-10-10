@@ -1,7 +1,17 @@
-# EUREX local — API sur SQLite, relais via le Worker Cloudflare
+# EUREX local — API sur SQLite (paquet conservé ; relais Worker retiré)
 
-La base de donnees vit en local (PC du cabinet). Le Worker Cloudflare ne fait que
-**relayer** les requetes du front GH Pages vers ce PC via un tunnel cloudflared.
+> ⚠️ **Ce mode n'est plus actif en production.** Le Worker Cloudflare ne sert
+> plus que **D1** ou **Supabase** (bascule automatique). Les endpoints
+> `/internal/register`, `/internal/heartbeat` et `/internal/cloud_mode` ont été
+> **supprimés**, le mode `__local/mode` n'est plus lu et les clés KV `__local/*`
+> ont été effacées. Ce paquet reste dans le dépôt (serveur SQLite local, crons,
+> sauvegardes) mais n'est **plus joignable** via le Worker. `/internal/ai`, lui,
+> est conservé : `ai-relay.ts` peut toujours l'appeler.
+
+## Description d'origine (historique)
+
+La base vivait en local (PC du cabinet). Le Worker Cloudflare ne faisait que
+**relayer** les requetes du front GH Pages vers ce PC via un tunnel cloudflared :
 
 ```
 Front (GH Pages) → Worker workers.dev → tunnel cloudflared → serveur local (Node, port 8787)
@@ -68,14 +78,11 @@ GET http://127.0.0.1:8787/_local/backup       # snapshot immediat + copie cloud
 - Restauration : telecharger le `.gz`, decompresser, arreter le serveur, remplacer
   `data/eurex.db` (+ supprimer `-wal`/`-shm`), redemarrer.
 
-## Rollback vers D1 (si besoin)
+## Rollback (obsolète)
 
-```powershell
-curl.exe -X POST https://eurex-api.ezzinesalim21.workers.dev/internal/cloud_mode `
-  -H "X-Internal-Secret: <secret>" -H "Content-Type: application/json" -d '{\"mode\":\"cloud\"}'
-```
-Le Worker re-sert alors D1 (donnees figees a l'instant du dump de bascule — perte
-de tout ce qui a ete saisi depuis). Pour repasser en local : `{"mode":"local"}`.
+Le rollback vers D1 passait par `/internal/cloud_mode`, **supprimé** avec le
+relais. Le backend se pilote désormais par `/internal/backend`
+(`{"backend":"d1"|"supabase"}`) et `/internal/resync` (cf. `api/supabase/README.md`).
 
 ## Securite
 

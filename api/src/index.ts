@@ -430,32 +430,11 @@ function cors(): Response {
   });
 }
 
-// --- MIGRATION LOCALE : mode relais vers le PC du cabinet -------------------
-// Cle KV "__local/mode" = '1' : la base de donnees vit en local (SQLite), le Worker
-// ne fait que relayer les requetes vers l'URL du tunnel cloudflared (cote cabinet).
-// Cle "__local/url" = URL du tunnel (change a chaque redemarrage, rafraichie par heartbeat).
-let relayCache: { mode: boolean; url: string; ts: number } | null = null;
-
-async function localRelayState(env: Env): Promise<{ mode: boolean; url: string; ts: number }> {
-  if (relayCache && Date.now() - relayCache.ts < 10000) return relayCache;
-  let mode = false;
-  let url = '';
-  try {
-    if (env.DOCS_KV) {
-      mode = (await env.DOCS_KV.get('__local/mode')) === '1';
-      if (mode) url = (await env.DOCS_KV.get('__local/url')) || '';
-    }
-  } catch { /* KV indisponible : on reste en mode cloud (D1) */ }
-  relayCache = { mode, url, ts: Date.now() };
-  return relayCache;
-}
-
-function resetRelayCache(): void { relayCache = null; }
-
-// --- BASCULE BACKEND : D1 / relais local / Supabase -------------------------
+// --- BASCULE BACKEND : D1 / Supabase ----------------------------------------
 // Cle KV "__backend/mode" = 'supabase' : le Worker execute les requetes lui-meme
 // contre PostgreSQL (Supabase) via l'adaptateur PG (env.DB remplace). Absente ou
-// autre : comportement precedent (relais local si "__local/mode", sinon D1).
+// autre : D1. (Le relais local vers le cabinet a ete retire ; le paquet
+// api/local reste autonome et n'est plus relaye par ce Worker.)
 let backendCache: { mode: string; ts: number } | null = null;
 
 async function backendMode(env: Env): Promise<string> {
@@ -531,14 +510,11 @@ async function waitWhileSyncing(env: Env): Promise<void> {
 
 // Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
 // reporte dans D1 ce qui a change pendant la bascule, puis on y retourne.
-// Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser) ou si la
-// base vit en local (le cabinet est alors source de verite).
+// Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser).
 async function resyncAndFlipBack(env: Env): Promise<void> {
   try {
     const mode = await backendMode(env);
     if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
-    const relay = await localRelayState(env);
-    if (relay.mode) { console.log('[resync] ignoree (base locale)'); return; }
     const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
       onSuccess: async () => {
         await env.DOCS_KV.put('__backend/mode', 'd1');
@@ -557,34 +533,7 @@ async function resyncAndFlipBack(env: Env): Promise<void> {
   }
 }
 
-// Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
-async function relayRequest(request: Request, base: string): Promise<Response> {
-  const url = new URL(request.url);
-  const target = base.replace(/\/+$/, '') + url.pathname + url.search;
-  try {
-    const init: RequestInit = { method: request.method, headers: request.headers, redirect: 'manual' };
-    if (request.method !== 'GET' && request.method !== 'HEAD') init.body = request.body;
-    const res = await fetch(target, init);
-    const ct = res.headers.get('content-type') || '';
-    // Origine/tunnel coupe : cloudflared renvoie 502/504 (text/plain vide) ou page 503/530 HTML.
-    // Le code applicatif ne produit jamais 502/504 ; ses 503 sont en JSON et transitent tels quels.
-    const offline = res.status === 502 || res.status === 504 ||
-      ((res.status === 503 || res.status === 530) && ct.includes('text/html'));
-    if (offline) {
-      try { await res.body?.cancel(); } catch { /* deja consomme */ }
-      return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
-    }
-    const headers = new Headers(res.headers);
-    headers.set('Access-Control-Allow-Origin', '*');
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
-  } catch (e: any) {
-    return json({
-      error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé (' + String(e?.message || e) + ')',
-    }, 503);
-  }
-}
-
-// Endpoints internes Worker <-> serveur local (secret obligatoire, fail-closed).
+// Endpoints internes (secret obligatoire, fail-closed).
 async function handleInternal(request: Request, env: Env, path: string): Promise<Response> {
   const secret = env.EUREX_INTERNAL_SECRET || '';
   const got = request.headers.get('X-Internal-Secret') || '';
@@ -592,7 +541,8 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
   const kv = env.DOCS_KV;
   if (!kv) return json({ error: 'DOCS_KV manquant' }, 500);
 
-  // IA : Workers AI reste sur Cloudflare (quota 10k/jour), le local ne fait que relayer.
+  // IA : Workers AI reste sur Cloudflare (quota 10k/jour) ; le serveur du
+  // cabinet appelle cet endpoint au lieu de porter sa propre cle.
   if (path === '/internal/ai' && request.method === 'POST') {
     const { model, opts } = await request.json() as any;
     try {
@@ -604,39 +554,8 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     }
   }
 
-  if (path === '/internal/register' && request.method === 'POST') {
-    const { url } = await request.json() as any;
-    if (!url) return json({ error: 'url requise' }, 400);
-    await kv.put('__local/url', String(url));
-    await kv.put('__local/mode', '1');
-    await kv.put('__local/seen', new Date().toISOString());
-    resetRelayCache();
-    return json({ ok: true, mode: 'local', url });
-  }
-
-  if (path === '/internal/heartbeat' && request.method === 'POST') {
-    const { url } = await request.json() as any;
-    const mode = (await kv.get('__local/mode')) === '1';
-    if (!mode) return json({ ok: true, mode: 'cloud' }); // pas encore bascule : on ne bascule pas tout seul
-    if (url) await kv.put('__local/url', String(url));
-    await kv.put('__local/seen', new Date().toISOString());
-    resetRelayCache();
-    return json({ ok: true, mode: 'local' });
-  }
-
-  // Rollback explicite : { mode: 'cloud' } repasse le Worker sur D1 (donnees de l'instant du dump),
-  // { mode: 'local' } reactive le relais (si une URL est deja enregistree).
-  if (path === '/internal/cloud_mode' && request.method === 'POST') {
-    const { mode } = await request.json() as any;
-    if (mode === 'cloud') { await kv.delete('__local/mode'); await kv.delete('__local/url'); }
-    else if (mode === 'local') { await kv.put('__local/mode', '1'); }
-    else return json({ error: "mode attendu: 'local' ou 'cloud'" }, 400);
-    resetRelayCache();
-    return json({ ok: true, mode });
-  }
-
   // Bascule backend : 'supabase' = le Worker requete PostgreSQL directement,
-  // 'd1' = comportement precedent (D1 ou relais local). Prioritaire sur le relais.
+  // 'd1' = D1.
   if (path === '/internal/backend' && request.method === 'POST') {
     const body = await request.json() as any;
     const backend = body.backend;
@@ -813,7 +732,7 @@ export default {
 
     if (method === 'OPTIONS') return cors();
 
-    // Endpoints internes : gere ici meme en mode relais (secret obligatoire)
+    // Endpoints internes (secret obligatoire)
     if (path.startsWith('/internal/')) return await handleInternal(request, env, path);
 
     // Corps conserve en memoire : quand D1 epuise son quota au milieu d'une
@@ -838,13 +757,6 @@ export default {
         // mode supabase.
         await waitWhileSyncing(env);
         env = withSupabaseDb(env);
-      } else {
-        // Mode relais : la base vit en local, on relaye vers le PC du cabinet
-        const relay = await localRelayState(env);
-        if (relay.mode) {
-          if (relay.url) return await relayRequest(request, relay.url);
-          return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
-        }
       }
 
       // --- SEED DATA ---
@@ -4651,12 +4563,6 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
     const backend = await backendMode(env);
     if (backend === 'supabase') {
       console.log('cron', event.cron, 'ignore (backend supabase)');
-      return;
-    }
-    // Mode local : le serveur du cabinet execute lui-meme ces crons sur SQLite
-    const relay = await localRelayState(env);
-    if (relay.mode) {
-      console.log('cron', event.cron, 'ignore (base locale)');
       return;
     }
     if (event.cron === '15 0 1 1 *') {

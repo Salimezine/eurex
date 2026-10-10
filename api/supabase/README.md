@@ -169,7 +169,7 @@ du `prepare()` — aucun SQL source n'est modifié.
 
 ```
 Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG → Supabase (PostgreSQL)
-                         └─ sinon : relais local (tunnel) → SQLite local | D1 gelée (rollback)
+                         └─ sinon : D1
 ```
 
 **Composants** (`api/src/`) :
@@ -192,7 +192,7 @@ Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG 
 curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
 # → {"backend":"d1|supabase","has_url":true|false}
 
-# activer / revenir en arrière (cache 10 s, prioritaire sur le relais)
+# activer / revenir en arrière (cache 10 s)
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"supabase"}' .../internal/backend
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"d1"}'      .../internal/backend
 
@@ -213,7 +213,7 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{"dry":true}' .../internal/resync
   objet en mode supabase (sauvegardes D1 → D1).
 - `transaction(fn)` : `fn` reçoit un **queryFn** déjà dans la transaction ;
   appeler `client.query()` depuis `fn` provoquerait un deadlock (file non réentrant).
-- Tests : `cd api && npm test` → **47 tests** dont l'**inventaire SQL** qui
+- Tests : `cd api && npm test` → **88 tests** dont l'**inventaire SQL** qui
   soumet *toutes* les chaînes `.prepare()` et les fragments SQLite de `index.ts`
   au traducteur (filet contre toute nouvelle construction non couverte).
 
@@ -308,11 +308,10 @@ curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.work
 curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
 ```
 
-- **Le PC du cabinet** (`__local/mode=1`) est source de vérité : le cron ignore la
-  resync tant que le relais local est actif, sous peine d'écraser ses écritures.
-- **`__local/mode` doit repasser à `1`** quand le cabinet revient — sinon les
-  saisies continueraient d'aller dans le cloud alors que la base locale aurait
-  avancé. C'est la seule étape manuelle du dispositif.
+- **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
+  Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
+  `__local/*` n'existent plus ; le paquet `api/local` reste dans le dépôt mais
+  n'est plus joignable. Il n'y a donc plus d'étape manuelle de bascule locale.
 - Tests : `cd api && npm test` → **88 tests**, dont la synchronisation sur
   doubles et la conservation de corps.
 
