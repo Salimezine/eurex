@@ -218,6 +218,32 @@ export default function OrgDashboardExpert() {
   };
   const presMap: Record<string, OrgComptable> = Object.fromEntries(comptables.map(c => [c.id, c]));
 
+  // Derniere connexion (last_seen_at = UTC SQLite) : "il y a 2 h", "hier a 14:32", ...
+  const parseUtc = (s?: string | null) => (s ? Date.parse(String(s).replace(' ', 'T') + 'Z') : 0);
+  const fmtAgo = (s?: string | null) => {
+    const t = parseUtc(s);
+    if (!t) return 'jamais connecté';
+    const diff = Math.floor(Date.now() / 1000) - Math.floor(t / 1000);
+    if (diff < 60) return "à l'instant";
+    if (diff < 3600) return `il y a ${Math.floor(diff / 60)} min`;
+    const local = new Date(t + 3600000); // heure locale TN (UTC+1)
+    const hhmm = `${String(local.getUTCHours()).padStart(2, '0')}h${String(local.getUTCMinutes()).padStart(2, '0')}`;
+    if (diff < 86400) {
+      const h = Math.floor(diff / 3600);
+      return h < 3 ? `il y a ${h} h ${Math.floor((diff % 3600) / 60)} min` : `il y a ${h} h`;
+    }
+    if (diff < 172800) return `hier à ${hhmm}`;
+    if (diff < 604800) return `il y a ${Math.floor(diff / 86400)} j`;
+    const d = `${String(local.getUTCDate()).padStart(2, '0')}/${String(local.getUTCMonth() + 1).padStart(2, '0')}/${local.getUTCFullYear()}`;
+    return `le ${d} à ${hhmm}`;
+  };
+  const agoFull = (s?: string | null) => {
+    const t = parseUtc(s);
+    if (!t) return 'Aucune connexion enregistrée';
+    const local = new Date(t + 3600000);
+    return `Dernière connexion : ${local.getUTCDate()}/${local.getUTCMonth() + 1}/${local.getUTCFullYear()} ${String(local.getUTCHours()).padStart(2, '0')}:${String(local.getUTCMinutes()).padStart(2, '0')} (UTC+1)`;
+  };
+
   if (loading) return (
     <div className="space-y-4">
       <SkeletonKpiGrid count={4} />
@@ -400,9 +426,9 @@ export default function OrgDashboardExpert() {
                   <h3 className="text-lg font-bold text-gray-800 group-hover:text-purple-700 transition-colors">{c.full_name}</h3>
                   <p className="text-xs text-gray-400 mt-0.5">{c.email}</p>
                   <div className="flex items-center gap-4 mt-2 text-[11px]">
-                    <span className={`flex items-center gap-1.5 font-semibold ${c.online ? 'text-emerald-600' : 'text-gray-400'}`} title="Présence (activité < 3 min)">
+                    <span className={`flex items-center gap-1.5 font-semibold ${c.online ? 'text-emerald-600' : 'text-gray-400'}`} title={c.online ? 'Présence (activité < 3 min)' : agoFull(c.last_seen_at)}>
                       <span className={`inline-block w-2 h-2 rounded-full ${c.online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300'}`} />
-                      {c.online ? 'Connecté' : 'Hors ligne'}
+                      {c.online ? 'Connecté' : <span className="text-gray-400 font-medium">Hors ligne · <span className="text-amber-600 font-semibold">{fmtAgo(c.last_seen_at)}</span></span>}
                     </span>
                     {c.norm_seconds ? (
                       <span className="text-gray-500">Aujourd'hui : <b className="text-gray-700">{fmtHm(c.worked_today_seconds)} / 8h30</b></span>
@@ -526,11 +552,14 @@ export default function OrgDashboardExpert() {
                     <td className="px-5 py-4 text-gray-600">
                       {d.comptable_name || '—'}
                       {d.comptable_id && presMap[d.comptable_id] && (
-                        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-400" title="Heures pointées aujourd'hui (norme 8h30 du lundi au vendredi)">
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-400" title={presMap[d.comptable_id].online ? "Heures pointées aujourd'hui (norme 8h30 du lundi au vendredi)" : agoFull(presMap[d.comptable_id].last_seen_at)}>
                           <span className={`inline-block w-1.5 h-1.5 rounded-full ${presMap[d.comptable_id].online ? 'bg-emerald-500' : 'bg-gray-300'}`} />
                           {presMap[d.comptable_id].norm_seconds
                             ? `${fmtHm(presMap[d.comptable_id].worked_today_seconds)} / 8h30`
                             : ((presMap[d.comptable_id].worked_today_seconds || 0) > 0 ? `${fmtHm(presMap[d.comptable_id].worked_today_seconds)} (repos)` : 'Repos')}
+                          {!presMap[d.comptable_id].online && (
+                            <span className="text-amber-600 font-medium">· {fmtAgo(presMap[d.comptable_id].last_seen_at)}</span>
+                          )}
                         </div>
                       )}
                     </td>
