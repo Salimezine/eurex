@@ -1,5 +1,6 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
 import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
+import { DualDb, type DbLike } from './dual-write.ts';
 
 export interface Env {
   DB: D1Database;
@@ -435,27 +436,87 @@ function cors(): Response {
 // contre PostgreSQL (Supabase) via l'adaptateur PG (env.DB remplace). Absente ou
 // autre : D1. (Le relais local vers le cabinet a ete retire ; le paquet
 // api/local reste autonome et n'est plus relaye par ce Worker.)
-let backendCache: { mode: string; ts: number } | null = null;
+// Cles KV du pilote de bascule.
+const MODE_KEY = '__backend/mode';       // 'd1' | 'supabase'
+const DUAL_KEY = '__backend/dual_write'; // 'on' : double ecriture
+// Une ecriture secondaire a echoue alors que D1 etait primaire : Supabase est
+// en retard. La resync nocturne copie Supabase -> D1 et PURGE les orphelins :
+// elle ecraserait donc l'ecriture que D1 a bien retenue, transformant un
+// retard en perte definitive. Tant que ce drapeau est leve, la resync
+// s'abstient (voir resyncAndFlipBack).
+const FWD_GAP_KEY = '__backend/forward_gap';
 
-async function backendMode(env: Env): Promise<string> {
-  if (backendCache && Date.now() - backendCache.ts < 10000) return backendCache.mode;
+let backendCache: { mode: string; dual: boolean; ts: number } | null = null;
+
+// Etat du pilote, lu une fois par requete (cache 10 s) : mode de service et
+// eventuelle double ecriture sont recus ensemble pour ne pas doubler les
+// lectures KV sur chaque requete.
+async function backendState(env: Env): Promise<{ mode: string; dual: boolean }> {
+  if (backendCache && Date.now() - backendCache.ts < 10000) {
+    return { mode: backendCache.mode, dual: backendCache.dual };
+  }
   let mode = 'd1';
+  let dual = false;
   try {
-    if (env.DOCS_KV) mode = (await env.DOCS_KV.get('__backend/mode')) || 'd1';
-  } catch { /* KV indisponible : on garde D1 */ }
-  backendCache = { mode, ts: Date.now() };
-  return mode;
+    if (env.DOCS_KV) {
+      mode = (await env.DOCS_KV.get(MODE_KEY)) || 'd1';
+      dual = (await env.DOCS_KV.get(DUAL_KEY)) === 'on';
+    }
+  } catch { /* KV indisponible : on garde D1, sans double ecriture */ }
+  backendCache = { mode, dual, ts: Date.now() };
+  return { mode, dual };
 }
+
+async function backendMode(env: Env): Promise<string> { return (await backendState(env)).mode; }
 
 function resetBackendCache(): void { backendCache = null; }
 
-// Basculee Supabase active : env.DB devient l'adaptateur PG (interface D1
-// identique, SQL source traduit a la volee). Sans chemin de connexion : pas de
-// changement. Hyperdrive est prioritaire sur la secret (voir Env).
-function withSupabaseDb(env: Env): Env {
+// Choix du moteur pour cette requete :
+//   mode supabase -> primaire PostgreSQL, secondaire D1
+//   mode d1       -> primaire D1, secondaire PostgreSQL (si double ecriture)
+// Sans double ecriture, c'est exactement le comportement d'origine : un seul
+// moteur. Hyperdrive est prioritaire sur la secret (voir Env).
+//
+// L'adaptateur PG est paresseux (sa connexion n'est ouverte qu'a la premiere
+// utilisation) : une requete qui ne fait qu'une lecture ne paye rien quand la
+// double ecriture est active.
+function applyBackend(env: Env, mode: string, dual: boolean): Env {
   const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
-  if (!dbUrl) return env;
-  return { ...env, DB: getSupabaseAdapter(dbUrl) as unknown as D1Database };
+  if (!dbUrl) return env; // aucun chemin vers PostgreSQL : D1 seul
+  if (!dual) {
+    if (mode !== 'supabase') return env;
+    return { ...env, DB: getSupabaseAdapter(dbUrl) as unknown as D1Database };
+  }
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  const d1 = env.DB;
+  const prim = mode === 'supabase' ? pg : d1;
+  const sec = mode === 'supabase' ? d1 : pg;
+  const db = new DualDb(prim as unknown as DbLike, sec as unknown as DbLike, {
+    onSecondaryFailure: () => { void markForwardGap(env, mode); },
+  });
+  return { ...env, DB: db as unknown as D1Database };
+}
+
+// Une ecriture n'a pas atteint la base secondaire : on signale l'ecart pour
+// que la resync nocturne le repare — jamais en la laissant copier dans le
+// mauvais sens.
+async function markForwardGap(env: Env, mode: string): Promise<void> {
+  const kv = env.DOCS_KV;
+  if (!kv) return;
+  try {
+    if (mode === 'supabase') {
+      // D1 est en retard : c'est precisement ce que la resync Supabase -> D1
+      // repare toute seule. Marquer "dirty" suffit a interdire un retour
+      // manuel sans copie prealable.
+      await kv.put('__backend/d1_state', 'dirty');
+    } else {
+      // Supabase est en retard : la resync ecraserait D1. On leve un drapeau
+      // a duree de vie longue, et la copie s'abstient jusqu'a reparation.
+      await kv.put(FWD_GAP_KEY, new Date().toISOString(), { expirationTtl: 86400 * 7 });
+    }
+  } catch (e) {
+    console.error('signalement de divergence impossible :', String((e as any)?.message || e));
+  }
 }
 
 // Rend la connexion PostgreSQL ouverte pendant cette requete : un socket cree
@@ -515,6 +576,14 @@ async function resyncAndFlipBack(env: Env): Promise<void> {
   try {
     const mode = await backendMode(env);
     if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
+    // Ecart en attente de reparation inverse : copier Supabase -> D1
+    // ecraserait une ecriture que D1 a bien retenue (et purgerait la ligne en
+    // plus). On s'abstient ; la requete continue d'etre servie par Supabase.
+    const fwd = await env.DOCS_KV.get(FWD_GAP_KEY);
+    if (fwd) {
+      console.error('[resync] abandonnee : ecart a reparer en sens inverse depuis ' + fwd);
+      return;
+    }
     const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
       onSuccess: async () => {
         await env.DOCS_KV.put('__backend/mode', 'd1');
@@ -558,6 +627,16 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
   // 'd1' = D1.
   if (path === '/internal/backend' && request.method === 'POST') {
     const body = await request.json() as any;
+
+    // Double ecriture seule : n'emet que le drapeau, sans toucher au moteur
+    // en service. {"dual_write":true} | {"dual_write":false}
+    if (body.dual_write !== undefined && body.backend === undefined) {
+      const on = body.dual_write === true;
+      await kv.put(DUAL_KEY, on ? 'on' : 'off');
+      resetBackendCache();
+      return json({ ok: true, dual_write: on });
+    }
+
     const backend = body.backend;
     if (backend !== 'supabase' && backend !== 'd1') {
       return json({ error: "backend attendu: 'supabase' ou 'd1'" }, 400);
@@ -593,6 +672,11 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
       // Supabase quand D1 atteint son quota, sans fouiller le KV.
       last_resync: (await kv.get('__backend/last_resync')) || null,
       last_failover: (await kv.get('__backend/last_failover')) || null,
+      // Double ecriture : les deux bases recoivent-elles chaque modification ?
+      dual_write: (await kv.get(DUAL_KEY)) === 'on',
+      // Ecart en attente : une ecriture n'a pas atteint PostgreSQL alors que
+      // D1 etait primaire. La resync nocturne s'abstient tant que c'est leve.
+      forward_gap: (await kv.get(FWD_GAP_KEY)) || null,
     });
   }
 
@@ -601,6 +685,16 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
   // pour verifier le schema avant de laisser le cron faire la vraie copie.
   if (path === '/internal/resync' && request.method === 'POST') {
     const body = await request.json().catch(() => ({})) as any;
+    // Meme garde que le cron : tant qu'un ecart inverse est en attente, copier
+    // Supabase -> D1 ecraserait (et purgerait) une ecriture que D1 a retenue.
+    const fwd = await kv.get(FWD_GAP_KEY);
+    if (fwd && body?.allow_forward_gap !== true) {
+      return json({
+        ok: false,
+        error: 'ecart a reparer en sens inverse depuis ' + fwd +
+               " : la copie Supabase -> D1 ecraserait D1. Relancer avec {\"allow_forward_gap\":true} pour passer outre en acceptant la perte.",
+      }, 409);
+    }
     const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
       dry: Boolean(body?.dry),
       onSuccess: body?.dry ? undefined : async () => {
@@ -758,16 +852,18 @@ export default {
     // d'origine est conservee : le corps n'a pas bouge d'un seul caractere.
     const run = async (): Promise<Response> => {
     try {
-      // Backend Supabase : le Worker parle directement a PostgreSQL (prioritaire)
-      const backend = await backendMode(env);
+      // Choix du moteur : Supabase en primaire quand la bascule est active, et
+      // double ecriture si le drapeau est leve (les deux bases recues alors a
+      // chaque modification).
+      const { mode: backend, dual } = await backendState(env);
       if (backend === 'supabase') {
         // Resync en cours : on attend la fin plutot que d'etre servi entre deux
         // versions des donnees (voir waitWhileSyncing). Inutile en mode D1 —
         // le verrou n'existe que pendant une resync, elle-meme uniquement en
         // mode supabase.
         await waitWhileSyncing(env);
-        env = withSupabaseDb(env);
       }
+      env = applyBackend(env, backend, dual);
 
       // --- SEED DATA ---
       if (path === '/api/seed' && method === 'POST') {
