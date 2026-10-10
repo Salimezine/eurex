@@ -255,6 +255,14 @@ async function rolloverExercices(env: Env, opts: { orgId: string; source: string
   return { year: y, created, closed };
 }
 
+// D1 refuse plus de 100 parametres par requete : les listes d'IN sont
+// decoupees. Le plafond tient largement pour les cabinets reels (~70 clients).
+function chunkIds(ids: string[], size = 80): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
 // Securite au chargement du dashboard : verification rapide (2 requetes) puis rollover si besoin.
 // Le cron du 1er janvier fait le meme travail — cette passe rattrape un cron rate/impossible.
 async function ensureCurrentExercice(env: Env, orgId: string): Promise<void> {
@@ -2387,6 +2395,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const auth = request.headers.get('Authorization');
         if (!auth?.startsWith('Bearer ')) return null;
         const token = auth.slice(7);
+        let payload: any;
+        // Jeton : malforme, signature erronee ou expire -> 401.
         try {
           const [dataB64, sigHex] = token.split('.');
           if (!dataB64 || !sigHex) return null;
@@ -2395,15 +2405,24 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const sigBytes = new Uint8Array(sigHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
           const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
           if (!valid) return null;
-          const payload = JSON.parse(data);
+          payload = JSON.parse(data);
           if (payload.exp < Date.now()) return null;
-          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
-          if (!user || !user.is_active) return null;
-          if (user.role_label) user.role = user.role_label;
-          // Presence : marque l'utilisateur comme "vu" (max 1 ecriture/60s)
-          await env.DB.prepare("UPDATE org_users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now','-60 seconds'))").bind(user.id).run();
-          return user;
         } catch { return null; }
+        // Base de donnees : en dehors du try ci-dessus, expres. Une erreur
+        // transitoire (socket, saturation) n'est PAS une erreur
+        // d'authentification — la propager en 500 plutot que de renvoyer 401
+        // evite de faire croire a l'utilisateur que son jeton est invalide,
+        // et permet au client de reessayer. Un catch global transformait
+        // n'importe quel raté de requete en "Non autorisé" en charge parallele.
+        const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
+        if (!user || !user.is_active) return null;
+        if (user.role_label) user.role = user.role_label;
+        // Presence : ecriture best-effort (1/min par utilisateur). Jamais au
+        // prix d'un refus d'acces : si elle echoue, on sert quand meme.
+        try {
+          await env.DB.prepare("UPDATE org_users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now','-60 seconds'))").bind(user.id).run();
+        } catch (e) { console.error('last_seen_at non ecrit :', String((e as any)?.message || e)); }
+        return user;
       }
 
       // Grant (renfort) actif : acces temporaire ouvert par un expert/manager
@@ -2519,27 +2538,62 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? ORDER BY c.name').bind(user.organization_id, user.id).all();
           clients = r.results;
         }
-        // Enrich with dossier + progress
-        const enriched = await Promise.all(clients.map(async (c: any) => {
-          const d = exerciceSel
-            ? await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(c.id, exerciceSel).first() as any
-            : await env.DB.prepare("SELECT * FROM org_dossiers WHERE client_id = ? AND status = 'en_cours' ORDER BY exercice DESC LIMIT 1").bind(c.id).first() as any;
-          // Exercice filtre : le client sans dossier cette annee disparait du dashboard
-          if (exerciceSel && !d) return null;
+        // Enrich with dossier + progress. AVANT : 1 requete dossiers + 1 taches
+        // + 1 documents PAR CLIENT (69 clients -> 207 requetes, 3,5 s de
+        // va-et-vient). Maintenant 3 requetes groupees. Le plafond CPU du Worker
+        // gratuit (10 ms) se partage entre les requetes concurrentes d'un isolat :
+        // ce N+1 produisait des 503 "error code: 1102" en charge parallele.
+        const ids = clients.map((c: any) => c.id);
+        const dosByClient = new Map<string, any>();
+        for (const chunk of chunkIds(ids)) {
+          const ph = chunk.map(() => '?').join(',');
+          const sql = exerciceSel
+            ? `SELECT * FROM org_dossiers WHERE exercice = ? AND client_id IN (${ph})`
+            : `SELECT * FROM org_dossiers WHERE status = 'en_cours' AND client_id IN (${ph})`;
+          const { results: rows } = await env.DB.prepare(sql)
+            .bind(...(exerciceSel ? [exerciceSel] : []), ...chunk).all();
+          for (const d of rows as any[]) {
+            const cur = dosByClient.get(d.client_id);
+            // Exercice filtre : une seule rangee par client. Sinon : le
+            // dossier en_cours de l'exercice le plus recent (ORDER BY ... LIMIT 1).
+            if (!cur || (!exerciceSel && Number(d.exercice) > Number(cur.exercice))) dosByClient.set(d.client_id, d);
+          }
+        }
+        // Exercice filtre : le client sans dossier cette annee disparait du dashboard
+        const kept = exerciceSel ? clients.filter((c: any) => dosByClient.has(c.id)) : clients;
+        const dossierIds: string[] = [];
+        for (const c of kept as any[]) { const d = dosByClient.get(c.id); if (d) dossierIds.push(d.id); }
+
+        const tasksByDossier = new Map<string, any[]>();
+        const docByDossier = new Map<string, any>();
+        for (const id of dossierIds) tasksByDossier.set(id, []);
+        for (const chunk of chunkIds(dossierIds)) {
+          const ph = chunk.map(() => '?').join(',');
+          const { results: tr } = await env.DB.prepare(
+            `SELECT dossier_id, status, export_scope, month FROM org_tasks WHERE hidden = 0 AND dossier_id IN (${ph})`,
+          ).bind(...chunk).all();
+          for (const t of tr as any[]) tasksByDossier.get(t.dossier_id)!.push(t);
+          const { results: dr } = await env.DB.prepare(
+            `SELECT dossier_id, COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id IN (${ph}) GROUP BY dossier_id`,
+          ).bind(...chunk).all();
+          for (const r of dr as any[]) docByDossier.set(r.dossier_id, r);
+        }
+
+        const enriched = kept.map((c: any) => {
+          const d = dosByClient.get(c.id) || null;
           let taskStats = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let docStats = { total: 0, received: 0 };
           if (d) {
-            const { results: tasks } = await env.DB.prepare('SELECT status, export_scope, month FROM org_tasks WHERE dossier_id = ? AND hidden = 0').bind(d.id).all();
-            for (const t of tasks as any[]) {
+            for (const t of (tasksByDossier.get(d.id) || []) as any[]) {
               if (!exportScopeKeeps(t.export_scope, c.export_status)) continue;
               if (!inDashboardScope(t.month)) continue;
               taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
             }
-            const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
+            const ds = docByDossier.get(d.id);
             if (ds) { docStats.total = ds.total || 0; docStats.received = ds.received || 0; }
           }
-          return { ...c, dossier_actuel: d || null, task_stats: taskStats, doc_stats: docStats, progress: taskStats.total > 0 ? Math.round(taskStats.fait / taskStats.total * 100 * 10) / 10 : 0 };
-        }));
+          return { ...c, dossier_actuel: d, task_stats: taskStats, doc_stats: docStats, progress: taskStats.total > 0 ? Math.round(taskStats.fait / taskStats.total * 100 * 10) / 10 : 0 };
+        });
         return json(enriched.filter(Boolean));
       }
 
@@ -3996,9 +4050,28 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         // Norme 8h30 uniquement lun-ven (heure locale TN = UTC+1) ; sam/dim = repos
         const dowTn = new Date(Date.now() + 3600000).getUTCDay();
         const normSec = (dowTn !== 0 && dowTn !== 6) ? 30600 : 0;
-        const enriched = await Promise.all(results.map(async (c: any) => {
-          const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
-          const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\' AND t.hidden = 0').bind(c.id, user.organization_id).all();
+        // 2 requetes groupees au lieu de 2 par comptable (19 requetes pour 8
+        // comptables) : le plafond CPU du Worker gratuit se partage entre les
+        // requetes concurrentes d'un isolat, d'ou des 503 "error code: 1102".
+        const clientsByUid = new Map<string, any[]>();
+        {
+          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = 'en_cours' WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL").bind(user.organization_id).all();
+          for (const r of rows as any[]) {
+            const list = clientsByUid.get(r.uid);
+            if (list) list.push(r); else clientsByUid.set(r.uid, [r]);
+          }
+        }
+        const tasksByUid = new Map<string, any[]>();
+        {
+          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0").bind(user.organization_id).all();
+          for (const r of rows as any[]) {
+            const list = tasksByUid.get(r.uid);
+            if (list) list.push(r); else tasksByUid.set(r.uid, [r]);
+          }
+        }
+        const enriched = results.map((c: any) => {
+          const clients = clientsByUid.get(c.id) || [];
+          const taskStats = tasksByUid.get(c.id) || [];
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           for (const t of taskStats as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
@@ -4010,7 +4083,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             online: parseUtc(c.last_seen_at) >= nowS - 180,
             worked_today_seconds: (Number(dayByUser.get(c.id)) || 0) + Math.max(0, runStart ? nowS - runStart : 0),
             norm_seconds: normSec };
-        }));
+        });
         return json(enriched);
       }
 
@@ -4182,8 +4255,20 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const exParam = new URL(request.url).searchParams.get('exercice');
         const exSel = exParam ? Number(exParam) : null;
         const { results } = await env.DB.prepare(`SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ?${exSel ? ' AND d.exercice = ?' : ''} ORDER BY d.exercice DESC, c.name`).bind(user.organization_id, ...(exSel ? [exSel] : [])).all();
-        const enriched = await Promise.all(results.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.dossier_id = ? AND t.hidden = 0').bind(d.id).all();
+        // UNE requete pour les taches de tous les dossiers, au lieu d'une par
+        // dossier (70 requetes pour 69 dossiers). Le plafond CPU du Worker
+        // gratuit (10 ms) se partage entre les requetes concurrentes d'un
+        // isolat : ce N+1 produisait des 503 "error code: 1102".
+        const tasksByDossier = new Map<string, any[]>();
+        for (const d of results as any[]) tasksByDossier.set(d.id, []);
+        for (const chunk of chunkIds(results.map((d: any) => d.id))) {
+          const { results: tasks } = await env.DB.prepare(
+            `SELECT t.dossier_id, t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.hidden = 0 AND t.dossier_id IN (${chunk.map(() => '?').join(',')})`,
+          ).bind(...chunk).all();
+          for (const t of tasks as any[]) tasksByDossier.get(t.dossier_id)!.push(t);
+        }
+        const enriched = results.map((d: any) => {
+          const tasks = tasksByDossier.get(d.id) || [];
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let totalTime = 0;
           for (const t of tasks as any[]) {
@@ -4191,7 +4276,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
-        }));
+        });
         return json(enriched);
       }
 

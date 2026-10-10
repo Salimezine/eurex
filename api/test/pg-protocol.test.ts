@@ -98,6 +98,44 @@ test('RowDescription : decode 2 champs (varchar, int4) + DataRow null/texte', ()
   assert.equal(dr.t === 'dataRow' && dr.values[1], 'abc');
 });
 
+test('FrameParser : gros resultat en tout petits morceaux (regression O(n^2))', () => {
+  // Regression 2026-10-10 (prod) : l'ancien parser faisait this.buf.slice()
+  // par message, donc O(n^2) en octets. Au-dela de ~15 Ko de reponse le seul
+  // decodage depassait le budget CPU de 10 ms des Workers (503 error 1102 sur
+  // /api/org/clients, /dossiers, /comptables, /alerts). On verifie ici qu'un
+  // gros volume arrive en morceaux minuscules reste correct ET rapide.
+  const parser = new FrameParser();
+  const N = 4000;
+  const val = 'valeur_de_vingt_oct'; // 20 octets
+  const parts: Uint8Array[] = [
+    frame('T', [...i16(1), ...cstr('x'), ...i32(0), ...i16(1), ...i32(25), ...i16(-1), ...i32(-1), ...i16(0)]),
+  ];
+  for (let i = 0; i < N; i++) {
+    parts.push(frame('D', [...i16(1), ...i32(val.length), ...[...val].map((c) => c.charCodeAt(0))]));
+  }
+  parts.push(frame('C', cstr('SELECT ' + N)));
+  parts.push(frame('Z', [0x49]));
+  const whole = concatBytes(parts);
+
+  let rows = 0, desc = false, ready = false, cmd = '';
+  const started = Date.now();
+  for (let off = 0; off < whole.length; off += 7) {
+    const end = Math.min(off + 7, whole.length);
+    for (const m of parser.push(whole.subarray(off, end))) {
+      if (m.t === 'rowDesc') desc = true;
+      else if (m.t === 'dataRow') rows++;
+      else if (m.t === 'ready') ready = true;
+      else if (m.t === 'command') cmd = m.tag;
+    }
+  }
+  const elapsed = Date.now() - started;
+  assert.equal(rows, N);
+  assert.equal(cmd, 'SELECT ' + N);
+  assert.ok(desc && ready);
+  // Large marge : l'ancien code prenait plusieurs secondes sur ~120 Ko.
+  assert.ok(elapsed < 3000, `decodage trop lent : ${elapsed} ms`);
+});
+
 test('ErrorResponse : champs S/C/M/D', () => {
   const parser = new FrameParser();
   const body = [

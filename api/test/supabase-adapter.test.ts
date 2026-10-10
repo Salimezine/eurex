@@ -2,9 +2,9 @@
 // verifiee contre le faux serveur PG partage.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SupabaseAdapter, type SupabaseStatement } from '../src/supabase-adapter.ts';
+import { SupabaseAdapter, getSupabaseAdapter, type SupabaseStatement } from '../src/supabase-adapter.ts';
 import { PgError } from '../src/pg/client.ts';
-import { makeClient, type Responder } from './fake-pg.ts';
+import { makeClient, FakeServer, TEST_URL, type Responder } from './fake-pg.ts';
 
 function makeAdapter(responder?: Responder): { adapter: SupabaseAdapter; sessions: ReturnType<typeof makeClient>['sessions'] } {
   const { client, sessions } = makeClient({ responder });
@@ -150,4 +150,31 @@ test('pkMap : chargee une seule fois (cache adapter)', async () => {
   const pkCalls = sessions[0].sqls.filter(isPkMap);
   assert.equal(pkCalls.length, 1, 'une seule requete information_schema');
   adapter.close();
+});
+
+// Regression (production) : l'adaptateur etait un singleton par URL, donc
+// toutes les requetes concurrentes d'un isolat partageaient le meme socket.
+// La premiere terminee fermait la connexion pendant que les autres
+// l'utilisaient — d'ou des 401 "Non autorise" et des 500 intermittents en
+// charge parallele (le dashboard du cabinet fait un Promise.all de 4 appels).
+test('concurrence : un adaptateur par requete, socket jamais partage', async () => {
+  const sessions: FakeServer[] = [];
+  const tf = async () => {
+    const s = new FakeServer(sessions.length);
+    sessions.push(s);
+    return s as any;
+  };
+  const a1 = getSupabaseAdapter(TEST_URL, tf);
+  const a2 = getSupabaseAdapter(TEST_URL, tf);
+  assert.notEqual(a1, a2, 'deux appels -> deux adaptateurs (pas de singleton)');
+
+  await a1.prepare('SELECT 1 AS n, 42 AS m').first();
+  await a2.prepare('SELECT 1 AS n, 42 AS m').first();
+  assert.equal(sessions.length, 2, 'une connexion par requete');
+
+  a1.close(); // la requete 1 se termine et rend sa connexion
+  const row = await a2.prepare('SELECT 1 AS n, 42 AS m').first();
+  assert.deepEqual(row, { n: 1, m: 42 }, 'la requete 2 fonctionne toujours');
+  assert.equal(sessions.length, 2, 'pas de reconnexion : son socket est intact');
+  a2.close();
 });

@@ -73,20 +73,29 @@ export class SupabaseStatement {
   }
 }
 
+// Cache PK partage entre les requetes. Il ne contient que des RESULTATS :
+// une promesse en cours y serait rattachee au socket de la requete qui l'a
+// lancee, et l'attendre depuis une autre requete reviendrait a faire des I/O
+// pour le compte d'un contexte qui peut deja avoir ete ferme.
+type PkCache = { pk: PkMap | null };
+const SHARED_PK: PkCache = { pk: null };
+
 export class SupabaseAdapter {
-  // Le socket est ouvert dans le contexte D'UNE requete et ne peut pas en
-  // traverser une autre (Workers : "Cannot perform I/O on behalf of a different
-  // request"). On garde l'adaptateur en singleton — pour son cache pkMap, qui
-  // lui est portable — mais la connexion est ouverte par requete puis rendue
-  // via endRequest(). Fabrique plutot que client : le constructeur accepte
-  // toujours un client direct (tests).
+  // UN adaptateur PAR REQUETE. Le socket (client) est propre a l'instance et
+  // rendu par endRequest(). Un adaptateur singleton partageait ce socket entre
+  // requetes concurrentes du meme isolat : A finissait et fermait le socket
+  // pendant que B s'en servait (ou B faisait des I/O sur celui de A),
+  // d'ou des 401/500 intermittents en charge parallele. Seul le cache PK,
+  // en lecture seule une fois charge, est partage. Fabrique plutot que client :
+  // le constructeur accepte toujours un client direct (tests).
   private mkClient: () => PgClient;
   private client: PgClient | null = null;
-  private pk: PkMap | null = null;
+  private cache: PkCache;
   private pkLoading: Promise<PkMap> | null = null;
 
-  constructor(client: PgClient | (() => PgClient)) {
+  constructor(client: PgClient | (() => PgClient), cache: PkCache = { pk: null }) {
     this.mkClient = typeof client === 'function' ? client : () => client;
+    this.cache = cache;
   }
 
   private get c(): PgClient {
@@ -127,9 +136,11 @@ export class SupabaseAdapter {
     return this.c.query(toPg(sql, { pk }), params);
   }
 
-  // PK de toutes les tables (une requete) : necessaire a INSERT OR REPLACE
+  // PK de toutes les tables (une requete) : necessaire a INSERT OR REPLACE.
+  // La promesse de chargement est propre a l'instance : seule la carte
+  // terminee est publiee dans le cache partage.
   private async pkMap(): Promise<PkMap> {
-    if (this.pk) return this.pk;
+    if (this.cache.pk) return this.cache.pk;
     if (!this.pkLoading) {
       this.pkLoading = (async () => {
         const r = await this.c.query(
@@ -140,7 +151,7 @@ export class SupabaseAdapter {
           const t = String(row.tbl);
           (map[t] = map[t] || []).push(String(row.col));
         }
-        this.pk = map;
+        this.cache.pk = map;
         return map;
       })().catch(e => {
         this.pkLoading = null;
@@ -155,15 +166,10 @@ export class SupabaseAdapter {
   }
 }
 
-// Singleton par URL : conserve le cache pkMap d'une requete a l'autre. La
-// connexion, elle, est ouverte par requete puis rendue (endRequest).
-const adapters = new Map<string, SupabaseAdapter>();
-
+// UN adaptateur par appel — donc par requete, avec son propre socket. Le
+// partage se limite au cache PK : l'URL Hyperdrive tourne a chaque requete,
+// impossible de s'en servir comme cle, et le Worker ne connait qu'une seule
+// base Supabase.
 export function getSupabaseAdapter(dbUrl: string, tf?: TransportFactory): SupabaseAdapter {
-  let a = adapters.get(dbUrl);
-  if (!a) {
-    a = new SupabaseAdapter(() => new PgClient(dbUrl, tf || cloudflareTransport));
-    adapters.set(dbUrl, a);
-  }
-  return a;
+  return new SupabaseAdapter(() => new PgClient(dbUrl, tf || cloudflareTransport), SHARED_PK);
 }

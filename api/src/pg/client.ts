@@ -72,6 +72,7 @@ export class PgClient {
   private transport: PgTransport | null = null;
   private parser = new P.FrameParser();
   private msgs: P.BackendMsg[] = [];
+  private mi = 0; // index de lecture dans msgs (evite des shift() en O(n^2))
   private wake: (() => void) | null = null;
   private closed = false;
   private chain: Promise<unknown> = Promise.resolve();
@@ -104,7 +105,7 @@ export class PgClient {
 
   private onClosed = (err: Error | null) => {
     this.transport = null;
-    if (this.msgs.length === 0) {
+    if (this.msgs.length === this.mi) {
       this.msgs.push({ t: 'notice', message: 'CONN_CLOSED' });
     }
     const w = this.wake;
@@ -115,16 +116,25 @@ export class PgClient {
 
   private lastCloseErr: Error | null = null;
 
+  // Retrait synchrone d'un message deja recu : aucun await/promise cree par
+  // message (indispensable quand une requete renvoie des milliers de lignes).
+  private takeBuffered(): P.BackendMsg | null {
+    if (this.msgs.length > this.mi) {
+      const m = this.msgs[this.mi++];
+      if (this.mi === this.msgs.length) { this.msgs = []; this.mi = 0; }
+      if (m.t === 'notice' && m.message === 'CONN_CLOSED') {
+        throw new PgConnError('connexion au serveur fermee' + (this.lastCloseErr ? ': ' + this.lastCloseErr.message : ''));
+      }
+      return m;
+    }
+    return null;
+  }
+
   private async nextMsg(timeoutMs: number): Promise<P.BackendMsg> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      if (this.msgs.length > 0) {
-        const m = this.msgs.shift()!;
-        if (m.t === 'notice' && m.message === 'CONN_CLOSED') {
-          throw new PgConnError('connexion au serveur fermee' + (this.lastCloseErr ? ': ' + this.lastCloseErr.message : ''));
-        }
-        return m;
-      }
+      const m = this.takeBuffered();
+      if (m) return m;
       if (this.closed) throw new PgConnError('client ferme');
       const remain = deadline - Date.now();
       if (remain <= 0) throw new PgConnError('timeout serveur (' + timeoutMs + ' ms)');
@@ -132,7 +142,7 @@ export class PgClient {
         const t = setTimeout(resolve, remain);
         this.wake = () => { clearTimeout(t); resolve(); };
       });
-      if (this.msgs.length === 0 && this.transport === null && !this.closed) {
+      if (this.msgs.length === this.mi && this.transport === null && !this.closed) {
         throw new PgConnError('connexion perdue' + (this.lastCloseErr ? ': ' + this.lastCloseErr.message : ''));
       }
     }
@@ -143,6 +153,7 @@ export class PgClient {
     this.transport = transport;
     this.parser = new P.FrameParser();
     this.msgs = [];
+    this.mi = 0;
     transport.onData(this.onBytes);
     transport.onClose(this.onClosed);
 
@@ -219,6 +230,7 @@ export class PgClient {
 
   private reset(): void {
     this.msgs = [];
+    this.mi = 0;
     this.wake = null;
     this.parser = new P.FrameParser();
     if (this.transport) {
@@ -249,7 +261,7 @@ export class PgClient {
     const deadline = Date.now() + QUERY_TIMEOUT_MS;
 
     for (;;) {
-      const m = await this.nextMsg(deadline - Date.now());
+      const m = this.takeBuffered() ?? await this.nextMsg(deadline - Date.now());
       if (m.t === 'rowDesc') {
         fields = m.fields;
       } else if (m.t === 'dataRow') {

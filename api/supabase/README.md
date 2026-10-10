@@ -280,6 +280,22 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   bascule, D1 est justement à court de quota de lecture.
 - **Les clés primaires sont normalisées via `Number()`** : Postgres peut rendre un
   `bigint` là où SQLite rend un nombre, et la comparaison d'orphelins échouerait.
+- **Limite CPU des Workers (plan gratuit : 10 ms/requête).** La bascule a montré
+  que ce n'est pas le réseau qui coûte le plus, c'est le **décodage** et le
+  **nombre de requêtes**. Deux pièges trouvés en production, corrigés et couverts
+  par des tests :
+
+  | Symptôme prod | Cause racine | Correctif |
+  |---|---|---|
+  | `503 error code: 1102` sur `/api/org/clients`, `/dossiers`, `/comptables`, `/alerts` — les petites routes (`/exercices`, `/auth/me`) passaient | `FrameParser.push()` faisait `this.buf.slice(total)` **par message** : décodage **O(n²)** en octets. Au-delà de ~15 Ko de réponse, le seul parsing dépassait 10 ms | curseur de lecture `pos`, plus aucune copie du reste du tampon ; `PgClient` lit `msgs` par index (`takeBuffered`) au lieu de `shift()` |
+  | `401 {"error":"Non autorisé"}` sporadique | un adaptateur **singleton d'isolate** partageait sa socket entre requêtes concurrentes ; la fermeture de l'une coupait l'autre | `getSupabaseAdapter()` renvoie une instance **par requête** ; seule une **mémoire des PK déjà chargées** est partagée (jamais une promesse en vol, liée à la socket d'une autre requête) |
+
+  Règle : un `5xx` avec un `error code: 1102` ne se diagnostique **qu'avec
+  `wrangler tail`** (le corps HTTP ne dit rien) — chercher « Exceeded CPU Limit ».
+- **Les motifs N+1 explosent très vite ce budget** : `/api/org/clients` émettait
+  208 requêtes, `/api/org/dossiers` 70, `/api/org/comptables` 19. Regroupés en 2 à
+  5 requêtes chacun (IDs découpés par blocs de 80 pour rester sous la limite de
+  100 paramètres liés de D1), la logique de statistiques JS reste identique.
 
 ### Opérations
 
@@ -297,6 +313,6 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
 - **`__local/mode` doit repasser à `1`** quand le cabinet revient — sinon les
   saisies continueraient d'aller dans le cloud alors que la base locale aurait
   avancé. C'est la seule étape manuelle du dispositif.
-- Tests : `cd api && npm test` → **86 tests**, dont la synchronisation sur
+- Tests : `cd api && npm test` → **88 tests**, dont la synchronisation sur
   doubles et la conservation de corps.
 

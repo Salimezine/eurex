@@ -184,24 +184,35 @@ function readErrorFields(body: Uint8Array): { severity: string; code: string; me
 
 export class FrameParser {
   private buf = new Uint8Array(0);
+  // Curseur de lecture. On n'ampute JAMAIS buf en tete (pas de slice par
+  // message) : c'est ce qui rendait le decodage O(n^2) en octets et faisait
+  // exploser la limite CPU de 10 ms des Workers des ~15 Ko de reponse.
+  private pos = 0;
 
   // Alimente le parser ; retourne les messages complets au fur et a mesure.
   push(chunk: Uint8Array): BackendMsg[] {
-    const merged = new Uint8Array(this.buf.length + chunk.length);
-    merged.set(this.buf, 0);
-    merged.set(chunk, this.buf.length);
+    const rest = this.buf.length - this.pos;
+    const merged = new Uint8Array(rest + chunk.length);
+    if (rest > 0) merged.set(this.buf.subarray(this.pos), 0);
+    merged.set(chunk, rest);
     this.buf = merged;
+    this.pos = 0;
 
     const out: BackendMsg[] = [];
-    while (this.buf.length >= 5) {
-      // view recree a chaque iteration : this.buf est remplace par slice()
-      const view = new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength);
-      const total = 1 + view.getInt32(1, false);
-      if (total < 5 || this.buf.length < total) break;
-      const type = String.fromCharCode(this.buf[0]);
-      const body = this.buf.subarray(5, total);
+    const view = new DataView(merged.buffer, merged.byteOffset, merged.byteLength);
+    while (merged.length - this.pos >= 5) {
+      const total = 1 + view.getInt32(this.pos + 1, false);
+      if (total < 5 || merged.length - this.pos < total) break;
+      const type = String.fromCharCode(this.buf[this.pos]);
+      const body = this.buf.subarray(this.pos + 5, this.pos + total);
       out.push(this.decode(type, body));
-      this.buf = this.buf.slice(total);
+      this.pos += total;
+    }
+    // Tampon entierement consomme : on le libere pour ne pas garder un gros
+    // resultat vivant entre deux requetes.
+    if (this.pos === merged.length) {
+      this.buf = new Uint8Array(0);
+      this.pos = 0;
     }
     return out;
   }

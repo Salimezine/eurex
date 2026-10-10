@@ -55,8 +55,19 @@ class TranslateError extends Error {
 // --- helpers ---------------------------------------------------------------
 
 function isWordChar(c: string): boolean {
-  return /[A-Za-z0-9_]/.test(c);
+  // Codes octets plutot qu'une expression reguliere : appele a chaque
+  // caractere de la requete, c'est le point le plus chaud de la traduction.
+  const x = c.charCodeAt(0);
+  return (x >= 48 && x <= 57) || (x >= 65 && x <= 90) || (x >= 97 && x <= 122) || x === 95;
 }
+
+// Fenetre de lecture apres la position i. Les motifs detectes plus bas sont
+// court ("INSERT OR REPLACE INTO" = 23 caractères) : inutile de recopier toute
+// la fin de la requete, ce qui rendait la boucle quadratique sur les grosses
+// requetes (plafond CPU du Worker gratuit : 10 ms par requete).
+const WIN_INSERT = 96;
+const WIN_LIKE = 8;
+const WIN_FN = 32;
 
 // Lit la fin d'un appel de fonction : args bruts entre parentheses equilibrees.
 // debut = position du '(' ouvrant. Respecte strings et commentaires.
@@ -183,7 +194,29 @@ function translateStrftime(argsRaw: string[], tf: (s: string) => string): string
 
 // --- corps principal --------------------------------------------------------
 
+// Memoisation : la meme requete SQL est reexecutee des dizaines de fois par
+// appel HTTP (l'endpoint /org/clients en envoie ~90), et chaque execution la
+// retraduisait integralement. Le resultat ne depend que de (sql, paramOffset,
+// pk) : on le conserve pour la vie de l'isolat. La traduction est l'un des
+// principaux postes CPU du Worker, dont la limite gratuite est de 10 ms par
+// requete (au-dela : 503 "error code: 1102").
+type TranslateEntry = { pk: PkMap | undefined; out: string };
+const translateCache = new Map<string, TranslateEntry>();
+const TRANSLATE_CACHE_MAX = 5000;
+
 export function toPg(sql: string, opts: TranslateOpts = {}): string {
+  const key = `${opts.paramOffset || 0} ${sql}`;
+  const hit = translateCache.get(key);
+  // Cle sur la REFERENCE du PkMap : deux appels dont la carte differe (tests)
+  // ne partagent pas le meme resultat, meme avec un SQL identique.
+  if (hit && hit.pk === opts.pk) return hit.out;
+  const out = translateOnce(sql, opts);
+  if (translateCache.size >= TRANSLATE_CACHE_MAX) translateCache.clear();
+  translateCache.set(key, { pk: opts.pk, out });
+  return out;
+}
+
+function translateOnce(sql: string, opts: TranslateOpts = {}): string {
   const pk = { ...DEFAULT_PK, ...(opts.pk || {}) };
   let param = opts.paramOffset || 0;
   let orSuffix = '';
@@ -228,7 +261,7 @@ export function toPg(sql: string, opts: TranslateOpts = {}): string {
 
       // --- INSERT OR REPLACE / INSERT OR IGNORE ---
       if ((c === 'i' || c === 'I') && !isWordChar(src[i - 1] || '')) {
-        const rest = src.slice(i);
+        const rest = src.slice(i, i + WIN_INSERT);
         const m = rest.match(/^INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i);
         if (m) {
           const kind = m[1].toUpperCase();
@@ -260,7 +293,7 @@ export function toPg(sql: string, opts: TranslateOpts = {}): string {
 
       // --- LIKE -> ILIKE ---
       if ((c === 'l' || c === 'L') && !isWordChar(src[i - 1] || '')) {
-        const rest = src.slice(i);
+        const rest = src.slice(i, i + WIN_LIKE);
         const lm = rest.match(/^LIKE\b/i);
         if (lm) {
           out += 'ILIKE';
@@ -271,7 +304,7 @@ export function toPg(sql: string, opts: TranslateOpts = {}): string {
 
       // --- datetime( / date( / strftime( ---
       if ((c === 'd' || c === 'D' || c === 's' || c === 'S') && !isWordChar(src[i - 1] || '')) {
-        const rest = src.slice(i);
+        const rest = src.slice(i, i + WIN_FN);
         const fm = rest.match(/^(datetime|date|strftime)\s*\(/i);
         if (fm) {
           const fn = fm[1].toLowerCase() as 'datetime' | 'date' | 'strftime';
