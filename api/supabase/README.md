@@ -321,6 +321,44 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   (dossier_id=?)` et la même requête coûte **`rows_read: 0`**. Conséquence
   pratique : le quota épuisé était un **avant-correctif**, la bascule nocturne
   est tenable — ~6 500 lectures contre 5 000 000.
+- **Un index juste peut être refusé par le planificateur : SQLite n'est pas
+  PostgreSQL.** Le composant `NouvellesTaches` (monté sur le tableau de bord
+  expert **et** comptable, donc sur chaque poste ouvert) appelle
+  `/api/org/tasks/recent` toutes les 30 s, dont le
+  `ORDER BY t.created_at DESC, t.id DESC LIMIT 10` forçait un
+  `USE TEMP B-TREE` : **5 954 lignes lues pour 10 lignes rendues**, soit
+  ~714 000 lignes/heure et par poste ouvert. Le quota D1 étant un plafond
+  **plat par compte**, il ne dépend pas du nombre de comptables — c'est leur
+  *coût* qui croît avec eux. Migration 0036 : `org_tasks(created_at, id)`.
+  Les **deux** colonnes sont nécessaires : `(created_at)` seul laisse un
+  `TEMP B-TREE` pour le départage par `id`, donc aucun gain. Résultat mesuré,
+  même requête :
+
+  | moteur | avant | après |
+  |---|---|---|
+  | PostgreSQL | `Sort` + `Seq Scan`, **4 920** lignes | `Index Scan Backward`, aucun nœud de tri, **10** lignes (492×) |
+  | SQLite (D1) | `TEMP B-TREE` | **inchangé** — 5 954 lignes |
+
+  SQLite **refuse** l'index sur *cette* requête : l'ajout de la seule
+  condition `c.organization_id = ?` le fait repartir de `c`, puis `d`, puis
+  `t`, ce qui rend le tri complet inévitable (le `LIMIT 10` n'est pas assez
+  crédité au chemin alternatif). Vérifié sur un banc d'essai local reproduisant
+  le schéma réel : ni `(created_at, id)`, ni un index **couvrant** sur
+  toutes les colonnes lues, ni `ANALYZE` ne le font changer d'avis. L'index
+  est conservé (il sert Supabase, et les requêtes sans filtre
+  d'organisation côté D1) ; la mitigation réelle sur D1 est le garde
+  `document.hidden` ajouté à `NouvellesTaches` — aligné sur les trois autres
+  sondeurs de l'app, un onglet en arrière-plan ne consomme plus rien et le
+  retour sur l'onglet recharge déjà via `onFocus`. **Règle : ne jamais
+  supposer qu'un index sera utilisé — `EXPLAIN QUERY PLAN` sur les deux
+  moteurs, après chaque index.**
+- **`created_by` est NULL pour les 5 747 lots existants, et c'est voulu.**
+  `/api/org/tasks/recent` filtre `t.created_by IS NOT NULL` : seules les
+  tâches créées **à la main** remontent (index.ts:3369 renseigne
+  `created_by = user.id`), pas celles issues des gabarits ou du roulement
+  d'exercice. Le flux de notifications est donc vide aujourd'hui et se
+  remplira dès la première création manuelle — d'où l'importance de l'index
+  côté Supabase.
 - **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
   en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
   verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
