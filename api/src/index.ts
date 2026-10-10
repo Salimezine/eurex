@@ -588,6 +588,11 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
       has_url: Boolean(env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL),
       d1_state: (await kv.get('__backend/d1_state')) || 'dirty',
       syncing: Boolean(await kv.get(SYNC_KEY)),
+      // Horodatages des deux transitions : permet de verifier la bascule
+      // nocturne (resync 00:05 UTC -> D1) et le repli automatique sur
+      // Supabase quand D1 atteint son quota, sans fouiller le KV.
+      last_resync: (await kv.get('__backend/last_resync')) || null,
+      last_failover: (await kv.get('__backend/last_failover')) || null,
     });
   }
 
