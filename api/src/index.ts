@@ -3871,7 +3871,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results: hDRows } = await env.DB.prepare(`SELECT te.dossier_id, COALESCE(SUM(te.duration_seconds), 0) as secs${hFrom} GROUP BY te.dossier_id`).bind(...hBinds).all();
         const hByD = new Map((hDRows as any[]).map(r => [String(r.dossier_id), Number(r.secs) || 0]));
         const { results: hURows } = await env.DB.prepare(
-          `SELECT te.user_id, u.full_name, COALESCE(SUM(te.duration_seconds), 0) as secs, COUNT(*) as entries FROM org_time_entries te JOIN org_users u ON te.user_id = u.id JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope} GROUP BY te.user_id ORDER BY secs DESC`
+          `SELECT te.user_id, u.full_name, COALESCE(SUM(te.duration_seconds), 0) as secs, COUNT(*) as entries FROM org_time_entries te JOIN org_users u ON te.user_id = u.id JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope} GROUP BY te.user_id, u.full_name ORDER BY secs DESC`
         ).bind(...hBinds).all();
 
         const { results: lateRows } = await env.DB.prepare(
@@ -4129,7 +4129,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const totalTimeEntries = timeEntries.reduce((sum: number, te: any) => sum + (te.duration_seconds || 0), 0);
         // Time by dossier : temps TOTAL cumulé sur chaque dossier (toutes personnes — chrono, auto-stop, saisie manuelle)
         const timeByDossier: Record<string, { client_name: string; exercice: number; seconds: number }> = {};
-        const { results: taskTimes } = await env.DB.prepare('SELECT t.dossier_id, COALESCE(SUM(t.total_time_seconds), 0) as seconds, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? GROUP BY t.dossier_id HAVING COALESCE(SUM(t.total_time_seconds), 0) > 0').bind(compId, user.organization_id).all();
+        const { results: taskTimes } = await env.DB.prepare('SELECT t.dossier_id, COALESCE(SUM(t.total_time_seconds), 0) as seconds, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? GROUP BY t.dossier_id, d.exercice, c.name HAVING COALESCE(SUM(t.total_time_seconds), 0) > 0').bind(compId, user.organization_id).all();
         for (const tt of taskTimes as any[]) {
           timeByDossier[tt.dossier_id] = { client_name: tt.client_name, exercice: tt.exercice, seconds: tt.seconds };
         }
