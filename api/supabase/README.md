@@ -301,22 +301,46 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   `GET /api/org/comptables` pendant ~10 min alors que le détail (autre SQL)
   répondait déjà 404. Corrigé par `wrangler hyperdrive update <id>
   --caching-disabled` — détails et protocole de constat en §7.
+- **Le quota de lectures D1 ne se diagnostique pas avec `SELECT 1`.** En fin de
+  quota, `SELECT 1` (0 ligne) et un `INSERT ... ON CONFLICT` **sans conflit**
+  (`rows_read: 0`) passent, alors qu'un `DELETE` par clé ou un upsert qui
+  *conflit* — soit **2 à 3 lignes lues** — échoue avec « exceeded D1's free tier
+  daily row read limit ». Constat de prod : `wrangler d1 execute` semblait donc
+  « fonctionner » alors que la resync échouait sur la 3ᵉ table. Le bon test est
+  `meta.rows_read` d'une lecture de vraies lignes, pas l'exécution de la
+  commande. La resync ne copie que ~6 500 lignes : elle ne peut pas être la
+  cause, elle ne fait que tomber sur un quota déjà consommé.
+- **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
+  en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
+  verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
+  écrit `mode=d1`.
 
 ### Opérations
 
 ```bash
-# état complet (backend, propreté de D1, resync en cours)
+# état complet (backend, propreté de D1, resync en cours, horodatages)
 curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
-# → {"backend":"supabase","d1_state":"dirty|clean","syncing":false,...}
+# → {"backend":"supabase","d1_state":"dirty|clean","syncing":false,
+#    "last_resync":"2026-10-11T00:05:12Z"|null,
+#    "last_failover":"2026-10-10T12:52:47.892Z"|null}
 
 # forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
 curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
 ```
 
+**Vérifier le cycle nocturne** (la question « est-ce que D1 reprend la main,
+puis retombe sur Supabase ? ») se répond avec ce seul GET :
+
+| Quand | À constater |
+|---|---|
+| après 00:05 UTC | `backend:"d1"`, `d1_state:"clean"`, `last_resync` renseigné |
+| dans la journée, D1 à court de quota | `backend:"supabase"`, `d1_state:"dirty"`, `last_failover` renseigné |
+| retour manuel sur D1 entre-temps | **409** (`d1_state` = `dirty`) — refusé, c'est voulu |
+
 - **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
   Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
   `__local/*` n'existent plus ; le paquet `api/local` reste dans le dépôt mais
   n'est plus joignable. Il n'y a donc plus d'étape manuelle de bascule locale.
-- Tests : `cd api && npm test` → **88 tests**, dont la synchronisation sur
+- Tests : `cd api && npm test` → **91 tests**, dont la synchronisation sur
   doubles et la conservation de corps.
 
