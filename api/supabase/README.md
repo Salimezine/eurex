@@ -178,10 +178,12 @@ Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG 
 |---------|------|
 | `pg/translate.ts` | SQLite→PG à la volée : `datetime()`/`date()`/`strftime()` (57+ formes réelles de `index.ts`), `INSERT OR REPLACE/IGNORE`→`ON CONFLICT`, `LIKE`→`ILIKE`, `?`→`$n` (hors littéraux), `sqlite_master`→`information_schema`. Tout motif non couvert **lève une erreur** plutôt que de partir en silence |
 | `pg/scram.ts` | Auth SCRAM-SHA-256 (RFC 5802/7677, Web Crypto) |
+| `pg/md5.ts` | Auth MD5 (RFC 1321 écrite à la main) — c'est celle qu'utilise l'endpoint local d'Hyperdrive, `node:crypto` n'existant pas côté Worker |
 | `pg/protocol.ts` | Protocole PG v3 : startup, extended query (Parse/Bind/Describe/Execute/Sync), parser tolérant aux fragments |
 | `pg/client.ts` | Handshake, file d'attente sérialisante, timeouts, reconnexion (1 reprise), transactions |
 | `pg/transport.ts` | `cloudflare:sockets` (import dynamique → compatible Node) |
 | `supabase-adapter.ts` | Interface D1 identique (`prepare/bind/first/all/run/batch`), PK map via `information_schema` (pour `ON CONFLICT`), casse `bonsAchat` |
+| `sync.ts` | Reprise de la main sur D1 après une bascule : copie Supabase→D1 puis purge (§9) |
 
 **Bascule** (secret `X-Internal-Secret` requis, fail-closed) :
 
@@ -193,12 +195,22 @@ curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.work
 # activer / revenir en arrière (cache 10 s, prioritaire sur le relais)
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"supabase"}' .../internal/backend
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"d1"}'      .../internal/backend
+
+# copie Supabase -> D1 puis bascule retour (le cron 00:05 UTC le fait tout seul)
+# {"dry":true} ne lit que Supabase et rend le plan, sans rien écrire ni basculer
+curl -X POST -H "X-Internal-Secret: ..." -d '{"dry":true}' .../internal/resync
 ```
 
+- **Le retour manuel sur D1 est refusé tant que `d1_state != 'clean'`** (409) :
+  D1 contiendrait les données d'avant la bascule et toutes les saisies faites
+  depuis seraient perdues. `{"backend":"d1","force":true}` passe outre.
 - Secret Worker : `wrangler secret put SUPABASE_DB_URL` (URI **Direct/Session
   pooler** de Supabase). Sans secret, `has_url:false` et la bascule est sans effet.
-- Crons Worker (`scheduled`) : ignorés en mode supabase (sauvegardes/rollover →
-  à définir côté Supabase).
+  Chemin réellement utilisé : le **binding Hyperdrive** (`wrangler.jsonc`), prioritaire
+  sur la secret — le TLS direct depuis un Worker vers Supabase est impossible
+  (CA privée rejetée par Cloudflare).
+- Crons Worker : le `00:05` gère le retour sur D1 (§9) ; les autres sont sans
+  objet en mode supabase (sauvegardes D1 → D1).
 - `transaction(fn)` : `fn` reçoit un **queryFn** déjà dans la transaction ;
   appeler `client.query()` depuis `fn` provoquerait un deadlock (file non réentrant).
 - Tests : `cd api && npm test` → **47 tests** dont l'**inventaire SQL** qui
@@ -215,4 +227,76 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"d1"}'      .../internal
 `schema.sql` ne contient que le **schéma** ; les données viennent du dump SQLite
 (`import.ts` → `data.sql`). Le portage du dialecte applicatif n'est **pas**
 nécessaire : il est assuré à la volée par `pg/translate.ts` (voir §7).
+
+---
+
+## 9. Bascule automatique et resync quotidienne
+
+Incident du **2026-10-10** : D1 a épuisé son quota gratuit de lignes lues (5 M/jour,
+remise à zéro à 00:00 UTC) et l'application est restée **down** jusqu'au lendemain.
+Cause racine : la migration 0025 avait reconstruit `org_tasks` et
+`org_expected_documents` sans recréer leurs 6 index → chaque `WHERE dossier_id = ?`
+faisait un `SCAN` complet (11,28 M lignes lues). Restaurés (migration 0035), mais
+le point de rupture architectural restait.
+
+Deux mécanismes le comblent désormais, dans `api/src/index.ts` + `api/src/sync.ts` :
+
+**1. Bascule automatique D1 → Supabase, à la volée.**
+Une erreur de quota reconnue (`isD1QuotaError`) pose `__backend/mode=supabase` et
+**rejoue** la requête : l'utilisateur ne voit rien. Le corps des petites requêtes
+(< 1 Mo) est donc conservé en mémoire au début de `fetch` — la conservation
+**consomme** le flux d'origine, il faut donc servir la copie. Au-delà, un 503
+explicite, mais la bascule a déjà eu lieu.
+
+**2. Resync Supabase → D1, puis retour (cron `5 0 * * *`, 00:05 UTC).**
+Deux passes, dans `sync.ts` :
+
+| Passe | Ordre | Pourquoi |
+|-------|-------|----------|
+| upsert des lignes de Supabase | **mères d'abord** | les clés étrangères sont actives dans D1 (vérifié par `SQLITE_CONSTRAINT_FOREIGNKEY`) |
+| purge des orphelins | **filles d'abord** | une fille ne peut pas disparaître après sa mère |
+
+Pendant la copie, un **verrou KV** (`__backend/sync`) fait attendre les requêtes :
+servir entre-temps laisserait des écritures derrière, et elles seraient perdues au
+retour. Le verrou est levé **après** la bascule, jamais avant.
+
+Le retour n'a lieu qu'après **réussite complète** : un échec en cours de route
+laisse D1 inutilisé (et marqué `d1_state=dirty`) mais l'application continue de
+tourner sur Supabase, et le cron suivant reprend — l'opération est idempotente.
+
+### Pièges rencontrés, validés en production plutôt qu'écrits au hasard
+
+- **`INSERT OR REPLACE` est interdit ici.** Il supprime la ligne en conflit avant
+  de la réécrire, ce qui déclenche les clés étrangères qui la référencent :
+  mettre à jour `organizations` échouerait à cause de `org_users`. D'où
+  `ON CONFLICT ... DO UPDATE` (vérifié sur le moteur D1).
+- **D1 refuse aussi les *écritures*** une fois le quota de lectures atteint : la
+  copie de diagnostic s'est cassée dès la 3ᵉ table. D1 est donc totalement
+  indisponible pendant l'incident, pas seulement ralenti — d'où l'intérêt de la
+  bascule.
+- **Pas de `WHERE pk NOT IN (...)`** pour la purge : D1 refuse plus de 100
+  paramètres liés par requête. Les clés primaires de D1 sont lues une par une.
+- **L'ordre topologique vient du schéma Supabase**, jamais de D1 : pendant la
+  bascule, D1 est justement à court de quota de lecture.
+- **Les clés primaires sont normalisées via `Number()`** : Postgres peut rendre un
+  `bigint` là où SQLite rend un nombre, et la comparaison d'orphelins échouerait.
+
+### Opérations
+
+```bash
+# état complet (backend, propreté de D1, resync en cours)
+curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
+# → {"backend":"supabase","d1_state":"dirty|clean","syncing":false,...}
+
+# forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
+curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
+```
+
+- **Le PC du cabinet** (`__local/mode=1`) est source de vérité : le cron ignore la
+  resync tant que le relais local est actif, sous peine d'écraser ses écritures.
+- **`__local/mode` doit repasser à `1`** quand le cabinet revient — sinon les
+  saisies continueraient d'aller dans le cloud alors que la base locale aurait
+  avancé. C'est la seule étape manuelle du dispositif.
+- Tests : `cd api && npm test` → **86 tests**, dont la synchronisation sur
+  doubles et la conservation de corps.
 
