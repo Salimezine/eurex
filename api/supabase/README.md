@@ -310,6 +310,17 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   `meta.rows_read` d'une lecture de vraies lignes, pas l'exécution de la
   commande. La resync ne copie que ~6 500 lignes : elle ne peut pas être la
   cause, elle ne fait que tomber sur un quota déjà consommé.
+- **Le coupable se trouve avec `wrangler d1 insights <db>`** (expérimental), qui
+  classe les requêtes par `totalRowsRead` et donne une `queryEfficiency`. Constat
+  du 2026-10-10 : **5 requêtes seulement avaient consommé 6 973 520 lignes**,
+  dont 6 132 161 pour deux `SELECT ... FROM org_tasks WHERE dossier_id = ?`,
+  soit **~5 000 lignes lues par exécution** pour une table de ~5 000 lignes.
+  C'est le profil exact d'un **balayage complet** : les index de `org_tasks`
+  manquaient (restaurés par la migration 0035). Après restauration,
+  `EXPLAIN QUERY PLAN` rend `SEARCH org_tasks USING INDEX idx_org_tasks_month
+  (dossier_id=?)` et la même requête coûte **`rows_read: 0`**. Conséquence
+  pratique : le quota épuisé était un **avant-correctif**, la bascule nocturne
+  est tenable — ~6 500 lectures contre 5 000 000.
 - **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
   en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
   verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —

@@ -7,7 +7,7 @@
 -- Resultat observe en production le 2026-10-10 : les requetes
 -- WHERE dossier_id = ? faisaient un SCAN complet de org_tasks
 -- (11,28M lignes lues par requete) et ont epuise en une matinee le
--- quota gratuit de D1 (5M lignes lues par jour) — l'application est
+-- quota gratuit de D1 (5M lignes lues par jour) : l'application est
 -- reste down jusqu'au lendemain 00:00 UTC.
 --
 -- Ces 6 index etaient deja restaures manuellement en prod (35/41 puis
