@@ -1,0 +1,32 @@
+-- ============================================================
+-- 0036 -- index sur l'ordre chronologique des lots
+-- ============================================================
+-- GET /api/org/tasks/recent (composant NouvellesTaches, sonde toutes les
+-- 30 s depuis CHAQUE poste ouvert, expert comme comptable) trie sur :
+--     ORDER BY t.created_at DESC, t.id DESC LIMIT 10
+-- Sans index couvrant ces deux colonnes, SQLite collecte puis trie TOUS
+-- les lots correspondants avant d'en garder 10.
+--
+-- Mesure en production le 2026-10-10 : 5954 lignes lues pour renvoyer 10
+-- lignes, soit ~714 000 lignes/heure et par poste ouvert - de quoi
+-- epuiser a lui seul le quota gratuit de D1 (5 M de lignes lues par jour)
+-- en une journee de 8 h. Le quota etant un plafond plat par compte, le
+-- cout se multiplie ensuite par le nombre de postes connectes.
+--
+-- L'index doit porter les DEUX colonnes de l'ORDER BY. Verifie par EXPLAIN
+-- QUERY PLAN sur un double local de 5747 lignes (meme volume que la prod) :
+--   (created_at) seul      -> "USE TEMP B-TREE FOR LAST TERM OF ORDER BY",
+--                             le departage par id force le tri complet : aucun gain
+--   (created_at, id)       -> aucun TEMP B-TREE : l'index est parcouru a
+--                             l'envers et le LIMIT 10 arrete la lecture
+--
+-- Idempotent (IF NOT EXISTS). Sans effet sur les resultats : les deux
+-- moteurs (D1/SQLite et PostgreSQL) savent parcourir un index ascendant a
+-- l'envers, d'ou aucune colonne DESC.
+--
+-- A appliquer egalement sur D1 : la creation d'un index lit toute la
+-- table (~5747 lignes), operation refusee tant que le quota quotidien de
+-- lectures n'a pas ete remis a zero a 00:00 UTC.
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_org_tasks_created ON org_tasks(created_at, id);
