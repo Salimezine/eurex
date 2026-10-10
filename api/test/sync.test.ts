@@ -117,6 +117,13 @@ test('quota D1 : les messages de plafond de lignes lues sont reconnus', () => {
   assert.equal(isD1QuotaError(new Error("exceeded D1's free tier daily row read limit")), true);
   assert.equal(isD1QuotaError(new Error('too many rows read for D1 free tier (5000000/5000000)')), true);
   assert.equal(isD1QuotaError(new Error('D1 read quota exceeded')), true);
+  // Message reel observe en production le 2026-10-10, sur une ECRITURE :
+  // D1 refuse tout (lecture comme ecriture) une fois le plafond atteint.
+  assert.equal(isD1QuotaError(new Error(
+    "D1_ERROR: Your account has exceeded D1's free tier daily row read limit. " +
+    'Upgrade to a paid plan or wait until tomorrow (midnight UTC) to continue. ' +
+    'See https://developers.cloudflare.com/d1/platform/limits/ for more details.',
+  )), true);
 });
 
 test('quota D1 : les erreurs ordinaires ne declenchent pas la bascule', () => {
