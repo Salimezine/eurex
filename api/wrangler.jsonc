@@ -34,9 +34,12 @@
     "binding": "AI"
   },
   // 1er janvier 00:15 UTC : passage automatique au nouvel exercice
-  // Tous les jours 02:00 UTC (03:00 TN) : copie de sauvegarde vers eurex-db-copy
+  // Chaque jour 00:05 UTC : resync Supabase -> D1 puis retour sur D1
+  //   (le quota gratuit D1 se remet a zero a 00:00 UTC)
+  // Pas de copie vers eurex-db-copy : Supabase tient ce role en continu depuis
+  // 2026-10-11 ; l'operation reste disponible a la main via POST /internal/sync-copy
   "triggers": {
-    "crons": ["15 0 1 1 *", "5 0 * * *", "0 2 * * *"]
+    "crons": ["15 0 1 1 *", "5 0 * * *"]
   },
   "vars": {
     "ENVIRONMENT": "production"

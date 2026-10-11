@@ -402,6 +402,27 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   invisible à l'utilisateur. Le drapeau `__backend/dual_write` repose donc la
   condition toute seule — couper la double écriture désactive aussi la
   répartition, sans modifier une ligne de code.
+- **L'écart avant (`forward_gap`) se répare tout seul, et sans purge.** Le drapeau
+  `__backend/forward_gap` se lève quand une écriture de second rang n'atteint
+  pas PostgreSQL alors que D1 sert. Copier ensuite Supabase → D1 — ce que fait la
+  resync nocturne — **écraserait et purgerait** cette écriture ; d'où l'abstention
+  de 409. Depuis 2026-10-11, le cron tente d'abord `repairForwardGap()` : il
+  repart de **D1**, qui a raison, et reconstruit Supabase, puis lève le drapeau.
+  Le point délicat est la **purge, désactivée**. L'écart naît en mode `d1` mais
+  peut être suivi d'un repli automatique qui emmène l'app vers Supabase : cette
+  base contient alors des saisies **plus récentes** que D1, et une purge les
+  effacerait — transformant un simple retard en perte définitive. L'`upsert`
+  seul **fusionne** : il ajoute l'écriture manquante sans rien détruire, ce qui
+  rend la réparation sûre **quel que soit le mode en service** (donc sans garde
+  d'état). L'option `{purge:false}` est la seule différence avec la copie
+  normale, et trois tests la verrouillent — dont un qui prouve que le cas
+  ordinaire purge bien par défaut, sans quoi l'option ne prouverait rien.
+- **Le verrou `__backend/sync` s'applique aussi en mode `d1`** dès que la double
+  écriture est active : `pgAll()` lit alors Supabase, et une réparation inverse
+  est en train de recopier cette même base — laisser passer une lecture
+  exposerait un contenu à moitie reconstruit. La condition a été élargie
+  (`backend === 'supabase' || dual`) ; elle ne servait qu'à `supabase` avant
+  que la lecture soit répartie.
 - **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
   en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
   verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
@@ -416,15 +437,33 @@ curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.work
 #    "last_resync":"2026-10-11T00:05:12Z"|null,
 #    "last_failover":"2026-10-10T12:52:47.892Z"|null,
 #    "dual_write":false,             ← les deux bases écrites-elles à chaque modification ?
-#    "forward_gap":null}             ← écriture non parvenue à Supabase : la resync s'abstient
+#    "forward_gap":null}             ← écriture non parvenue à Supabase, réparée seule à 00:05
 
 # forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
 curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
+# Un forward_gap éventuel est d'abord réparé (sens inverse, sans purge), puis
+# la copie a lieu ; si la réparation échoue : 409, rien n'est copié.
+# {"repair":{"ok":true,"rows":5747}} apparaît en tête de réponse.
+# {"dry":true} refuse d'agir tant que l'écart existe plutôt que de rendre un
+# résultat qui ne se produirait pas pour de vrai.
 
 # double écriture seule (ne change pas le moteur en service) ; désactiver
 # cette commande désactive aussi la lecture répartie pgAll(), qui en dépend
 curl -X POST -H "X-Internal-Secret: ..." -d '{"dual_write":true}' .../internal/backend
+
+# copie D1 -> eurex-db-copy : APPEL MANUEL depuis 2026-10-11, et {"force":true}
+# est exigé — l'opération vide chaque table avant de la réécrire
+curl -X POST -H "X-Internal-Secret: ..." -d '{"force":true}' .../internal/sync-copy
 ```
+
+- **La copie nocturne vers `eurex-db-copy` a été retirée** (cron `0 2 * * *`),
+  non pas pour économiser — 6 500 lignes lues par nuit, soit 0,13 % du quota —
+  mais parce qu'elle était **redondante** : Supabase est depuis la double
+  écriture une copie complète, tenue à jour en continu et **interrogeable**,
+  là où `eurex-db-copy` était une image figée à laquelle rien ne pouvait accéder.
+  L'opération existe toujours (`POST /internal/sync-copy`), ce qui supprime aussi
+  son seul défaut réel : un plantage au milieu laissait chaque table vidée.
+  Le binding `COPY_DB` est conservé.
 
 **Vérifier le cycle nocturne** (la question « est-ce que D1 reprend la main,
 puis retombe sur Supabase ? ») se répond avec ce seul GET :
@@ -439,6 +478,7 @@ puis retombe sur Supabase ? ») se répond avec ce seul GET :
   Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
   `__local/*` n'existent plus ; le paquet `api/local` reste dans le dépôt mais
   n'est plus joignable. Il n'y a donc plus d'étape manuelle de bascule locale.
-- Tests : `cd api && npm test` → **91 tests**, dont la synchronisation sur
-  doubles et la conservation de corps.
+- Tests : `cd api && npm test` → **102 tests**, dont la synchronisation sur
+  doubles (y compris la réparation inverse et sa non-purge) et la conservation
+  de corps.
 

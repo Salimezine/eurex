@@ -1,5 +1,6 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
-import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
+import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, makeD1Source, type SyncEnv, type D1Like } from './sync.ts';
+import { cloudflareTransport } from './pg/transport.ts';
 import { DualDb, type DbLike } from './dual-write.ts';
 
 export interface Env {
@@ -606,21 +607,80 @@ async function pgAll<T = any>(
   }
 }
 
+// --- REPARATION INVERSE : D1 -> Supabase --------------------------------------
+// Une double ecriture n'a pas atteint PostgreSQL alors que D1 etait primaire :
+// Supabase est en retard d'une modification. La resync nocturne copie
+// Supabase -> D1 et PURGE les orphelins — elle ecraserait donc l'ecriture que
+// D1 a bien retenue, et supprimerait la ligne en plus. D'ou le drapeau
+// __backend/forward_gap, qui faisait s'abandonner les deux chemins (cron et
+// /internal/resync) sans jamais reparer, jusqu'a l'expiration du drapeau.
+//
+// Ce morceau ferme la boucle au lieu d'abandonner sept jours : on repart de
+// D1, qui a raison, pour reconstruire Supabase, puis on leve le drapeau.
+//
+// PURGE DESACTIVEE, et c'est le point essentiel : l'ecart peut naitre d1 puis
+// etre suivi d'un repli automatique qui emmene l'app vers Supabase. Supabase
+// contient alors des saisies plus recentes que D1. Une purge les effacerait,
+// transformant un retard en perte definitive — alors que l'upsert seul
+// FUSIONNE : il rajoute l'ecriture manquante sans rien detruire. On peut donc
+// reparer quel que soit le mode en service, sans garde d'etat.
+async function repairForwardGap(env: Env, log: (m: string) => void): Promise<{ ok: boolean; error?: string; rows?: number }> {
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!dbUrl) return { ok: false, error: 'aucune connexion PostgreSQL (HYPERDRIVE ou SUPABASE_DB_URL)' };
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  try {
+    // env.DB est D1 BRUT ici, et c'est indispensable : la source doit etre la
+    // base primaire reelle, pas un adaptateur. Cette fonction n'est appelee que
+    // depuis resyncAndFlipBack (cron) et /internal/resync, deux points tous les
+    // deux EN AMONT de applyBackend — le wrap DoubleDb/Supabase n'a donc pas
+    // encore eu lieu au moment ou l'on lit. Si un jour on l'appelait depuis le
+    // dispatch, env.DB serait Supabase en mode supabase et la reparation
+    // copierait Supabase sur Supabase : un no-op qui leverait le drapeau sans
+    // rien reparer, et la resync suivante ecraserait alors D1.
+    const report = await resyncSupabaseToD1(
+      { ...env, DB: pg } as unknown as SyncEnv,
+      {
+        source: makeD1Source(dbUrl, cloudflareTransport, env.DB as unknown as D1Like),
+        purge: false,
+        log,
+      },
+    );
+    if (!report.ok) return { ok: false, error: report.error || 'reparation incomplete' };
+    return { ok: true, rows: report.rows };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  } finally {
+    const a = pg as unknown as { endRequest?: () => void } | null;
+    if (a && typeof a.endRequest === 'function') a.endRequest();
+  }
+}
+
 // Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
 // reporte dans D1 ce qui a change pendant la bascule, puis on y retourne.
 // Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser).
 async function resyncAndFlipBack(env: Env): Promise<void> {
   try {
-    const mode = await backendMode(env);
-    if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
-    // Ecart en attente de reparation inverse : copier Supabase -> D1
-    // ecraserait une ecriture que D1 a bien retenue (et purgerait la ligne en
-    // plus). On s'abstient ; la requete continue d'etre servie par Supabase.
+    // 1. Reparation inverse d'abord, et AVANT le test de mode. Ce drapeau ne
+    //    peut se lever que lorsque D1 sert : si on testait le mode en premier,
+    //    on sortirait par "deja sur D1" et le drapeau resterait leve jusqu'a
+    //    son expiration de sept jours, abandonnant chaque nuit pour rien.
     const fwd = await env.DOCS_KV.get(FWD_GAP_KEY);
     if (fwd) {
-      console.error('[resync] abandonnee : ecart a reparer en sens inverse depuis ' + fwd);
-      return;
+      const rep = await repairForwardGap(env, (m) => console.log('[reparation]', m));
+      if (!rep.ok) {
+        // On s'abstient : copier Supabase -> D1 ecraserait (et purgerait) une
+        // ecriture que D1 a bien retenue. D1 reste primaire et sert
+        // correctement — un retard, pas une perte. Le cron suivant reprend.
+        console.error('[resync] abandonnee : ecart inverse non repare (' + (rep.error || '?') + ') depuis ' + fwd);
+        return;
+      }
+      await env.DOCS_KV.delete(FWD_GAP_KEY);
+      console.log('[reparation] D1 -> Supabase reussie (' + (rep.rows || 0) + ' lignes fusionnees), drapeau leve');
     }
+
+    // 2. Puis le retour classique sur D1.
+    const mode = await backendMode(env);
+    if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
     const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
       onSuccess: async () => {
         await env.DOCS_KV.put('__backend/mode', 'd1');
@@ -724,13 +784,30 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     const body = await request.json().catch(() => ({})) as any;
     // Meme garde que le cron : tant qu'un ecart inverse est en attente, copier
     // Supabase -> D1 ecraserait (et purgerait) une ecriture que D1 a retenue.
+    // On tente d'abord la reparation D1 -> Supabase, qui FUSIONNE sans rien
+    // detruire. Faire ici ce que le cron faisait seul evite d'etre bloque
+    // jusqu'a minuit pour une reparation pourtant faisable a la main.
     const fwd = await kv.get(FWD_GAP_KEY);
-    if (fwd && body?.allow_forward_gap !== true) {
+    let repair: { ok: boolean; error?: string; rows?: number } | null = null;
+    if (fwd && body?.dry) {
       return json({
-        ok: false,
-        error: 'ecart a reparer en sens inverse depuis ' + fwd +
-               " : la copie Supabase -> D1 ecraserait D1. Relancer avec {\"allow_forward_gap\":true} pour passer outre en acceptant la perte.",
+        ok: false, dry: true, forward_gap: fwd,
+        error: "ecart inverse en attente : relancer sans {\"dry\":true} pour reparer D1 -> Supabase avant la copie",
       }, 409);
+    } else if (fwd && body?.allow_forward_gap === true) {
+      // Passage outre assume : la copie ecrasera l'ecriture retenue par D1.
+      console.warn('[resync] ecart inverse passe outre sur demande : cet ecart sera perdu');
+    } else if (fwd) {
+      repair = await repairForwardGap(env, (m) => console.log('[reparation]', m));
+      if (!repair.ok) {
+        return json({
+          ok: false,
+          error: 'ecart a reparer en sens inverse depuis ' + fwd + ' : ' + (repair.error || '?') +
+                 ". Relancer avec {\"allow_forward_gap\":true} pour passer outre en acceptant la perte.",
+          repair,
+        }, 409);
+      }
+      await kv.delete(FWD_GAP_KEY);
     }
     const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
       dry: Boolean(body?.dry),
@@ -742,7 +819,34 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
       },
       log: (m) => console.log('[resync]', m),
     });
-    return json(report, report.ok ? 200 : 500);
+    return json(repair ? { ...report, repair } : report, report.ok ? 200 : 500);
+  }
+
+  // Copie integrale D1 -> eurex-db-copy. Appel MANUEL, depuis 2026-10-11 :
+  // c'etait le cron 02:00 UTC, retire parce que Supabase est desormais une
+  // copie complete et permanente, tenue a jour en continu (double ecriture) et
+  // resynchronisee chaque nuit — mieux qu'une copie figee, et interrogeable.
+  // Le cout etait reel pourtant : ~6500 lignes lues par nuit sur le quota D1
+  // gratuit, pour un contenu deja present ailleurs.
+  // Reste disponible a la main, par exemple avant un changement de schema ou
+  // si l'on venait a retirer Supabase : la requete est refusee sans
+  // { "force": true }, parce que cette operation vide chaque table avant de la
+  // reecrire — un echec au milieu laisse la copie incomplete.
+  if (path === '/internal/sync-copy' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({})) as any;
+    if (!env.COPY_DB) return json({ ok: false, error: 'COPY_DB non configure' }, 500);
+    if (body?.force !== true) {
+      return json({
+        ok: false,
+        error: 'cette copie vide chaque table avant de la reecrire : relancer avec {"force":true}',
+      }, 400);
+    }
+    try {
+      const r = await syncToCopy(env);
+      return json({ ok: true, tables: r.tables, rows: r.rows });
+    } catch (e: any) {
+      return json({ ok: false, error: String(e?.message || e) }, 500);
+    }
   }
 
   // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
@@ -893,11 +997,15 @@ export default {
       // double ecriture si le drapeau est leve (les deux bases recues alors a
       // chaque modification).
       const { mode: backend, dual } = await backendState(env);
-      if (backend === 'supabase') {
-        // Resync en cours : on attend la fin plutot que d'etre servi entre deux
-        // versions des donnees (voir waitWhileSyncing). Inutile en mode D1 —
-        // le verrou n'existe que pendant une resync, elle-meme uniquement en
-        // mode supabase.
+      // Resync en cours : on attend la fin plutot que d'etre servi entre deux
+      // versions des donnees (voir waitWhileSyncing).
+      //
+      // Aussi en mode d1 DES QUE la double ecriture est activee : pgAll() lit
+      // alors Supabase pour les requetes lourdes, et une reparation inverse
+      // (D1 -> Supabase) est en train de recopier cette meme base. Laisser
+      // passer une lecture exposerait un contenu a moitie reconstruit — le
+      // verrou n'etait jusque la utile qu'en mode supabase.
+      if (backend === 'supabase' || dual) {
         await waitWhileSyncing(env);
       }
       env = applyBackend(env, backend, dual);
@@ -4691,7 +4799,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
   // Cron 1er janvier (00:15 UTC) : passage automatique au nouvel exercice
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
   // Cron quotidien (00:05 UTC) : resync Supabase -> D1 puis retour sur D1.
-  // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
+  // Il n'y a plus de copie D1 -> eurex-db-copy la nuit : Supabase tient ce role
+  // depuis 2026-10-11, en continu et de facon interrogable. L'operation reste
+  // disponible a la main via POST /internal/sync-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Retour sur D1 : le quota gratuit se remet a zero a 00:00 UTC, on attend
     // donc 00:05 pour refaire le point. Traite avant le test backend, puisque
@@ -4700,9 +4810,9 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       ctx.waitUntil(resyncAndFlipBack(env));
       return;
     }
-    // Backend Supabase : les crons D1 (sync vers COPY_DB) sont sans objet —
-    // la base managee gere sa propre sauvegarde ; le rollover local est gere
-    // par le serveur du cabinet (a migrer en fin de bascule, cf. api/supabase/README.md).
+    // Backend Supabase : le cron du 1er janvier (ouverture d'exercice) s'appuie
+    // sur les tables D1 et n'a donc pas de sens — la base geree ne les expose
+    // pas de la meme facon. Sa migration est notee dans api/supabase/README.md.
     const backend = await backendMode(env);
     if (backend === 'supabase') {
       console.log('cron', event.cron, 'ignore (backend supabase)');
@@ -4711,18 +4821,14 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
     if (event.cron === '15 0 1 1 *') {
       ctx.waitUntil(rolloverAllOrganizations(env));
     }
-    if (event.cron === '0 2 * * *') {
-      ctx.waitUntil(syncToCopy(env).then(
-        r => console.log('sync-copy OK: ' + r.tables + ' tables, ' + r.rows + ' lignes'),
-        err => console.error('sync-copy FAILED: ' + (err?.message || err)),
-      ));
-    }
   },
 };
 
-// Copie de sauvegarde quotidienne : recopie integrale de DB (eurex-db) vers COPY_DB
-// (eurex-db-copy). Chaque table est vidée puis réécrite — INSERT en paquets (limite
-// de 100 paramètres liés par requête). Les tables internes d1_* ne sont pas copiées.
+// Copie integrale D1 -> COPY_DB (eurex-db-copy), appelee a la main par
+// POST /internal/sync-copy. Chaque table est vidée puis réécrite — INSERT en
+// paquets (limite de 100 paramètres liés par requête). Les tables internes d1_*
+// ne sont pas copiées. N'EST PLUS DECLENCHEE PAR UN CRON depuis 2026-10-11 :
+// Supabase fournit une copie complete tenue a jour en continu.
 async function syncToCopy(env: Env): Promise<{ tables: number; rows: number }> {
   if (!env.COPY_DB) throw new Error('COPY_DB non configuré');
   const { results: tblRows } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*' ORDER BY name").all();
