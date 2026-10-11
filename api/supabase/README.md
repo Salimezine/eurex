@@ -204,6 +204,16 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{"dry":true}' .../internal/resync
 - **Le retour manuel sur D1 est refusé tant que `d1_state != 'clean'`** (409) :
   D1 contiendrait les données d'avant la bascule et toutes les saisies faites
   depuis seraient perdues. `{"backend":"d1","force":true}` passe outre.
+- **`{"dry":true}` renvoie toujours `"purged": 0`, et ce n'est pas une mesure.**
+  La passe de purge est sautée entièrement en mode `dry` (`sync.ts` :
+  `if (!opts.dry)`), donc le compte est une constante, jamais un écart réel.
+  Lire `purged: 0` comme « les deux bases sont synchrones » est faux : une
+  copie réelle peut très bien purger alors que le `dry` annonçait zéro.
+  Exemple concret du 2026-10-11 : D1 portait encore le compte de test
+  `sweep-test@eurex.tn` (supprimé de Supabase, la suppression secondaire ayant
+  échoué faute de quota) — 1 ligne de trop — alors que le `dry` affichait
+  `purged: 0`. Le `dry` reste utile pour le **plan** (ordre des tables,
+  avertissements de schéma), pas pour la divergence de contenu.
 - Secret Worker : `wrangler secret put SUPABASE_DB_URL` (URI **Direct/Session
   pooler** de Supabase). Sans secret, `has_url:false` et la bascule est sans effet.
   Chemin réellement utilisé : le **binding Hyperdrive** (`wrangler.jsonc`), prioritaire
