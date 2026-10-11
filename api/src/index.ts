@@ -665,6 +665,28 @@ async function pgAll<T = any>(
   const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
   try {
     return await pg.prepare(sql).bind(...params).all();
+  } catch (e) {
+    // Repli sur la primaire plutot qu'un echec visible a l'utilisateur.
+    //
+    // Ce routage a AJOUTE une dependance : sans lui, cette requete n'avait
+    // besoin que de D1 ; avec lui, elle echoue aussi si Hyperdrive ou Supabase
+    // tousse — et c'est arrive en production le 2026-10-11, le tableau de bord
+    // cabinet affichant ses quatre compteurs a zero derriere "l'API est
+    // momentanement indisponible", alors que les memes appels repondaient
+    // normalement une minute plus tard.
+    //
+    // Revenir sur D1 est sans risque et c'est tout l'interet de la double
+    // ecriture : les deux bases recoivent chaque modification et restent
+    // identiques, donc lire l'une ou l'autre revient au meme — D1 est de plus
+    // la primaire, donc au moins aussi fraiche que la copie. Sans cette
+    // garantie, le repli serait dangereux et il faudrait plutot laisser
+    // echouer.
+    //
+    // Le cout est mesure : l'aggregate revient sur le quota de lignes lues de
+    // D1. C'est le prix d'une page qui s'affiche, et l'incidence est faible
+    // puisque la panne est aussi rare que celle d'Hyperdrive.
+    console.error('lecture repartie indisponible, repli sur D1 :', String((e as any)?.message || e));
+    return env.DB.prepare(sql).bind(...params).all();
   } finally {
     const a = pg as unknown as { endRequest?: () => void } | null;
     if (a && typeof a.endRequest === 'function') a.endRequest();
