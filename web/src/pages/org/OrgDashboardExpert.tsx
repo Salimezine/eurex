@@ -75,22 +75,35 @@ export default function OrgDashboardExpert() {
     setExportingCsv(false);
   };
 
-  const fetchDashboard = () =>
-    Promise.all([
+  // Chaque route est evaluée séparément : un échec isolé ne vide pas le
+  // tableau de bord. C'est arrivé en production le 2026-10-11 — les quatre
+  // compteurs à zéro derrière « l'API est momentanément indisponible », alors
+  // que les mêmes appels répondaient normalement une minute plus tard. Avec
+  // Promise.all, une seule route en échec annulait les trois autres déjà
+  // résolues, et l'utilisateur perdait une page entière pour une requête.
+  // On affiche donc ce qui a répondu, et on ne signale l'erreur que si rien
+  // n'est venu.
+  const fetchDashboard = async () => {
+    const results = await Promise.allSettled([
       orgApi.getComptables().then(onlyComptables),
       orgApi.getAllDossiers(exercice),
       orgApi.getClients(),
       orgApi.getExercices(),
-    ]).then(([c, d, cl, ex]) => {
-      setComptables(c);
-      setAllDossiers(d);
-      setAllClients(cl);
-      const list = ex.exercices || [];
+    ]);
+    const [rc, rd, rcl, rex] = results;
+    if (rc.status === 'fulfilled') setComptables(rc.value);
+    if (rd.status === 'fulfilled') setAllDossiers(rd.value);
+    if (rcl.status === 'fulfilled') setAllClients(rcl.value);
+    if (rex.status === 'fulfilled') {
+      const list = rex.value.exercices || [];
       setExercices(list);
       // Exercice choisi disparu (client supprime) : on retombe sur le plus recent
       if (list.length && !list.includes(exercice)) setExercice(list[0]);
-      setLoadError(false);
-    }).catch(e => { console.error(e); setLoadError(true); }).finally(() => setLoading(false));
+    }
+    results.forEach(r => { if (r.status === 'rejected') console.error(r.reason); });
+    setLoadError(!results.some(r => r.status === 'fulfilled'));
+    setLoading(false);
+  };
 
   useEffect(() => { fetchDashboard(); }, [exercice]);
 

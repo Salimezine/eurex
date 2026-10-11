@@ -52,9 +52,16 @@ export default function OrgSettings() {
   const comps = comptables.filter(c => c.role === 'comptable');
 
   useEffect(() => {
-    Promise.all([orgApi.getTemplates(), orgApi.getComptables(), orgApi.getClients()])
-      .then(([t, c, cl]) => { setTemplates(t); setComptables(c); setClients(cl); })
-      .catch(console.error)
+    // Une route en échec ne vide pas les deux autres (cf. les tableaux de
+    // bord) : on applique ce qui est venu et on journalise le reste.
+    Promise.allSettled([orgApi.getTemplates(), orgApi.getComptables(), orgApi.getClients()])
+      .then((results) => {
+        const [rt, rc, rcl] = results;
+        if (rt.status === 'fulfilled') setTemplates(rt.value);
+        if (rc.status === 'fulfilled') setComptables(rc.value);
+        if (rcl.status === 'fulfilled') setClients(rcl.value);
+        results.forEach(r => { if (r.status === 'rejected') console.error(r.reason); });
+      })
       .finally(() => setLoading(false));
   }, []);
 
