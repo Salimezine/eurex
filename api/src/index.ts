@@ -561,7 +561,19 @@ async function markForwardGap(env: Env, mode: string, entries: MissedWrite[]): P
       // D1 est en retard : c'est precisement ce que la resync Supabase -> D1
       // repare toute seule. Marquer "dirty" suffit a interdire un retour
       // manuel sans copie prealable.
-      await kv.put('__backend/d1_state', 'dirty');
+      //
+      // Le test n'est pas un detail d'optimisation : le plan gratuit KV n'offre
+      // que 1 000 ecritures par jour, et ce branchement se produit UNE FOIS PAR
+      // ECRITURE D'APPLICATION refusee par D1. Or c'est exactement ce qui s'est
+      // passe le 2026-10-11 apres la bascule, D1 ayant epuise son quota
+      // d'ecritures — quelques milliers de "dirty" identiques auraient
+      // consomme le budget de ce qui sert a signaler les ecarts, et le catch
+      // ci-dessous avale l'echec : le jour ou un vrai ecart aurait ete a
+      // conserver, l'ecriture KV aurait ete refusee sans rien dire, rendant
+      // possible l'ecrasement qu'evite justement le drapeau.
+      if ((await kv.get('__backend/d1_state')) !== 'dirty') {
+        await kv.put('__backend/d1_state', 'dirty');
+      }
       return;
     }
     const opt = { expirationTtl: GAP_TTL };
