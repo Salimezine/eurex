@@ -402,6 +402,23 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   invisible à l'utilisateur. Le drapeau `__backend/dual_write` repose donc la
   condition toute seule — couper la double écriture désactive aussi la
   répartition, sans modifier une ligne de code.
+- **Le routage a *ajouté* une dépendance : `pgAll()` retombe maintenant sur D1.**
+  Avant lui, une requête routée n'avait besoin que de D1 ; avec lui, elle
+  échoue aussi si Hyperdrive ou Supabase tousse — et c'est arrivé en production
+  le 2026-10-11 : le tableau de bord cabinet affichait ses quatre compteurs à
+  zéro derrière « l'API est momentanément indisponible », alors que les mêmes
+  appels répondaient normalement une minute plus tard. Le repli sur D1 est
+  sans risque et c'est tout l'intérêt de la double écriture : les deux bases
+  reçoivent chaque modification et restent identiques, donc lire l'une ou
+  l'autre revient au même, D1 étant en plus la primaire. **Sans cette
+  garantie, le repli serait dangereux et il faudrait laisser échouer** — c'est
+  le drapeau `dual_write` qui rend la chute acceptable.
+  Complément côté navigateur : `OrgDashboardExpert`, `OrgDashboardComptable` et
+  `OrgSettings` assemblaient leurs routes avec `Promise.all`, qui **annule les
+  réponses déjà résolues** dès qu'une seule route échoue. Passées en
+  `Promise.allSettled`, elles affichent ce qui est venu et ne signalent
+  l'erreur que si rien n'est arrivé — un échec isolé ne vide plus une page
+  entière.
 - **L'écart avant (`forward_gap`) se répare par rejeu, jamais par recopie.** Le drapeau
   `__backend/forward_gap` se lève quand une écriture de second rang n'atteint
   pas PostgreSQL alors que D1 sert. Copier ensuite Supabase → D1 — ce que fait la
@@ -438,6 +455,30 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
   verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
   écrit `mode=d1`.
+- **Le quota d'ÉCRITURES D1 (100 000 lignes/jour, remis à zéro à 00:00 UTC,
+  compté par compte donc `eurex-db` *et* `eurex-db-copy`) a été dépassé le
+  2026-10-11 à 110 k — et le coupable n'était pas l'application.**
+  `wrangler d1 insights eurex-db --sort-by writes --limit 15 --time-period 24h`
+  (119 159 lignes au total) se décompose ainsi :
+
+  | consommateur | lignes | part |
+  |---|---:|---:|
+  | `org_tasks` — **resync**, en deux entrées (celle écrite en dur et celle guillemetée, anciennes et nouvelles versions d'`upsertSql`) | 109 068 | **92 %** |
+  | `CREATE INDEX` + `ANALYZE` (migration ponctuelle, une seule fois) | 5 800 | 5 % |
+  | l'application (journal d'audit, dossiers, clients, notifications) | ~4 000 | **4 %** |
+
+  La preuve que les deux grosses entrées viennent bien de `sync.ts` :
+  `index.ts` ne contient **aucun** `ON CONFLICT`, l'application n'upserte donc
+  jamais. Le surcoût était la resync, relancée l'équivalent d'une quinzaine de
+  copies complètes pendant une journée de test — **pas un problème
+  d'exploitation**. Deux règles en découlent : une resync complète coûte
+  **~6 500 écritures, soit 6,5 % du quota d'un jour** (lancer avec
+  `{"dry":true}` d'abord) ; et un quota dépassé **ne se constate pas en
+  essayant une écriture** — l'écriture de test a encore réussi à 110 k, la
+  limite n'est donc pas un refus immédiat. Enfin `--time-period 1h` et
+  `--time-period 24h` ont rendu **exactement les mêmes chiffres** : cette
+  option ne filtre rien, les statistiques sont figées — impossible d'en tirer
+  un débit, seule l'attribution par requête est exploitable.
 
 ### Opérations
 
@@ -498,9 +539,34 @@ puis retombe sur Supabase ? ») se répond avec ce seul GET :
 
 | Quand | À constater |
 |---|---|
-| après 00:05 UTC | `backend:"d1"`, `d1_state:"clean"`, `last_resync` renseigné |
+| après 00:05 UTC **après une bascule** (mode `supabase`) | copie exécutée : `backend:"d1"`, `d1_state:"clean"`, **`last_resync` avancé** |
+| après 00:05 UTC **en temps normal** (mode `d1`) | journal `[resync] ignoree (backend d1)` : il n'y a rien de périmé à écraser. `last_resync` **ne bouge pas** — c'est voulu, et cela économise ~6 500 écritures par nuit |
 | dans la journée, D1 à court de quota | `backend:"supabase"`, `d1_state:"dirty"`, `last_failover` renseigné |
 | retour manuel sur D1 entre-temps | **409** (`d1_state` = `dirty`) — refusé, c'est voulu |
+
+Le cron teste d'abord `forward_gap` **avant** le test de mode, sinon le drapeau
+resterait levé jusqu'à son expiration de sept jours en passant chaque nuit par
+la sortie « déjà sur D1 ». Conséquence pratique : dans l'état courant
+(`mode=d1`, pas d'écart) il ne fait qu'ouvrir et refermer le KV — le chemin
+`repairForwardGap()` ne s'exécute réellement que lorsqu'un écart est levé.
+
+- **Une chaîne reste à vérifier de bout en bout en production** : provoquer un
+  échec *réel* du second rang. Elle n'a jamais été déclenchée naturellement
+  (ce serait un heureux accident). Procédure, à faire **après remise à zéro du
+  quota d'écritures**, parce qu'elle se termine par une copie complète :
+
+  1. insérer dans D1 **seulement** un parent (un `org_clients` de test) via
+     `wrangler d1 execute eurex-db --remote …` — la double écriture est
+     contournée volontairement ;
+  2. créer un enfant qui le référence par l'application : D1 accepte (clé
+     présente), Supabase refuse (clé étrangère) → écriture de second rang
+     échouée ;
+  3. constater via `GET /internal/backend` : `forward_gap` renseigné **et**
+     `outbox: 1` — c'est le seul lien du dispositif jamais tiré ;
+  4. `POST /internal/resync` → `{"repair":{"ok":true,"rows":1}}`, puis tout
+     revenir à la normale (`forward_gap:null`, `outbox:0`) et supprimer le
+     parent de test des deux bases.
+
 
 - **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
   Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
