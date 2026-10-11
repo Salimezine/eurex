@@ -359,6 +359,49 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   d'exercice. Le flux de notifications est donc vide aujourd'hui et se
   remplira dès la première création manuelle — d'où l'importance de l'index
   côté Supabase.
+- **`wrangler d1 insights` est la seule mesure fiable du quota — et elle
+  change la donne.** Arrivé à un plafond, l'instinct est de chercher lequel
+  des index manque. Mesuré plutôt : `wrangler d1 insights eurex-db
+  --sort-by reads --limit 60 --time-period 1h --json` (nettoyer les ANSI
+  wrangler avant de parser, sinon `ConvertFrom-Json` échoue). Sur 24 h,
+  **74 % des 8,2 M lignes lues venaient de deux requêtes** — et ces deux
+  requêtes **n'existent plus dans la source** : elles appartenaient à une
+  version antérieure du Worker. Sans cette mesure on aurait optimisé à
+  l'aveugle du code mort. Vérifier toujours qu'une requête du rapport est
+  bien encore déployée avant de la soigner.
+- **Le planificateur SQLite ne donne pas le même plan selon qu'une valeur est
+  écrite en dur ou liée.** Requête strictement identique, exécutée en prod :
+
+  | forme | `rows_read` |
+  |---|---|
+  | `WHERE t.dossier_id = '00a610b1-…'` (littéral) | **85** — `SEARCH … USING INDEX` |
+  | `WHERE t.dossier_id = ?` (paramètre, ce que fait l'app) | **5 403** — balayage complet |
+
+  `EXPLAIN QUERY PLAN` rend donc `SEARCH` dans les deux cas : **il ne
+  détecte pas le problème**, puisqu'il est exécuté avec la valeur en dur.
+  Chaque dossier ne contient que 84 tâches (répartition parfaitement
+  régulière, et `sqlite_stat1` le sait : `5747 84`) — donc ces 5 403 lignes
+  sont bien un refus du planificateur, pas une donnée volumineuse. Ni index
+  couvrant, ni `ANALYZE` ne l'ont corrigé par le passé : voir plus haut.
+- **Lecture répartie : `pgAll()` fait passer les requêtes lourdes par
+  PostgreSQL quand `mode=d1`.** Ne pas tenter un `GROUP BY` pour « économiser
+  des lignes » : l'**agrégat doit tout parcourir pour compter**, les lignes
+  *lues* ne baissent pas. Seul un autre moteur retire le coût du quota.
+  Cibles : `/api/org/comptables` (5 953 lignes/appel, sondé toutes les 60 s
+  par l'expert) et `/api/org/me/tasks/recent` (~4 100 lignes, toutes les
+  30 s par **chaque** poste ouvert) — soit à elles seules plus de la moitié
+  d'un quota de 5 M/jour. Mesuré avant/après par `d1 insights` : la requête
+  routée reste bloquée à son ancien nombre d'exécutions **pendant que les
+  deux voisines non routées du même handler continuent d'augmenter** — ce
+  trio (témoin + test) est ce qui rend la mesure recevable malgré la latence
+  des statistiques. Aucun octet de réponse modifié : balayée de 27 routes
+  identique à l'octet près, hors la suppression des comptes de test.
+- **`pgAll()` refuse de router sans double écriture**, et c'est le garde le
+  plus important du dispositif : seule la primaire reçoit les écritures,
+  donc servir Supabase pendant qu'on écrit sur D1 exposerait une création
+  invisible à l'utilisateur. Le drapeau `__backend/dual_write` repose donc la
+  condition toute seule — couper la double écriture désactive aussi la
+  répartition, sans modifier une ligne de code.
 - **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
   en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
   verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
@@ -371,10 +414,16 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
 curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
 # → {"backend":"supabase","d1_state":"dirty|clean","syncing":false,
 #    "last_resync":"2026-10-11T00:05:12Z"|null,
-#    "last_failover":"2026-10-10T12:52:47.892Z"|null}
+#    "last_failover":"2026-10-10T12:52:47.892Z"|null,
+#    "dual_write":false,             ← les deux bases écrites-elles à chaque modification ?
+#    "forward_gap":null}             ← écriture non parvenue à Supabase : la resync s'abstient
 
 # forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
 curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
+
+# double écriture seule (ne change pas le moteur en service) ; désactiver
+# cette commande désactive aussi la lecture répartie pgAll(), qui en dépend
+curl -X POST -H "X-Internal-Secret: ..." -d '{"dual_write":true}' .../internal/backend
 ```
 
 **Vérifier le cycle nocturne** (la question « est-ce que D1 reprend la main,

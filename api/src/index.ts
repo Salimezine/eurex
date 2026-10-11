@@ -569,6 +569,43 @@ async function waitWhileSyncing(env: Env): Promise<void> {
   }
 }
 
+// --- REPARTITION DES LECTURES LOURDES (etape C) ------------------------------
+// Le quota D1 se compte en lignes LUES, et deux requetes en consomment a elles
+// seules l'essentiel : l'agregat /org/comptables (5 953 lignes) et le sondage
+// /org/tasks/recent (~4 100 lignes), pillés toutes les 60 et 30 secondes par
+// chaque poste ouvert. Un GROUP BY n'y changerait rien : l'aggregate doit
+// quand meme parcourir toutes les lignes pour les compter. Le seul levier est
+// donc de les faire executer par PostgreSQL, qui n'a pas de plafond de lignes.
+//
+// Garde-fou : ce routage n'est sans danger QUE depuis la double ecriture. Les
+// deux bases sont alors ecrites a chaque modification et restent identiques, ce
+// qui fait lire l'une ou l'autre autant dire la meme chose. Sans double
+// ecriture, seule la primaire recoit les ecritures et servir Supabase
+// rendrait une creation faite sur D1 invisible — une donnee perdue pour
+// l'utilisateur. Le drapeau repose donc la remarque toute seule.
+async function pgAll<T = any>(
+  env: Env, sql: string, ...params: unknown[]
+): Promise<{ results: T[]; success: boolean; meta: any }> {
+  const state = await backendState(env);
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!state.dual || state.mode === 'supabase' || !dbUrl) {
+    // Double ecriture inactive (comportement d'origine), ou le moteur en
+    // service EST deja PostgreSQL : rien a changer, et l'on economise une
+    // connexion Hyperdrive par appel.
+    return env.DB.prepare(sql).bind(...params).all();
+  }
+  // Mode d1 + double ecriture : on lit cote PostgreSQL. Adaptateur dedie,
+  // un par appel, dont le socket ne survit pas a la requete (cf.
+  // releaseSupabaseConn) — donc referme ici, ici meme.
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  try {
+    return await pg.prepare(sql).bind(...params).all();
+  } finally {
+    const a = pg as unknown as { endRequest?: () => void } | null;
+    if (a && typeof a.endRequest === 'function') a.endRequest();
+  }
+}
+
 // Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
 // reporte dans D1 ce qui a change pendant la bascule, puis on y retourne.
 // Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser).
@@ -3166,7 +3203,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           ? 'c.organization_id = ?'
           : "(c.organization_id = ? AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))";
         const binds: any[] = isSupervisor(user.role) ? [user.organization_id] : [user.organization_id, user.id, user.id];
-        const { results } = await env.DB.prepare(`SELECT t.id, t.label, t.status, t.created_at, t.due_date, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE ${access} AND t.hidden = 0 AND t.created_by IS NOT NULL AND t.created_at >= datetime('now', '-' || ? || ' days') ${exSel ? 'AND d.exercice = ?' : ''} ORDER BY t.created_at DESC, t.id DESC LIMIT 10`).bind(...binds, days, ...(exSel ? [exSel] : [])).all();
+        const { results } = await pgAll(env, `SELECT t.id, t.label, t.status, t.created_at, t.due_date, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE ${access} AND t.hidden = 0 AND t.created_by IS NOT NULL AND t.created_at >= datetime('now', '-' || ? || ' days') ${exSel ? 'AND d.exercice = ?' : ''} ORDER BY t.created_at DESC, t.id DESC LIMIT 10`, ...binds, days, ...(exSel ? [exSel] : []));
         // J-x rapporté à la date en Tunisie (UTC+1)
         const today = new Date(Date.now() + 3600000).toISOString().slice(0, 10);
         const tasks = (results as any[]).map(t => ({
@@ -4081,7 +4118,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const tasksByUid = new Map<string, any[]>();
         {
-          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0").bind(user.organization_id).all();
+          const { results: rows } = await pgAll(env, "SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0", user.organization_id);
           for (const r of rows as any[]) {
             const list = tasksByUid.get(r.uid);
             if (list) list.push(r); else tasksByUid.set(r.uid, [r]);
