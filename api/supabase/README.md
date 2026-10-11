@@ -552,20 +552,83 @@ la sortie « déjà sur D1 ». Conséquence pratique : dans l'état courant
 
 - **Une chaîne reste à vérifier de bout en bout en production** : provoquer un
   échec *réel* du second rang. Elle n'a jamais été déclenchée naturellement
-  (ce serait un heureux accident). Procédure, à faire **après remise à zéro du
-  quota d'écritures**, parce qu'elle se termine par une copie complète :
+  (ce serait un heureux accident), et `forward_gap: null` ne prouve rien — c'est
+  l'absence d'accident, pas le bon fonctionnement du parapluie.
 
-  1. insérer dans D1 **seulement** un parent (un `org_clients` de test) via
-     `wrangler d1 execute eurex-db --remote …` — la double écriture est
-     contournée volontairement ;
-  2. créer un enfant qui le référence par l'application : D1 accepte (clé
-     présente), Supabase refuse (clé étrangère) → écriture de second rang
-     échouée ;
-  3. constater via `GET /internal/backend` : `forward_gap` renseigné **et**
-     `outbox: 1` — c'est le seul lien du dispositif jamais tiré ;
-  4. `POST /internal/resync` → `{"repair":{"ok":true,"rows":1}}`, puis tout
-     revenir à la normale (`forward_gap:null`, `outbox:0`) et supprimer le
-     parent de test des deux bases.
+  Le montage tient en une asymétrie : **provoquer exige des données présentes
+  en D1 seul**, or on ne sait écrire directement que dans D1. On choisit donc
+  une paire parent/enfant dont les deux extrémités ont chacune un endpoint de
+  suppression dans l'application, ce qui permet de **nettoyer sans jamais
+  toucher PostgreSQL à la main** : parent = une tâche, enfant = un document
+  attendu (`org_expected_documents.task_id → org_tasks(id)`, clé étrangère
+  présente dans les deux bases).
+
+  **Prérequis : `mode = "d1"`.** En mode `supabase`, `markForwardGap` se
+  contente de marquer D1 `dirty` et ne remplit jamais l'outbox (cf. son
+  commentaire) : le test serait impossible. C'est le cron 00:05 UTC qui ramène
+  `mode=d1` après une bascule.
+
+  1. **Parent, en D1 seul** — la double écriture est contournée volontairement.
+     `hidden=1` : la tâche n'apparaît nulle part, et surtout
+     `orgRecalcProgress` compte `WHERE t.hidden = 0`, donc la progression du
+     dossier ne bouge pas sous les yeux de l'utilisateur. Le dossier doit être
+     un dossier réel de la production :
+
+     ```bash
+     wrangler d1 execute eurex-db --remote --command \
+       "INSERT INTO org_tasks (id, dossier_id, label, status, order_index, hidden, created_at) \
+        VALUES ('TESTGAPTASK', '<DOSSIER_REEL>', 'TEST ECART AVANT', 'a_faire', 9999, 1, '<ISO UTC>');"
+     ```
+
+  2. **Échec du second rang** — `POST /api/org/dossiers/<DOSSIER_REEL>/documents`
+     avec `{"task_id":"TESTGAPTASK","label":"TEST ECART AVANT"}`. Trois
+     écritures s'enchaînent et c'est précisément ce qui rend le test propre :
+
+     | Écriture | D1 (primaire) | Supabase (secondaire) | Journal |
+     |---|---|---|---|
+     | validation `SELECT … FROM org_tasks WHERE id=? AND dossier_id=?` | trouve | — | lecture seule |
+     | `INSERT INTO org_expected_documents` | accepte | **refuse** (clé étrangère) | **1 entrée** |
+     | `INSERT INTO org_audit_log` | accepte | accepte (aucune clé étrangère) | — |
+
+     L'application répond **201** : le primaire a réussi, l'échec du second rang
+     est invisible pour l'utilisateur. C'est voulu.
+
+  3. **LA PREUVE** — `GET /internal/backend` doit afficher `forward_gap`
+     renseigné **et `outbox: 1`**. C'est le seul lien du dispositif jamais tiré.
+
+  4. **Sortie automatique, sans accès PostgreSQL.** Rejouer la seule écriture
+     manquante échouerait : le parent est toujours absent de Supabase, la
+     clé étrangère refuse de nouveau et `repairForwardGap` ne fait que
+     conserver ce qui échoue encore. On précède donc le journal de l'INSERT du
+     parent, mêmes colonnes et mêmes paramètres (`created_at` en valeur
+     explicite, jamais `datetime('now')` — syntaxe SQLite que PG refuse) :
+
+     ```bash
+     # 1. relever l'entrée écrite par markForwardGap
+     wrangler kv key get --namespace-id 9becacff… --remote __backend/outbox
+     # 2. la réécrire avec l'INSERT du parent en tête, puis :
+     POST /internal/resync   →   {"repair":{"ok":true,"rows":2}}
+     ```
+
+     Le rejeu est ordonné dans l'ordre du tableau : le parent part en premier,
+     l'enfant le suit. Puis la copie Supabase → D1 se déroule normalement.
+
+  5. **Nettoyage par l'application** — les deux endpoints existent et passent
+     par la double écriture, donc les deux bases sont nettoyées sans requête
+     SQL manuelle, dans cet ordre (enfant avant parent) :
+
+     ```
+     DELETE /api/org/dossiers/<DOSSIER_REEL>/documents/<id du document>
+     DELETE /api/org/dossiers/<DOSSIER_REEL>/tasks/TESTGAPTASK
+     ```
+
+  6. **État final attendu** : `forward_gap:null`, `outbox:0`, `backend:"d1"`,
+     `d1_state:"clean"`, `last_resync` avancé.
+
+  Coût : **une copie complète** (~6 500 écritures, ≈ 6,5 % du quota quotidien),
+  c'est pourquoi on la fait après remise à zéro à 00:00 UTC. Seul résidu voulu :
+  une entrée `document_added` libellée « TEST ECART AVANT » dans le journal
+  d'audit — trace assumée de l'opération.
 
 
 - **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
