@@ -71,7 +71,30 @@ export function isD1QuotaError(e: unknown): boolean {
 }
 
 // --- SQL ---------------------------------------------------------------------
-const q = (id: string) => '"' + String(id).replace(/"/g, '""') + '"';
+// Identifiants EMIS SANS GUILLEMETS, et c'est volontaire — c'est le point le
+// moins evident de ce module.
+//
+// PostgreSQL plie les identifiants non quotes en minuscules, et supabase/schema.sql
+// declare toutes ses colonnes sans guillemets : la seule ecriture correcte cible
+// PG est donc de ne pas citer. Citer parait plus sur, et l'aurait ete si les deux
+// bases avaient la meme casse. Elles ne l'ont pas : SQLite conserve la casse
+// d'origine (rapport_modes.bonsAchat) tandis que PG la plie (bonsachat), et
+// l'adaptateur renvoie meme les colonnes lues en casse SQLite. Une colonne arrive
+// donc de D1 sous "bonsAchat" et echoue dans PG si on la cite :
+//     column "bonsAchat" of relation "rapport_modes" does not exist
+// Trouve en testant la reparation inverse le 2026-10-11. Le sens avant ne l'avait
+// jamais vu parce que PgSource rend les noms REELS de PG, deja plies en minuscules
+// — le defaut n'existait que dans l'autre sens.
+//
+// SQLite ignore la casse des identifiants, donc cette forme non quotee lui
+// convient egalement : un seul SQL sert les deux sens. Le meme raisonnement
+// remonte a l'app toute entiere, qui ecrit ses identifiants sans guillemets.
+//
+// Les guillemets sont RETIRES, et non echappes : en position non quotee, un
+// identifiant qui en contiendrait casse la requete et ouvrirait une fermeture
+// de chaine. Aucun nom reel n'en contient (ils viennent de information_schema et
+// de sqlite_master), on preferait donc la lecture a la resilience.
+const ident = (id: string) => String(id).replace(/"/g, '');
 
 // Upser SQLite via ON CONFLICT plutot que INSERT OR REPLACE : OR REPLACE
 // supprime la ligne en conflit avant de la reecrire, ce qui declenche les cles
@@ -79,19 +102,19 @@ const q = (id: string) => '"' + String(id).replace(/"/g, '""') + '"';
 // echouerait a cause de org_users.organization_id. DO UPDATE fait une vraie
 // mise a jour, sans supprimee.
 export function upsertSql(table: string, cols: string[], pk: string[]): string {
-  const target = pk.map(q).join(', ');
+  const target = pk.map(ident).join(', ');
   const values = cols.map(() => '?').join(', ');
-  const set = cols.filter((c) => !pk.includes(c)).map((c) => `${q(c)} = excluded.${q(c)}`).join(', ');
+  const set = cols.filter((c) => !pk.includes(c)).map((c) => `${ident(c)} = excluded.${ident(c)}`).join(', ');
   // Table ou toutes les colonnes font partie de la cle : la ligne est soit
   // absente, soit deja identique -> rien a mettre a jour.
   if (!set) {
-    return `INSERT INTO ${q(table)} (${cols.map(q).join(', ')}) VALUES (${values}) ON CONFLICT (${target}) DO NOTHING`;
+    return `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${values}) ON CONFLICT (${target}) DO NOTHING`;
   }
-  return `INSERT INTO ${q(table)} (${cols.map(q).join(', ')}) VALUES (${values}) ON CONFLICT (${target}) DO UPDATE SET ${set}`;
+  return `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${values}) ON CONFLICT (${target}) DO UPDATE SET ${set}`;
 }
 
 export function deleteSql(table: string, pk: string[]): string {
-  return `DELETE FROM ${q(table)} WHERE ${pk.map((c) => `${q(c)} = ?`).join(' AND ')}`;
+  return `DELETE FROM ${ident(table)} WHERE ${pk.map((c) => `${ident(c)} = ?`).join(' AND ')}`;
 }
 
 // Valeur lue dans PostgreSQL -> valeur attendue par SQLite (D1). Le schema ne
@@ -188,7 +211,7 @@ class PgSource implements SupaSource {
   constructor(url: string, tf: TransportFactory) { this.pg = new PgClient(url, tf); }
   async schema(): Promise<Schema> { if (!this.s) this.s = await readSchema(this.pg); return this.s; }
   async rows(table: string): Promise<Record<string, unknown>[]> {
-    const r = await this.pg.query(`SELECT * FROM ${q(table)}`);
+    const r = await this.pg.query(`SELECT * FROM ${ident(table)}`);
     return r.rows as Record<string, unknown>[];
   }
   close(): void { try { this.pg.close(); } catch { /* deja ferme */ } }
@@ -217,7 +240,7 @@ class D1Source implements SupaSource {
   }
   async schema(): Promise<Schema> { if (!this.s) this.s = await readSchema(this.pg); return this.s; }
   async rows(table: string): Promise<Record<string, unknown>[]> {
-    const { results } = await this.d1.prepare(`SELECT * FROM ${q(table)}`).all();
+    const { results } = await this.d1.prepare(`SELECT * FROM ${ident(table)}`).all();
     return results as Record<string, unknown>[];
   }
   close(): void { try { this.pg.close(); } catch { /* deja ferme */ } }
@@ -235,7 +258,7 @@ export async function purgeOrphans(
   batchSize = 50,
 ): Promise<number> {
   if (!pk.length) return 0;
-  const { results } = await d1.prepare(`SELECT ${pk.map(q).join(', ')} FROM ${q(table)}`).all();
+  const { results } = await d1.prepare(`SELECT ${pk.map(ident).join(', ')} FROM ${ident(table)}`).all();
   let gone = 0;
   let batch: D1StmtLike[] = [];
   const del = deleteSql(table, pk);

@@ -36,11 +36,14 @@ class FakeD1 implements D1Like {
       async run() { return d1.apply(sql, binds); },
       async all() {
         d1.execs.push({ sql, binds: [] }); // trace aussi les lectures (parcours de purge)
-        const m = /FROM "([^"]+)"\s*$/.exec(sql);
+        // "?([\w$]+)"? : les identifiants sortent SANS guillemets depuis sync.ts
+        // (voir ident()), mais les deux formes sont acceptees pour que le double
+        // reste lisible quoi qu'on fasse cote production.
+        const m = /FROM "?([\w$]+)"?\s*$/.exec(sql);
         const table = m ? m[1] : '';
         const cols = sql
           .replace(/^SELECT\s+/, '')
-          .replace(/\s+FROM\s+"[^"]+"\s*$/, '')
+          .replace(/\s+FROM\s+"?[\w$]+"?\s*$/, '')
           .split(',')
           .map((s) => s.trim().replace(/"/g, ''));
         const rows = d1.data.get(table) || [];
@@ -60,7 +63,7 @@ class FakeD1 implements D1Like {
     if (this.failSql && sql.includes(this.failSql)) throw new Error('boom ' + this.failSql);
     this.execs.push({ sql, binds });
 
-    const up = /^INSERT INTO "([^"]+)" \(([^)]+)\) VALUES \([^)]+\) ON CONFLICT \(([^)]+)\) DO (UPDATE SET|NOTHING)/.exec(sql);
+    const up = /^INSERT INTO "?([\w$]+)"? \(([^)]+)\) VALUES \([^)]+\) ON CONFLICT \(([^)]+)\) DO (UPDATE SET|NOTHING)/.exec(sql);
     if (up) {
       const table = up[1];
       const cols = up[2].split(', ').map((c) => c.replace(/"/g, ''));
@@ -75,7 +78,7 @@ class FakeD1 implements D1Like {
       return { ok: true };
     }
 
-    const del = /^DELETE FROM "([^"]+)" WHERE (.+)$/.exec(sql);
+    const del = /^DELETE FROM "?([\w$]+)"? WHERE (.+)$/.exec(sql);
     if (del) {
       const table = del[1];
       const pk = del[2].split(' AND ').map((s) => s.trim().replace(/"/g, '').replace(/ = \?$/, ''));
@@ -84,7 +87,7 @@ class FakeD1 implements D1Like {
       return { ok: true };
     }
 
-    const sel = /^SELECT (.+) FROM "([^"]+)"$/.exec(sql);
+    const sel = /^SELECT (.+) FROM "?([\w$]+)"?$/.exec(sql);
     if (sel) {
       const cols = sel[1].split(', ').map((c) => c.replace(/"/g, ''));
       const rows = this.data.get(sel[2]) || [];
@@ -165,33 +168,50 @@ test('topoSort : les tables sans dependance sont conservees, les cycles toleres'
 
 // --- SQL genere --------------------------------------------------------------
 
+test('upsertSql : identifiants NON guillemets — la casse revient au SGDB', () => {
+  // Le piege, trouve en testant la reparation inverse le 2026-10-11.
+  // SQLite conserve la casse d'origine (D1 rend bonsAchat) tandis que PG plie les
+  // identifiants non quotes (bonsachat), et supabase/schema.sql declare ses
+  // colonnes sans guillemets. Si l'on citait "bonsAchat", PG ne trouverait pas
+  // la colonne — alors que le meme SQL, non quote, passe partout ailleurs.
+  const sql = upsertSql('rapport_modes', ['id', 'bonsAchat', 'avoir'], ['id']);
+  assert.ok(!sql.includes('"'), 'aucun guillemet : PG doit pouvoir plier');
+  assert.equal(
+    sql,
+    'INSERT INTO rapport_modes (id, bonsAchat, avoir) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET bonsAchat = excluded.bonsAchat, avoir = excluded.avoir',
+  );
+});
+
 test('upsertSql : ON CONFLICT DO UPDATE et pas INSERT OR REPLACE', () => {
   const sql = upsertSql('org_users', ['id', 'full_name', 'is_active'], ['id']);
   // OR REPLACE supprime la ligne en conflit et declencherait les cles etrangeres
   assert.ok(!sql.includes('OR REPLACE'), 'pas de OR REPLACE');
   assert.equal(
     sql,
-    'INSERT INTO "org_users" ("id", "full_name", "is_active") VALUES (?, ?, ?) ON CONFLICT ("id") DO UPDATE SET "full_name" = excluded."full_name", "is_active" = excluded."is_active"',
+    'INSERT INTO org_users (id, full_name, is_active) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET full_name = excluded.full_name, is_active = excluded.is_active',
   );
 });
 
-test('upsertSql : cle composite + colonnes a guillemets', () => {
+test('upsertSql : cle composite ; un guillemet dans un nom est nettoye, pas echappe', () => {
   const sql = upsertSql('t', ['a', 'b', 'v'], ['a', 'b']);
-  assert.ok(sql.endsWith('ON CONFLICT ("a", "b") DO UPDATE SET "v" = excluded."v"'), sql);
-  assert.equal(upsertSql('a"b', ['c'], ['c']), 'INSERT INTO "a""b" ("c") VALUES (?) ON CONFLICT ("c") DO NOTHING');
+  assert.ok(sql.endsWith('ON CONFLICT (a, b) DO UPDATE SET v = excluded.v'), sql);
+  // En position non quotee, echapper reviendrait a ouvrir une fermeture de
+  // chaine. Aucun nom reel n'en contient (ils viennent de information_schema et
+  // de sqlite_master) ; on preferait la lecture a la resilience.
+  assert.equal(upsertSql('a"b', ['c'], ['c']), 'INSERT INTO ab (c) VALUES (?) ON CONFLICT (c) DO NOTHING');
 });
 
 test('upsertSql : table entierement couverte par la cle -> DO NOTHING', () => {
   // Rien a mettre a jour : la ligne est absente, ou deja identique.
   assert.equal(
     upsertSql('jointure', ['a', 'b'], ['a', 'b']),
-    'INSERT INTO "jointure" ("a", "b") VALUES (?, ?) ON CONFLICT ("a", "b") DO NOTHING',
+    'INSERT INTO jointure (a, b) VALUES (?, ?) ON CONFLICT (a, b) DO NOTHING',
   );
 });
 
 test('deleteSql : une ligne par cle primaire (D1 refuse >100 parametres)', () => {
-  assert.equal(deleteSql('org_users', ['id']), 'DELETE FROM "org_users" WHERE "id" = ?');
-  assert.equal(deleteSql('t', ['a', 'b']), 'DELETE FROM "t" WHERE "a" = ? AND "b" = ?');
+  assert.equal(deleteSql('org_users', ['id']), 'DELETE FROM org_users WHERE id = ?');
+  assert.equal(deleteSql('t', ['a', 'b']), 'DELETE FROM t WHERE a = ? AND b = ?');
 });
 
 test('pkKey : Postgres et SQLite peuvent rendre le meme entier de type different', () => {
@@ -269,13 +289,13 @@ test('resync : ecrit les meres d\'abord puis purge les orphelins, filles d\'abor
   assert.deepEqual((d1.data.get('org_tasks') || []).map((r) => r.id), ['t1', 't2', 't3']);
 
   // Les meres sont ecrites avant les filles, la purge dans l'ordre inverse
-  const written = d1.execs.filter((e) => e.sql.startsWith('INSERT')).map((e) => /"([^"]+)" \(/.exec(e.sql)![1]);
+  const written = d1.execs.filter((e) => e.sql.startsWith('INSERT')).map((e) => /^INSERT INTO "?([\w$]+)"? \(/.exec(e.sql)![1]);
   assert.deepEqual([...new Set(written)], ['organizations', 'org_users', 'org_tasks']);
   // La purge ne supprime que l'orpheline, mais elle PARCOURT les tables en
   // ordre inverse : une fille ne peut pas etre supprimee apres sa mere.
-  const purged = d1.execs.filter((e) => e.sql.startsWith('SELECT')).map((e) => /FROM "([^"]+)"/.exec(e.sql)![1]);
+  const purged = d1.execs.filter((e) => e.sql.startsWith('SELECT')).map((e) => /FROM "?([\w$]+)"?/.exec(e.sql)![1]);
   assert.deepEqual(purged, ['org_tasks', 'org_users', 'organizations'], 'purge en ordre inverse (filles d\'abord)');
-  const deleted = d1.execs.filter((e) => e.sql.startsWith('DELETE')).map((e) => /FROM "([^"]+)"/.exec(e.sql)![1]);
+  const deleted = d1.execs.filter((e) => e.sql.startsWith('DELETE')).map((e) => /FROM "?([\w$]+)"?/.exec(e.sql)![1]);
   assert.deepEqual(deleted, ['org_users'], 'seule l\'orpheline disparait');
 
   // Verrou libere en tout dernier
@@ -380,7 +400,7 @@ test('reparation inverse : un echec laisse le drapeau intact (pas de bascule)', 
   const { source, target, env } = reverseFixture();
   // La table cible refuse : la reparation doit echouer PROPREMENT, sans lever
   // quoi que ce soit — index.ts ne supprime le drapeau qu apres ok:true.
-  (target as any).failSql = 'INSERT INTO "parent"';
+  (target as any).failSql = 'INSERT INTO parent';
   const report = await resyncSupabaseToD1(env, { source, purge: false });
   assert.equal(report.ok, false);
   assert.ok(report.error && report.error.includes('parent'), 'le message nomme la table fautive');
