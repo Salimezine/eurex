@@ -20,6 +20,15 @@
 // l'autre base serait pire qu'un ecart transitoire. L'echec est donc signale
 // via `onSecondaryFailure`, qui ne doit jamais lever.
 //
+// Le rappel recoit le SQL **ET les parametres**, et c'est le point capital :
+// signaler un ecart sans pouvoir le REJOUIRE obligerait a recopier la base
+// entiere pour retrouver ce qui manque, et cette copie depasse le budget
+// processeur du Worker gratuit — mesure le 2026-10-11 : abandon au bout de
+// 219 ms de CPU et de 9 tables sur 35, deja en table VIDE. Le coup reel est
+// fixe par invocation (connexion PostgreSQL + schema), pas proportionnel aux
+// lignes, donc fractionner ne sauve rien. Rejouer l'ecriture exacte, elle,
+// tient dans le budget quoi qu'il arrive.
+//
 // NOTE de style : pas de proprietes de parametre (`private x:` dans le
 // constructeur). Le stripping de types de Node ne sait pas les effacer, et le
 // Worker comme les tests passent par ce chemin.
@@ -32,10 +41,17 @@ export interface DbLike {
   batch(stmts: any[]): Promise<any[]>;
 }
 
+// Une ecriture manquee, telle qu'elle peut etre rejouee telle quelle.
+export interface MissedWrite {
+  sql: string;
+  params: unknown[];
+}
+
 export interface DualHooks {
-  // La base secondaire est en retard d'UNE ecriture. Le rappel doit signaler
-  // l'ecart (KV) pour que la resync le repare, et ne doit jamais lever.
-  onSecondaryFailure?: (e: unknown, sql: string) => void;
+  // La base secondaire est en retard d'UNE ecriture (ou d'un lot entier, qui
+  // est atomique et dont on ne sait pas quelle portion a echoue : on rejoue
+  // donc le lot complet, idempotent a l'ecriture pres). Ne doit jamais lever.
+  onSecondaryFailure?: (e: unknown, entries: MissedWrite[]) => void;
 }
 
 class DualStatement {
@@ -83,7 +99,7 @@ class DualStatement {
       // parametres) ou de PostgreSQL (cle etrangere) est indiagnostiquable
       // dans les logs du Worker.
       console.error('double ecriture : echec secondaire', this.sql.slice(0, 120), String((e as any)?.message || e));
-      try { this.hooks.onSecondaryFailure?.(e, this.sql); } catch { /* jamais fatal */ }
+      try { this.hooks.onSecondaryFailure?.(e, [{ sql: this.sql, params: this.params }]); } catch { /* jamais fatal */ }
     }
   }
 
@@ -120,7 +136,10 @@ export class DualDb implements DbLike {
       await this.sec.batch(writes.map((s) => s.toSecondary()));
     } catch (e) {
       console.error('double ecriture : echec secondaire (batch)', String((e as any)?.message || e));
-      try { this.hooks.onSecondaryFailure?.(e, `batch(${writes.length})`); } catch { /* jamais fatal */ }
+      // Lot entier : on ne sait pas quelle portion a echoue, on rejoue donc tout.
+      // Chaque ecriture est un upsert ou un remplacement, donc rejouer est
+      // inoffensif meme si une partie avait deja passe.
+      try { this.hooks.onSecondaryFailure?.(e, writes.map((s) => ({ sql: s.sql, params: s.params }))); } catch { /* jamais fatal */ }
     }
     return out;
   }

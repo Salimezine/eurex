@@ -217,35 +217,6 @@ class PgSource implements SupaSource {
   close(): void { try { this.pg.close(); } catch { /* deja ferme */ } }
 }
 
-// Source D1 : sert UNIQUEMENT a la reparation inverse (D1 -> Supabase), quand
-// une double ecriture n'a pas atteint PostgreSQL alors que D1 etait primaire
-// (cf. __backend/forward_gap dans index.ts).
-//
-// Le schema reste lu dans PostgreSQL, et non dans D1, alors qu'on lit les
-// lignes de D1 : c'est la CIBLE qui doit dicter l'ordre, et information_schema
-// donne seul un tri meres/filles fiable — D1 ne fait pas respecter les cles
-// etrangeres de facon fiable, et certaines memes ne les declare pas. D1 ne sert
-// ici qu'a fournir les lignes.
-export function makeD1Source(url: string, tf: TransportFactory, d1: D1Like): SupaSource {
-  return new D1Source(url, tf, d1);
-}
-
-class D1Source implements SupaSource {
-  private pg: PgClient;
-  private d1: D1Like;
-  private s: Schema | null = null;
-  constructor(url: string, tf: TransportFactory, d1: D1Like) {
-    this.pg = new PgClient(url, tf);
-    this.d1 = d1;
-  }
-  async schema(): Promise<Schema> { if (!this.s) this.s = await readSchema(this.pg); return this.s; }
-  async rows(table: string): Promise<Record<string, unknown>[]> {
-    const { results } = await this.d1.prepare(`SELECT * FROM ${ident(table)}`).all();
-    return results as Record<string, unknown>[];
-  }
-  close(): void { try { this.pg.close(); } catch { /* deja ferme */ } }
-}
-
 // --- Purge des orphelins -----------------------------------------------------
 // Supprime de D1 les lignes que Supabase n'a plus. Les cles primaires de D1
 // sont lues une par une (et non `WHERE pk NOT IN (...)`) : D1 refuse plus de
@@ -295,13 +266,6 @@ export interface ResyncOptions {
   log?: (msg: string) => void;
   // Source substituable : PostgreSQL en production, un double en test.
   source?: SupaSource;
-  // Purge des lignes absentes de la source (defaut : oui). A DESACTIVER pour
-  // la reparation inverse (D1 -> Supabase) : si D1 a manque une ecriture et
-  // qu'un repli automatique a depuis emmene l'app vers Supabase, alors
-  // Supabase contient des saisies PLUS RECENTES que D1. Une purge effacerait
-  // ces lignes, transformant un retard en perte definitive. L'upsert seul
-  // fusionne : il rajoute l'ecriture manquante sans rien detruire.
-  purge?: boolean;
 }
 
 export async function resyncSupabaseToD1(
@@ -367,9 +331,8 @@ export async function resyncSupabaseToD1(
     }
 
     // Passe 2 : purge des orphelins, filles d'abord (une fille referencant une
-    // mere encore presente doit etre supprimee avant elle). Sautee pour la
-    // reparation inverse, qui fusionne au lieu de remplacer (cf. purge).
-    if (!opts.dry && opts.purge !== false) {
+    // mere encore presente doit etre supprimee avant elle).
+    if (!opts.dry) {
       for (const t of [...order].reverse()) {
         const purged = await purgeOrphans(env.DB, t, schema.pk[t] || [], keeps.get(t) || new Set());
         report.purged += purged;

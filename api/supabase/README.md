@@ -402,21 +402,32 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   invisible à l'utilisateur. Le drapeau `__backend/dual_write` repose donc la
   condition toute seule — couper la double écriture désactive aussi la
   répartition, sans modifier une ligne de code.
-- **L'écart avant (`forward_gap`) se répare tout seul, et sans purge.** Le drapeau
+- **L'écart avant (`forward_gap`) se répare par rejeu, jamais par recopie.** Le drapeau
   `__backend/forward_gap` se lève quand une écriture de second rang n'atteint
   pas PostgreSQL alors que D1 sert. Copier ensuite Supabase → D1 — ce que fait la
   resync nocturne — **écraserait et purgerait** cette écriture ; d'où l'abstention
-  de 409. Depuis 2026-10-11, le cron tente d'abord `repairForwardGap()` : il
-  repart de **D1**, qui a raison, et reconstruit Supabase, puis lève le drapeau.
-  Le point délicat est la **purge, désactivée**. L'écart naît en mode `d1` mais
-  peut être suivi d'un repli automatique qui emmène l'app vers Supabase : cette
-  base contient alors des saisies **plus récentes** que D1, et une purge les
-  effacerait — transformant un simple retard en perte définitive. L'`upsert`
-  seul **fusionne** : il ajoute l'écriture manquante sans rien détruire, ce qui
-  rend la réparation sûre **quel que soit le mode en service** (donc sans garde
-  d'état). L'option `{purge:false}` est la seule différence avec la copie
-  normale, et trois tests la verrouillent — dont un qui prouve que le cas
-  ordinaire purge bien par défaut, sans quoi l'option ne prouverait rien.
+  de 409. Depuis 2026-10-11, le cron et `POST /internal/resync` tente d'abord
+  `repairForwardGap()`, qui **rejoue les écritures manquantes** conservées dans
+  `__backend/outbox` (SQL + paramètres), captées au moment précis où elles ont
+  échoué.
+  **La première version de cette réparation recopiait toute la base, et ne
+  fonctionne pas** : abandon mesuré à **219 ms de CPU**, sur la 9ᵉ table des 35,
+  alors qu'aucune ligne n'avait encore été écrite. Le coût est **fixe par
+  invocation** (connexion PostgreSQL + lecture du schéma) plus que
+  proportionnel au volume, donc fractionner sur plusieurs appels n'aurait fait
+  que payer ce fixe plusieurs fois. C'est ce qui a motivé la conservation du
+  contenu au moment de l'échec : c'est la seule réparation qui tient dans le
+  budget du Worker gratuit. On ne sait donc rien deviner : si le drapeau est levé
+  mais que le journal est vide (journalisation elle-même tombée en panne, ou
+  drapeau antérieur), la réparation **refuse** et le dit — recopier au hasard
+  coûterait plus cher que de traiter à la main.
+- **Rejouer est sûr dans les deux sens.** La cible est Supabase, qui n'a
+  justement *pas* reçu l'écriture : le rejeu ne peut pas doubler, quel que soit
+  le mode en service. Si une insertion venait pourtant à heurter une clé déjà
+  présente, elle n'est **pas** prise pour un succès : elle reste dans le journal
+  et le rapport le mentionne. Un lot (`batch`) est atomique et son échec ne dit
+  pas quelle portion a échoué — on reprogramme le lot complet, en ordre, chaque
+  instruction étant un upsert ou un remplacement.
 - **Le verrou `__backend/sync` s'applique aussi en mode `d1`** dès que la double
   écriture est active : `pgAll()` lit alors Supabase, et une réparation inverse
   est en train de recopier cette même base — laisser passer une lecture
@@ -437,13 +448,14 @@ curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.work
 #    "last_resync":"2026-10-11T00:05:12Z"|null,
 #    "last_failover":"2026-10-10T12:52:47.892Z"|null,
 #    "dual_write":false,             ← les deux bases écrites-elles à chaque modification ?
-#    "forward_gap":null}             ← écriture non parvenue à Supabase, réparée seule à 00:05
+#    "forward_gap":null,             ← écriture non parvenue à Supabase : la resync s'abstient
+#    "outbox":0}                     ← écritures restant à REJOUPER pour lever ce drapeau
 
 # forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
 curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
-# Un forward_gap éventuel est d'abord réparé (sens inverse, sans purge), puis
-# la copie a lieu ; si la réparation échoue : 409, rien n'est copié.
-# {"repair":{"ok":true,"rows":5747}} apparaît en tête de réponse.
+# Un forward_gap éventuel est d'abord levé par REJEU du journal, puis la copie
+# a lieu ; si le rejeu échoue : 409, rien n'est copié.
+# {"repair":{"ok":true,"rows":3}} apparaît en tête de réponse.
 # {"dry":true} refuse d'agir tant que l'écart existe plutôt que de rendre un
 # résultat qui ne se produirait pas pour de vrai.
 
@@ -465,6 +477,22 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{"force":true}' .../internal/sync-c
   son seul défaut réel : un plantage au milieu laissait chaque table vidée.
   Le binding `COPY_DB` est conservé.
 
+**Quand le rejeu ne suffit pas** (`outbox: 0` alors que `forward_gap` est
+renseigné) : le Worker ne sait pas ce qui diverge, et refuse de deviner. Ne
+tenter **jamais** une copie pleine base depuis le Worker — c'est l'opération qui
+meurt à 219 ms de processeur, documentée plus haut. Traiter à la main :
+comparer les tables suspectes (`wrangler d1 execute … --remote` d'un côté,
+`SELECT` sur Supabase de l'autre), réinsérer ce qui manque côté Supabase, puis
+lever le drapeau :
+
+```bash
+wrangler kv key delete --namespace-id 9becacff… --remote __backend/forward_gap
+wrangler kv key delete --namespace-id 9becacff… --remote __backend/outbox
+```
+
+À défaut, `{"allow_forward_gap":true}` fait passer la copie outre en acceptant
+de **perdre** l'écriture non rejouée.
+
 **Vérifier le cycle nocturne** (la question « est-ce que D1 reprend la main,
 puis retombe sur Supabase ? ») se répond avec ce seul GET :
 
@@ -478,7 +506,7 @@ puis retombe sur Supabase ? ») se répond avec ce seul GET :
   Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
   `__local/*` n'existent plus ; le paquet `api/local` reste dans le dépôt mais
   n'est plus joignable. Il n'y a donc plus d'étape manuelle de bascule locale.
-- Tests : `cd api && npm test` → **102 tests**, dont la synchronisation sur
-  doubles (y compris la réparation inverse et sa non-purge) et la conservation
-  de corps.
+- Tests : `cd api && npm test` → **101 tests**, dont la double écriture (avec la
+  conservation des paramètres des écritures manquantes), la synchronisation sur
+  doubles et la conservation de corps.
 

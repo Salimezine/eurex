@@ -8,7 +8,7 @@ import { DualDb, type DbLike } from '../src/dual-write.ts';
 import { isWriteSql, isDdlSql, isDataWriteSql } from '../src/sql-kind.ts';
 
 // Faux D1 : enregistre chaque appel dans l'ordre, et peut echouer sur demande.
-function fakeDb(name: string, calls: string[], opts: { failRun?: boolean } = {}): DbLike {
+function fakeDb(name: string, calls: string[], opts: { failRun?: boolean; failBatch?: boolean } = {}): DbLike {
   const stmt = (sql: string, params: unknown[]) => ({
     bind: (...p: unknown[]) => stmt(sql, p),
     run: async () => {
@@ -29,6 +29,7 @@ function fakeDb(name: string, calls: string[], opts: { failRun?: boolean } = {})
     prepare: (sql: string) => stmt(sql, []),
     batch: async (s: any[]) => {
       calls.push(`${name}:batch:${s.length}`);
+      if (opts.failBatch) throw new Error(`${name} refuse le lot`);
       return s.map(() => ({ success: true, meta: { changes: 1 } }));
     },
   };
@@ -76,18 +77,42 @@ test('double ecriture : une ecriture part vers les deux bases, primaire d abord'
 
 test('double ecriture : un echec secondaire ne rend pas la requete', async () => {
   const calls: string[] = [];
-  const gaps: string[] = [];
+  const gaps: { sql: string; params: unknown[] }[] = [];
   const db = new DualDb(
     fakeDb('prim', calls),
     fakeDb('sec', calls, { failRun: true }),
-    { onSecondaryFailure: (_e, sql) => gaps.push(sql) },
+    { onSecondaryFailure: (_e, entries) => gaps.push(...entries) },
   );
   // La primaire a reussi : le retour de run() doit etre celui de la primaire,
   // sans exception — l'utilisateur a son resultat.
   const r = await db.prepare('INSERT INTO t (a) VALUES (?)').bind(7).run();
   assert.equal(r.success, true);
   assert.equal(gaps.length, 1, 'l ecart est signale une fois');
-  assert.match(gaps[0], /^INSERT INTO t/);
+  assert.match(gaps[0].sql, /^INSERT INTO t/);
+  // Les PARAMETRES voyagent avec le SQL. Sans eux, signaler l'ecart oblige a
+  // recopier toute la base pour retrouver ce qui manque, et cette copie
+  // depasse le budget processeur du Worker gratuit (mesure le 2026-10-11).
+  assert.deepEqual(gaps[0].params, [7]);
+});
+
+test('double ecriture : un lot echoue entier -> toutes les ecritures sont signalees', async () => {
+  const calls: string[] = [];
+  const gaps: { sql: string; params: unknown[] }[] = [];
+  const db = new DualDb(
+    fakeDb('prim', calls),
+    fakeDb('sec', calls, { failBatch: true }),
+    { onSecondaryFailure: (_e, entries) => gaps.push(...entries) },
+  );
+  const stmts = [
+    db.prepare('INSERT INTO t (a) VALUES (?)').bind(1),
+    db.prepare('UPDATE t SET b = ? WHERE a = ?').bind(2, 1),
+  ];
+  await db.batch(stmts as any);
+  // On ne sait pas quelle portion du lot a echoue : on reprogramme tout, en
+  // ordre. Chaque instruction est un upsert ou un remplacement, donc rejouer
+  // est inoffensif meme si une partie avait deja passe.
+  assert.equal(gaps.length, 2, 'les deux ecritures du lot sont conservees');
+  assert.deepEqual(gaps[1].params, [2, 1], 'l ordre des parametres est preserve');
 });
 
 test('double ecriture : un echec primaire n ecrit PAS sur la seconde base', async () => {

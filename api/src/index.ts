@@ -1,7 +1,6 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
-import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, makeD1Source, type SyncEnv, type D1Like } from './sync.ts';
-import { cloudflareTransport } from './pg/transport.ts';
-import { DualDb, type DbLike } from './dual-write.ts';
+import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
+import { DualDb, type DbLike, type MissedWrite } from './dual-write.ts';
 
 export interface Env {
   DB: D1Database;
@@ -446,6 +445,54 @@ const DUAL_KEY = '__backend/dual_write'; // 'on' : double ecriture
 // retard en perte definitive. Tant que ce drapeau est leve, la resync
 // s'abstient (voir resyncAndFlipBack).
 const FWD_GAP_KEY = '__backend/forward_gap';
+// Journal des ecritures secondaires manquees : SQL + parametres, pour pouvoir
+// les REJOUIRE exactement. Distinct de forward_gap, qui reste le temoin
+// grossier — et le seul qui subsiste si cette ecriture echoue elle-meme.
+const OUTBOX_KEY = '__backend/outbox';
+// Garde-fou : si le journal grossit autant, ce n'est plus un ecart mais une
+// divergence de masse, qu'un rejeu ne resoudra pas. On arrete d'accumuler et
+// on laisse l'operateur decider (voir api/supabase/README.md).
+const MAX_OUTBOX = 500;
+// Meme duree de vie que le drapeau : les deux vivent et meurent ensemble.
+const GAP_TTL = 86400 * 7;
+
+// Parametres d'ecriture tels qu'ils peuvent etre conserves en JSON. D1 renvoie
+// des bigint et des Uint8Array, que JSON ne sait pas ecrire ; on les encadre
+// plutot que de les convertir, pour que le rejeu soit identique au depart
+// (confondre un bigint et un nombre changerait le type cible).
+type EncParam = null | number | string | { b: string } | { u: string };
+type BoxItem = { s: string; p: EncParam[] };
+
+function encParams(params: unknown[]): EncParam[] {
+  const out: EncParam[] = [];
+  for (const p of params) {
+    if (p === null || p === undefined) out.push(null);
+    else if (typeof p === 'number' || typeof p === 'string') out.push(p);
+    else if (typeof p === 'bigint') out.push({ b: p.toString() });
+    else if (p instanceof Uint8Array) {
+      // btoa attend une chaine d'octets : on passe par des codes, pas par
+      // String.fromCharCode(...tab) qui deborde au-dela de quelques milliers.
+      let s = '';
+      for (let i = 0; i < p.length; i++) s += String.fromCharCode(p[i]);
+      out.push({ u: btoa(s) });
+    } else out.push(String(p));
+  }
+  return out;
+}
+
+function decParams(params: EncParam[]): unknown[] {
+  return params.map((p) => {
+    if (p === null || typeof p === 'number' || typeof p === 'string') return p;
+    if (typeof p === 'object' && 'b' in p) return BigInt(p.b);
+    if (typeof p === 'object' && 'u' in p) {
+      const s = atob(p.u);
+      const u = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+      return u;
+    }
+    return null;
+  });
+}
 
 let backendCache: { mode: string; dual: boolean; ts: number } | null = null;
 
@@ -493,15 +540,20 @@ function applyBackend(env: Env, mode: string, dual: boolean): Env {
   const prim = mode === 'supabase' ? pg : d1;
   const sec = mode === 'supabase' ? d1 : pg;
   const db = new DualDb(prim as unknown as DbLike, sec as unknown as DbLike, {
-    onSecondaryFailure: () => { void markForwardGap(env, mode); },
+    onSecondaryFailure: (_e, entries) => { void markForwardGap(env, mode, entries); },
   });
   return { ...env, DB: db as unknown as D1Database };
 }
 
-// Une ecriture n'a pas atteint la base secondaire : on signale l'ecart pour
-// que la resync nocturne le repare — jamais en la laissant copier dans le
-// mauvais sens.
-async function markForwardGap(env: Env, mode: string): Promise<void> {
+// Une ecriture n'a pas atteint la base secondaire : on conserve CE QUI MANQUE
+// (SQL + parametres) pour pouvoir le rejouer, et on signale l'ecart — jamais en
+// laissant la resync copier dans le mauvais sens.
+//
+// Conserver le contenu plutot que le seul drapeau n'est pas un confort : c'est
+// la condition pour que la reparation tienne dans le budget processeur du
+// Worker gratuit. Retrouver un ecart a posteriori exigerait de recopier toute
+// la base, operation mesuree et abandonnee le 2026-10-11 a 219 ms de CPU.
+async function markForwardGap(env: Env, mode: string, entries: MissedWrite[]): Promise<void> {
   const kv = env.DOCS_KV;
   if (!kv) return;
   try {
@@ -510,11 +562,23 @@ async function markForwardGap(env: Env, mode: string): Promise<void> {
       // repare toute seule. Marquer "dirty" suffit a interdire un retour
       // manuel sans copie prealable.
       await kv.put('__backend/d1_state', 'dirty');
-    } else {
-      // Supabase est en retard : la resync ecraserait D1. On leve un drapeau
-      // a duree de vie longue, et la copie s'abstient jusqu'a reparation.
-      await kv.put(FWD_GAP_KEY, new Date().toISOString(), { expirationTtl: 86400 * 7 });
+      return;
     }
+    const opt = { expirationTtl: GAP_TTL };
+    const prev = await kv.get(OUTBOX_KEY);
+    const box: BoxItem[] = prev ? JSON.parse(prev) : [];
+    for (const e of entries) box.push({ s: e.sql, p: encParams(e.params) });
+    if (box.length > MAX_OUTBOX) {
+      // A ce stade ce n'est plus un ecart mais une divergence de masse, qu'un
+      // rejeu ne resoudra pas : on arrete d'accumuler. Le drapeau reste leve
+      // (la copie nocturne continue de s'abstenir) et l'operateur tranche.
+      console.error('journal de rejeu plein (' + box.length + ' ecritures) : rejeu hors budget, divergence a traiter a la main');
+      return;
+    }
+    await kv.put(OUTBOX_KEY, JSON.stringify(box), opt);
+    // Drapeau apres le journal : si l'on s'arrete entre les deux, la copie
+    // nocturne reste autorisee plutot que bloquee par un ecart innommable.
+    await kv.put(FWD_GAP_KEY, new Date().toISOString(), opt);
   } catch (e) {
     console.error('signalement de divergence impossible :', String((e as any)?.message || e));
   }
@@ -607,52 +671,70 @@ async function pgAll<T = any>(
   }
 }
 
-// --- REPARATION INVERSE : D1 -> Supabase --------------------------------------
-// Une double ecriture n'a pas atteint PostgreSQL alors que D1 etait primaire :
-// Supabase est en retard d'une modification. La resync nocturne copie
-// Supabase -> D1 et PURGE les orphelins — elle ecraserait donc l'ecriture que
-// D1 a bien retenue, et supprimerait la ligne en plus. D'ou le drapeau
-// __backend/forward_gap, qui faisait s'abandonner les deux chemins (cron et
-// /internal/resync) sans jamais reparer, jusqu'a l'expiration du drapeau.
+// --- REPARATION DE L'ECART AVANT : rejeu du journal ---------------------------
+// Une double ecriture n'a pas atteint Supabase alors que D1 etait primaire.
+// La resync nocturne copie Supabase -> D1 et PURGE les orphelins : elle
+// ecraserait donc l'ecriture que D1 a bien retenue, et supprimerait la ligne en
+// plus. D'ou le drapeau __backend/forward_gap, qui faisait s'abandonner les
+// deux chemins (cron et /internal/resync) sans jamais reparer, jusqu'a son
+// expiration de sept jours.
 //
-// Ce morceau ferme la boucle au lieu d'abandonner sept jours : on repart de
-// D1, qui a raison, pour reconstruire Supabase, puis on leve le drapeau.
+// On ne recopie PAS la base : l'ecriture manquante est connue, elle a ete
+// conservee au moment ou elle a echoue (voir markForwardGap), et on la rejoue
+// telle quelle. Recopier etait l'alternative, et elle est hors budget —
+// mesuree le 2026-10-11 : la copie pleine base meurt a 219 ms de processeur,
+// sur la neuvieme table des trente-cinq, sans avoir encore ecrit une ligne.
+// Le coup est FIXE par invocation (connexion PostgreSQL + lecture du schema,
+// soit l'essentiel des 219 ms) plutot que proportionnel aux lignes, donc
+// fractionner sur plusieurs appels n'aurait fait que payer ce fixe plusieurs
+// fois. Voir aussi l'identifiant non quote de sync.ts, qui a fait echouer la
+// toute premiere tentative de cette copie sur une colonne que PG ne trouvait
+// pas — autre preuve que ce chemin n'etait pas tenable.
 //
-// PURGE DESACTIVEE, et c'est le point essentiel : l'ecart peut naitre d1 puis
-// etre suivi d'un repli automatique qui emmene l'app vers Supabase. Supabase
-// contient alors des saisies plus recentes que D1. Une purge les effacerait,
-// transformant un retard en perte definitive — alors que l'upsert seul
-// FUSIONNE : il rajoute l'ecriture manquante sans rien detruire. On peut donc
-// reparer quel que soit le mode en service, sans garde d'etat.
+// Rejouer est inoffensif quel que soit le mode en service : la cible est
+// Supabase, qui n'a justement PAS recu l'ecriture, donc le rejeu ne peut pas
+// doubler. Et si une insertion venait pourtant a heurter une cle deja
+// presente, on ne la prend PAS pour un succes : elle reste dans le journal et
+// le rapport le dit. L'operateur garde la main via allow_forward_gap.
 async function repairForwardGap(env: Env, log: (m: string) => void): Promise<{ ok: boolean; error?: string; rows?: number }> {
+  const kv = env.DOCS_KV;
+  if (!kv) return { ok: false, error: 'DOCS_KV manquant' };
+  const raw = await kv.get(OUTBOX_KEY);
+  const box: BoxItem[] = raw ? JSON.parse(raw) : [];
+  if (box.length === 0) {
+    // Drapeau leve mais rien de conserve : la journalisation a echoue elle
+    // aussi, ou le drapeau vient d'avant l'introduction du journal. On ne sait
+    // PAS ce qui diverge, et deviner vaut mieux que de recopier au hasard —
+    // la copie nocturne continue de s'abstenir, l'operateur voit le message.
+    return { ok: false, error: "ecart signale sans journal des ecritures manquantes : rien a rejouer. Traitement manuel (api/supabase/README.md)" };
+  }
   const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
   if (!dbUrl) return { ok: false, error: 'aucune connexion PostgreSQL (HYPERDRIVE ou SUPABASE_DB_URL)' };
   const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  const left: BoxItem[] = [];
   try {
-    // env.DB est D1 BRUT ici, et c'est indispensable : la source doit etre la
-    // base primaire reelle, pas un adaptateur. Cette fonction n'est appelee que
-    // depuis resyncAndFlipBack (cron) et /internal/resync, deux points tous les
-    // deux EN AMONT de applyBackend — le wrap DoubleDb/Supabase n'a donc pas
-    // encore eu lieu au moment ou l'on lit. Si un jour on l'appelait depuis le
-    // dispatch, env.DB serait Supabase en mode supabase et la reparation
-    // copierait Supabase sur Supabase : un no-op qui leverait le drapeau sans
-    // rien reparer, et la resync suivante ecraserait alors D1.
-    const report = await resyncSupabaseToD1(
-      { ...env, DB: pg } as unknown as SyncEnv,
-      {
-        source: makeD1Source(dbUrl, cloudflareTransport, env.DB as unknown as D1Like),
-        purge: false,
-        log,
-      },
-    );
-    if (!report.ok) return { ok: false, error: report.error || 'reparation incomplete' };
-    return { ok: true, rows: report.rows };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
+    for (const it of box) {
+      try {
+        await pg.prepare(it.s).bind(...decParams(it.p)).run();
+      } catch (e: any) {
+        // On ne reconserv que ce qui echoue encore : tout le reste est
+        // desormais arrive, et reprogrammer l'integralite re-exposerait au
+        // meme refus tout en reecrivant pour rien.
+        left.push(it);
+        log('rejet : ' + it.s.slice(0, 90) + ' : ' + String(e?.message || e));
+      }
+    }
   } finally {
     const a = pg as unknown as { endRequest?: () => void } | null;
     if (a && typeof a.endRequest === 'function') a.endRequest();
   }
+  const done = box.length - left.length;
+  if (left.length) {
+    await kv.put(OUTBOX_KEY, JSON.stringify(left), { expirationTtl: GAP_TTL });
+    return { ok: false, rows: done, error: done + ' ecriture(s) rejouee(s), ' + left.length + ' refusee(s) encore' };
+  }
+  await kv.delete(OUTBOX_KEY);
+  return { ok: true, rows: done };
 }
 
 // Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
@@ -774,6 +856,10 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
       // Ecart en attente : une ecriture n'a pas atteint PostgreSQL alors que
       // D1 etait primaire. La resync nocturne s'abstient tant que c'est leve.
       forward_gap: (await kv.get(FWD_GAP_KEY)) || null,
+      // ...et ce qu'il reste a REJOUPER pour le lever. Zero alors que
+      // forward_gap est renseigne = rien de conserve, donc rien que le rejeu
+      // puisse resoudre (traitement manuel).
+      outbox: (JSON.parse((await kv.get(OUTBOX_KEY)) || '[]') as BoxItem[]).length,
     });
   }
 
