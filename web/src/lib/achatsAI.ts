@@ -1009,6 +1009,36 @@ export function checkRemiseConsistency(
   return checks;
 }
 
+// --- ANTI-DOUBLONS À L'IMPORT ---
+// Une facture est déjà importée si : même n° (non vide) + même TTC,
+// ou (sans n°) même fournisseur + même date + même TTC > 0.
+// S'applique contre l'existant ET à l'intérieur du lot importé.
+
+export function dedupeInvoices(
+  existing: AchatInvoice[],
+  incoming: AchatInvoice[]
+): { fresh: AchatInvoice[]; skipped: number } {
+  const seen: AchatInvoice[] = [...existing];
+  const fresh: AchatInvoice[] = [];
+  let skipped = 0;
+  const sameDoc = (a: AchatInvoice, b: AchatInvoice): boolean => {
+    if (a.numero && b.numero && a.numero === b.numero) {
+      return Math.abs((a.ttc || 0) - (b.ttc || 0)) < 0.02;
+    }
+    if (!a.numero && !b.numero && a.fournisseur && a.date && (a.ttc || 0) > 0) {
+      return a.fournisseur === b.fournisseur && a.date === b.date
+        && Math.abs(a.ttc - (b.ttc || 0)) < 0.02;
+    }
+    return false;
+  };
+  for (const inv of incoming) {
+    if (seen.some(e => sameDoc(e, inv))) { skipped++; continue; }
+    seen.push(inv);
+    fresh.push(inv);
+  }
+  return { fresh, skipped };
+}
+
 // --- NETTOYAGE : doublons + comptes inconnus du plan ---
 
 export interface DuplicateGroup {
@@ -1079,6 +1109,32 @@ export function findDuplicateGroups(ecritures: EcritureAchat[]): DuplicateGroup[
   return groups;
 }
 
+export interface AutoCleanResult { ecritures: EcritureAchat[]; notes: string[]; }
+
+/** Nettoyage AUTOMATIQUE après génération : doublons intra-pièce (double
+ *  traitement certain) + remappage des comptes inconnus vers le plan.
+ *  Les doublons inter-pièces restent manuels (deux factures identiques
+ *  distinctes possibles) via le panneau Nettoyage. */
+export function autoCleanEcritures(ecritures: EcritureAchat[], plan: PlanComptable): AutoCleanResult {
+  const notes: string[] = [];
+  let out = ecritures;
+  const intraIds = new Set(
+    findDuplicateGroups(out).filter(g => g.kind === 'intra').flatMap(g => g.removeIds)
+  );
+  if (intraIds.size > 0) {
+    out = out.filter(e => !intraIds.has(e.id));
+    notes.push(`${intraIds.size} doublon(s) supprimé(s) auto`);
+  }
+  const r = remapUnknownAccounts(out, plan);
+  const n = r.mapping.reduce((s, m) => s + m.n, 0);
+  if (n > 0) {
+    out = r.ecritures;
+    notes.push('comptes remappés: ' + r.mapping.map(m => `${m.from}→${m.to}`).join(', '));
+  }
+  if (r.kept.length > 0) notes.push(`sans équivalent plan: ${r.kept.join(', ')}`);
+  return { ecritures: out, notes };
+}
+
 export interface RemapResult {
   ecritures: EcritureAchat[];
   mapping: { from: string; to: string; n: number }[];
@@ -1123,7 +1179,9 @@ export function remapUnknownAccounts(ecritures: EcritureAchat[], plan: PlanCompt
       counts.set(e.compte, cur);
       return { ...e, compte: to };
     }
-    keptSet.add(e.compte);
+    // to === null : soit connu (rien à faire), soit sans équivalent → kept
+    const hit = plan.comptes.get(e.compte);
+    if (!hit || hit.nature !== 'Comptable') keptSet.add(e.compte);
     return e;
   });
   return {

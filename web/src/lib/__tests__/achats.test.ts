@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency, findDuplicateGroups, remapUnknownAccounts } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures } from '../achatsAI';
 import { matchAchatCompte, type PlanComptable } from '../achatsPlanComptable';
 
 // Plan minimal façon TEBIB : SANS 606600 ni 436663 (absents du vrai fichier)
@@ -92,8 +92,7 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     expect(findDuplicateGroups([...mk('A', 119), ...mk('B', 200)])).toHaveLength(0);
   });
 
-  it('remap: 606600→6xxx, 436663→436xxx, 401xxx inconnu→401999 du plan', () => {
-    const es: any[] = [
+  it('remap: 606600→6xxx, 436663→436xxx, 401xxx inconnu→401999 du plan', () => {    const es: any[] = [
       { id: 'e1', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '606600', libelle: 'ACHAT', sens: 'D', montant: 100 },
       { id: 'e2', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '436663', libelle: 'TVA 7%', sens: 'D', montant: 7 },
       { id: 'e3', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '401123', libelle: 'FRS', sens: 'C', montant: 107 },
@@ -108,6 +107,61 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     expect(byId['e4']).toBe('999999');
     expect(r.kept).toEqual(['999999']);
     expect(r.mapping).toHaveLength(3);
+  });
+
+  it('dedupe: même n° + même TTC réimporté → ignoré', () => {
+    const base: any = { id: 'a', numero: 'FAC-1', date: '2026-09-05', fournisseur: 'KSS', ht19: 100, tva19: 19, ttc: 119 };
+    const { fresh, skipped } = dedupeInvoices([base], [
+      { ...base, id: 'b' },
+      { ...base, id: 'c', numero: 'FAC-2' },
+    ]);
+    expect(skipped).toBe(1);
+    expect(fresh.map(f => f.id)).toEqual(['c']);
+  });
+
+  it('dedupe: même n° mais TTC différent → gardé (avoir / correction)', () => {
+    const base: any = { id: 'a', numero: 'FAC-1', date: '2026-09-05', fournisseur: 'KSS', ttc: 119 };
+    const { fresh, skipped } = dedupeInvoices([base], [{ ...base, id: 'b', ttc: 200 }]);
+    expect(skipped).toBe(0);
+    expect(fresh).toHaveLength(1);
+  });
+
+  it('dedupe: sans n°, même fournisseur+date+TTC → ignoré', () => {
+    const base: any = { id: 'a', numero: '', date: '2026-09-01', fournisseur: 'LOYER', ttc: 3293.75 };
+    const { fresh, skipped } = dedupeInvoices([base], [{ ...base, id: 'b' }]);
+    expect(skipped).toBe(1);
+    expect(fresh).toHaveLength(0);
+  });
+
+  it('dedupe: doublon dans le lot lui-même → un seul gardé', () => {
+    const inv: any = { id: 'a', numero: 'FAC-9', date: '2026-09-05', fournisseur: 'X', ttc: 50 };
+    const { fresh, skipped } = dedupeInvoices([], [inv, { ...inv, id: 'b' }]);
+    expect(skipped).toBe(1);
+    expect(fresh).toHaveLength(1);
+  });
+
+  it('autoClean: intra supprimé, inter gardé, remap appliqué, notes', () => {
+    const inv: any = { numero: 'F-AUTO', date: '2026-09-05', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const once = buildBalancedEcritures(inv, '607000', '401999');
+    const withIntra = [...once, ...once.map(e => ({ ...e, id: e.id + '-bis' }))];
+    const other = buildBalancedEcritures({ ...inv, numero: 'AUTRE' }, '606600', '401123');
+    const r = autoCleanEcritures([...withIntra, ...other], tebibLikePlan());
+    // intra retiré (3), inter gardé, total = 3 + 3
+    expect(r.ecritures).toHaveLength(once.length + other.length);
+    expect(r.ecritures.some(e => e.numero_doc === 'AUTRE')).toBe(true);
+    const comptes = new Set(r.ecritures.map(e => e.compte));
+    expect(comptes.has('606600')).toBe(false);
+    expect(comptes.has('401123')).toBe(false);
+    expect(r.notes.join(' ')).toMatch(/doublon/);
+    expect(r.notes.join(' ')).toMatch(/606600→607000/);
+  });
+
+  it('autoClean: lot propre → notes vides, rien ne change', () => {
+    const inv: any = { numero: 'F-OK', date: '2026-09-05', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const once = buildBalancedEcritures(inv, '607000', '401999');
+    const r = autoCleanEcritures(once, tebibLikePlan());
+    expect(r.notes).toHaveLength(0);
+    expect(r.ecritures).toHaveLength(once.length);
   });
 });
 

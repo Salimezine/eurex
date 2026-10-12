@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AchatInvoice } from '../../lib/achatsParser';
-import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI, findDuplicateGroups, remapUnknownAccounts, DuplicateGroup, RemapResult } from '../../lib/achatsAI';
+import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures, DuplicateGroup, RemapResult } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { loadPlanForDossier, savePlanForDossier, planSourceForDossier, parsePlanFromFile } from '../../lib/achatsPlanStore';
 
@@ -103,12 +103,17 @@ export default function AchatsDossierPage() {
         setMsg(`⚠ ${file.name}: ${e.message}`);
       }
     }
-    const updatedFactures = [...factures, ...newFactures];
+    // Anti-doublons : un fichier déjà importé est ignoré (même n° + même TTC)
+    const { fresh, skipped } = dedupeInvoices(factures, newFactures);
+    const updatedFactures = [...factures, ...fresh];
     setFactures(updatedFactures);
     setUploading(false);
+    const dupNote = skipped > 0 ? `${skipped} doublon(s) ignoré(s). ` : '';
 
-    if (newFactures.length === 0 && files.length > 0) {
-      setMsg(`⚠ Aucune facture lisible sur ${files.length} fichier(s). Vérifiez la qualité image ou le quota AI.`);
+    if (fresh.length === 0 && files.length > 0) {
+      setMsg(skipped > 0
+        ? `Lot déjà importé : ${skipped} facture(s) en double ignorée(s).`
+        : `⚠ Aucune facture lisible sur ${files.length} fichier(s). Vérifiez la qualité image ou le quota AI.`);
       return;
     }
 
@@ -125,9 +130,10 @@ export default function AchatsDossierPage() {
             setMsg('Erreur génération pour facture ' + f.numero);
           }
         }
-        setEcritures(allEcritures);
-        if (id) updateDossier(id, { nb_ecritures: allEcritures.length, nb_factures: updatedFactures.length });
-        setMsg(`${allEcritures.length} écriture(s) générée(s) automatiquement`);
+        const cleaned = autoCleanEcritures(allEcritures, plan);
+        setEcritures(cleaned.ecritures);
+        if (id) updateDossier(id, { nb_ecritures: cleaned.ecritures.length, nb_factures: updatedFactures.length });
+        setMsg(`${dupNote}${cleaned.ecritures.length} écriture(s) générée(s) automatiquement${cleaned.notes.length ? ' — ' + cleaned.notes.join(' ; ') : ''}`);
         setTab('ecritures');
       } catch (e: any) {
         setMsg('Erreur génération: ' + e.message);
@@ -150,10 +156,11 @@ export default function AchatsDossierPage() {
           setMsg('Erreur AI pour ' + f.numero);
         }
       }
-      setEcritures(allEcritures);
-      if (id) updateDossier(id, { nb_ecritures: allEcritures.length, nb_factures: factures.length });
+      const cleanedGen = autoCleanEcritures(allEcritures, plan);
+      setEcritures(cleanedGen.ecritures);
+      if (id) updateDossier(id, { nb_ecritures: cleanedGen.ecritures.length, nb_factures: factures.length });
       setTab('ecritures');
-      setMsg(`${allEcritures.length} écriture(s) générée(s)`);
+      setMsg(`${cleanedGen.ecritures.length} écriture(s) générée(s)${cleanedGen.notes.length ? ' — ' + cleanedGen.notes.join(' ; ') : ''}`);
     } catch (e: any) {
       setMsg('Erreur: ' + e.message);
     }
@@ -379,6 +386,11 @@ export default function AchatsDossierPage() {
           {!plan && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
               ⚠ Aucun plan comptable chargé. Onglet Plan Comptable → Remplacer / défaut PROYASH.
+            </div>
+          )}
+          {plan && planSource === 'default' && societeNom && societeNom !== 'PROYASH METROPOLI' && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
+              ⚠ Ce dossier ({societeNom}) utilise encore le plan PROYASH par défaut. Onglet Plan Comptable → Remplacer le plan (.xlsx) avec le plan {societeNom}, sinon les comptes générés seront faux.
             </div>
           )}
         </div>
@@ -656,8 +668,8 @@ export default function AchatsDossierPage() {
             <div className="flex items-center gap-3">
               <Trash2 size={20} className="text-orange-600" />
               <div>
-                <h3 className="font-medium text-sm">Nettoyage</h3>
-                <p className="text-xs text-gray-400">Doublons + comptes absents du plan (analyse, puis application)</p>
+                <h3 className="font-medium text-sm">Nettoyage manuel</h3>
+                <p className="text-xs text-gray-400">Doublons inter-pièces + cas résiduels (l'intra-pièce et le remappage sont déjà auto)</p>
               </div>
               <button onClick={analyzeCleanup} disabled={ecritures.length === 0 || !plan}
                 className="ml-auto px-4 py-2 bg-orange-600 text-white rounded text-sm hover:bg-orange-700 disabled:opacity-50">
