@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AchatInvoice } from '../../lib/achatsParser';
-import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI } from '../../lib/achatsAI';
+import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI, findDuplicateGroups, remapUnknownAccounts, DuplicateGroup, RemapResult } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { loadPlanForDossier, savePlanForDossier, planSourceForDossier, parsePlanFromFile } from '../../lib/achatsPlanStore';
 
@@ -68,6 +68,10 @@ export default function AchatsDossierPage() {
   const [planSearchResults, setPlanSearchResults] = useState<CompteComptable[]>([]);
   const [planSource, setPlanSource] = useState<'dossier' | 'legacy' | 'default'>('default');
   const [planMsg, setPlanMsg] = useState('');
+  const [dupGroups, setDupGroups] = useState<DuplicateGroup[]>([]);
+  const [dupSel, setDupSel] = useState<Set<number>>(new Set());
+  const [remapPreview, setRemapPreview] = useState<RemapResult | null>(null);
+  const [cleanMsg, setCleanMsg] = useState('');
 
   useEffect(() => {
     if (id) {
@@ -168,8 +172,57 @@ export default function AchatsDossierPage() {
     setVerifying(false);
   };
 
-  const formatDatePiece = (iso: string): string => {
-    if (!iso) return 'date à vérifier';
+  // --- Nettoyage : doublons + comptes inconnus ---
+  const analyzeCleanup = () => {
+    if (!plan) { setCleanMsg('Plan comptable requis pour le nettoyage'); return; }
+    const dups = findDuplicateGroups(ecritures);
+    setDupGroups(dups);
+    setDupSel(new Set(dups.map((_, i) => i)));
+    setRemapPreview(remapUnknownAccounts(ecritures, plan));
+    setCleanMsg(dups.length === 0 ? 'Aucun doublon détecté' : '');
+  };
+
+  const applyDeleteDups = () => {
+    const ids = new Set<string>();
+    dupGroups.forEach((g, i) => { if (dupSel.has(i)) g.removeIds.forEach(x => ids.add(x)); });
+    if (ids.size === 0 || !id) return;
+    const next = ecritures.filter(e => !ids.has(e.id));
+    setEcritures(next);
+    updateDossier(id, { nb_ecritures: next.length });
+    setDupGroups([]); setDupSel(new Set()); setRemapPreview(null);
+    setCleanMsg(`✓ ${ids.size} ligne(s) en double supprimée(s)`);
+  };
+
+  const applyRemap = () => {
+    if (!plan || !id) return;
+    const r = remapUnknownAccounts(ecritures, plan);
+    const n = r.mapping.reduce((s, m) => s + m.n, 0);
+    if (n === 0) { setCleanMsg('Aucun compte à remapper'); return; }
+    setEcritures(r.ecritures);
+    updateDossier(id, { nb_ecritures: r.ecritures.length });
+    setDupGroups([]); setDupSel(new Set()); setRemapPreview(null);
+    setCleanMsg(`✓ ${n} ligne(s) remappée(s) vers le plan`);
+  };
+
+  const societeNom = (() => {
+    try {
+      const arr: any[] = JSON.parse(localStorage.getItem('achats_societes') || '[]');
+      return String(arr.find((s: any) => s.id === dossier?.societe_id)?.nom || '');
+    } catch { return ''; }
+  })();
+  const frsSoiMeme = societeNom
+    ? Array.from(new Set(ecritures
+        .filter(e => e.sens === 'C' && e.libelle.replace(/^FRS\s+/i, '').split('[')[0].trim().toUpperCase() === societeNom.toUpperCase())
+        .map(e => e.numero_doc)))
+    : [];
+  const moisDossier = dossier ? `${dossier.annee}-${String(dossier.mois).padStart(2, '0')}` : '';
+  const horsMois = moisDossier
+    ? Array.from(new Set(ecritures
+        .filter(e => (e.date_operation || '').slice(0, 7) !== moisDossier)
+        .map(e => `${e.numero_doc} (${(e.date_operation || '?').slice(0, 10)})`)))
+    : [];
+
+  const formatDatePiece = (iso: string): string => {    if (!iso) return 'date à vérifier';
     const [y, m, d] = iso.split('-');
     if (!y || !m || !d || /^0+$/.test(y)) return 'date à vérifier';
     return `${d}/${m}/${y}`;
@@ -598,6 +651,69 @@ export default function AchatsDossierPage() {
               )}
             </div>
           )}
+
+          <div className="bg-white rounded-lg border p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <Trash2 size={20} className="text-orange-600" />
+              <div>
+                <h3 className="font-medium text-sm">Nettoyage</h3>
+                <p className="text-xs text-gray-400">Doublons + comptes absents du plan (analyse, puis application)</p>
+              </div>
+              <button onClick={analyzeCleanup} disabled={ecritures.length === 0 || !plan}
+                className="ml-auto px-4 py-2 bg-orange-600 text-white rounded text-sm hover:bg-orange-700 disabled:opacity-50">
+                Analyser
+              </button>
+            </div>
+            {cleanMsg && <p className={`text-xs ${cleanMsg.startsWith('✓') ? 'text-green-600' : 'text-gray-500'}`}>{cleanMsg}</p>}
+            {frsSoiMeme.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-700">
+                ⚠ Fournisseur = société du dossier ({societeNom}) : {frsSoiMeme.join(', ')} — corrigez le fournisseur à la main (comptes 401 du plan).
+              </div>
+            )}
+            {horsMois.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-700">
+                ⚠ Dates hors mois du dossier ({moisDossier}) : {horsMois.join(', ')}.
+              </div>
+            )}
+            {dupGroups.length > 0 && (
+              <div className="border rounded p-3 space-y-2">
+                <p className="text-xs font-medium text-gray-700">Doublons probables (cochez à supprimer) :</p>
+                {dupGroups.map((g, i) => (
+                  <label key={i} className="flex items-start gap-2 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
+                    <input type="checkbox" checked={dupSel.has(i)} onChange={() => {
+                      const next = new Set(dupSel);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      setDupSel(next);
+                    }} className="mt-0.5" />
+                    <span><span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 mr-1">{g.kind === 'intra' ? 'double import' : 'même total+date'}</span>{g.label}</span>
+                  </label>
+                ))}
+                <button onClick={applyDeleteDups} className="bg-red-600 text-white px-3 py-1.5 rounded text-xs hover:bg-red-700">
+                  Supprimer les doublons cochés
+                </button>
+              </div>
+            )}
+            {remapPreview && remapPreview.mapping.length > 0 && (
+              <div className="border rounded p-3 space-y-2">
+                <p className="text-xs font-medium text-gray-700">Comptes absents du plan → remappage proposé :</p>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {remapPreview.mapping.map(m => (
+                      <tr key={m.from} className="border-t"><td className="py-1 font-mono text-red-600">{m.from}</td><td className="py-1 text-center">→</td><td className="py-1 font-mono text-green-700">{m.to}</td><td className="py-1 text-right text-gray-400">{m.n} ligne(s)</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button onClick={applyRemap} className="bg-green-600 text-white px-3 py-1.5 rounded text-xs hover:bg-green-700">
+                  Appliquer le remappage
+                </button>
+              </div>
+            )}
+            {remapPreview && remapPreview.kept.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-xs text-red-700">
+                ✗ Sans équivalent dans le plan (à corriger à la main) : {remapPreview.kept.join(', ')}.
+              </div>
+            )}
+          </div>
 
           <div className="bg-white rounded-lg border p-4 space-y-3">
             <h3 className="font-semibold text-gray-700 text-sm">Export</h3>

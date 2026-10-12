@@ -1009,6 +1009,130 @@ export function checkRemiseConsistency(
   return checks;
 }
 
+// --- NETTOYAGE : doublons + comptes inconnus du plan ---
+
+export interface DuplicateGroup {
+  kind: 'intra' | 'inter';
+  numeroDocs: string[];
+  total: number;
+  date: string;
+  /** ids des lignes à supprimer (1er jeu conservé) */
+  removeIds: string[];
+  label: string;
+}
+
+function lineSig(e: EcritureAchat): string {
+  return `${e.compte}|${e.sens}|${e.montant.toFixed(3)}|${e.libelle}`;
+}
+
+/** Doublons probables : triplets identiques dans une pièce (double import)
+ *  + pièces différentes à même total et même date. L'utilisateur confirme. */
+export function findDuplicateGroups(ecritures: EcritureAchat[]): DuplicateGroup[] {
+  const groups: DuplicateGroup[] = [];
+  const byDoc = new Map<string, EcritureAchat[]>();
+  for (const e of ecritures) {
+    const k = e.numero_doc || '';
+    if (!byDoc.has(k)) byDoc.set(k, []);
+    byDoc.get(k)!.push(e);
+  }
+  // intra-pièce : même ligne (compte/sens/montant/libellé) répétée
+  for (const [num, lines] of byDoc) {
+    const seen = new Set<string>();
+    const removeIds: string[] = [];
+    for (const e of lines) {
+      const s = lineSig(e);
+      if (seen.has(s)) removeIds.push(e.id);
+      else seen.add(s);
+    }
+    if (removeIds.length > 0) {
+      const total = round3(lines.filter(e => e.sens === 'C').reduce((x, e) => x + e.montant, 0));
+      groups.push({
+        kind: 'intra', numeroDocs: [num], total, date: lines[0]?.date_operation || '',
+        removeIds, label: `${num || '(sans n°)'} : ${removeIds.length} ligne(s) identique(s) répétée(s)`,
+      });
+    }
+  }
+  // inter-pièces : même total crédité + même date, n° différents
+  const docs = Array.from(byDoc.entries()).map(([num, lines]) => ({
+    num,
+    total: round3(lines.filter(e => e.sens === 'C').reduce((x, e) => x + e.montant, 0)),
+    date: lines[0]?.date_operation || '',
+    ids: lines.map(e => e.id),
+  })).filter(d => d.num && d.total > 0);
+  const used = new Set<string>();
+  for (let i = 0; i < docs.length; i++) {
+    if (used.has(docs[i].num)) continue;
+    const same = [docs[i]];
+    for (let j = i + 1; j < docs.length; j++) {
+      if (used.has(docs[j].num)) continue;
+      if (docs[j].date && docs[j].date === docs[i].date && Math.abs(docs[j].total - docs[i].total) < 0.011) same.push(docs[j]);
+    }
+    if (same.length > 1) {
+      for (const d of same) used.add(d.num);
+      groups.push({
+        kind: 'inter', numeroDocs: same.map(d => d.num), total: same[0].total, date: same[0].date,
+        removeIds: same.slice(1).flatMap(d => d.ids),
+        label: `${same.map(d => d.num).join(' + ')} : même total ${same[0].total.toFixed(3)} le ${same[0].date} (garder la 1re)`,
+      });
+    }
+  }
+  return groups;
+}
+
+export interface RemapResult {
+  ecritures: EcritureAchat[];
+  mapping: { from: string; to: string; n: number }[];
+  /** comptes toujours inconnus après remappage (à corriger à la main) */
+  kept: string[];
+}
+
+/** Remappe les comptes absents du plan vers un équivalent du plan
+ *  (436xxx → 1er 436xxx, 401xxx → 401999 ou 1er 401xxx, 6xxx → 1er 6xxx). */
+export function remapUnknownAccounts(ecritures: EcritureAchat[], plan: PlanComptable): RemapResult {
+  const targetFor = (compte: string): string | null => {
+    const hit = plan.comptes.get(compte);
+    if (hit && hit.nature === 'Comptable') return null;
+    if (compte.startsWith('436')) {
+      const r = resolveTvaAccount(plan, compte);
+      return r !== compte ? r : null;
+    }
+    if (compte.startsWith('401')) {
+      if (plan.comptes.get('401999')?.nature === 'Comptable') return '401999';
+      for (const [code, c] of plan.comptes) {
+        if (/^401\d{3}$/.test(code) && c.nature === 'Comptable') return code;
+      }
+      return null;
+    }
+    if (/^6/.test(compte)) {
+      for (const [code, c] of plan.comptes) {
+        if (/^6\d{5}$/.test(code) && c.nature === 'Comptable') return code;
+      }
+      return null;
+    }
+    return null;
+  };
+  const memo = new Map<string, string | null>();
+  const counts = new Map<string, { to: string; n: number }>();
+  const keptSet = new Set<string>();
+  const out = ecritures.map(e => {
+    if (!memo.has(e.compte)) memo.set(e.compte, targetFor(e.compte));
+    const to = memo.get(e.compte)!;
+    if (to) {
+      const cur = counts.get(e.compte) || { to, n: 0 };
+      cur.n++;
+      counts.set(e.compte, cur);
+      return { ...e, compte: to };
+    }
+    keptSet.add(e.compte);
+    return e;
+  });
+  return {
+    ecritures: out,
+    mapping: Array.from(counts.entries()).map(([from, v]) => ({ from, to: v.to, n: v.n })),
+    kept: Array.from(keptSet),
+  };
+}
+
 export async function verifyEcrituresWithAI(
   ecritures: EcritureAchat[],
   plan: PlanComptable,

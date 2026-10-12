@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency, findDuplicateGroups, remapUnknownAccounts } from '../achatsAI';
 import { matchAchatCompte, type PlanComptable } from '../achatsPlanComptable';
 
 // Plan minimal façon TEBIB : SANS 606600 ni 436663 (absents du vrai fichier)
@@ -58,6 +58,56 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     const c = matchAchatCompte(tebibLikePlan(), 'fournitures diverses inconnues');
     expect(c).not.toBeNull();
     expect(c!.code).toMatch(/^6\d{5}$/);
+  });
+
+  it('doublon intra-pièce: triplet identique répété détecté', () => {
+    const inv: any = { numero: 'F-DUP', date: '2026-09-05', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const once = buildBalancedEcritures(inv, '607000', '401999');
+    const twice = [...once, ...once.map(e => ({ ...e, id: e.id + '-bis' }))];
+    const groups = findDuplicateGroups(twice);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].kind).toBe('intra');
+    expect(groups[0].removeIds).toHaveLength(once.length);
+    const cleaned = twice.filter(e => !groups[0].removeIds.includes(e.id));
+    expect(cleaned).toHaveLength(once.length);
+  });
+
+  it('doublon inter-pièces: même total + même date, n° différents', () => {
+    const mk = (num: string): any[] => {
+      const inv: any = { numero: num, date: '2026-09-01', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+      return buildBalancedEcritures(inv, '607000', '401999');
+    };
+    const all = [...mk('NC-A-2026-09-01-119'), ...mk('NC-B-2026-09-01-119')];
+    const groups = findDuplicateGroups(all);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].kind).toBe('inter');
+    expect(groups[0].numeroDocs).toEqual(['NC-A-2026-09-01-119', 'NC-B-2026-09-01-119']);
+  });
+
+  it('pas de faux doublon: totaux différents', () => {
+    const mk = (num: string, ttc: number): any[] => {
+      const inv: any = { numero: num, date: '2026-09-01', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc };
+      return buildBalancedEcritures(inv, '607000', '401999');
+    };
+    expect(findDuplicateGroups([...mk('A', 119), ...mk('B', 200)])).toHaveLength(0);
+  });
+
+  it('remap: 606600→6xxx, 436663→436xxx, 401xxx inconnu→401999 du plan', () => {
+    const es: any[] = [
+      { id: 'e1', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '606600', libelle: 'ACHAT', sens: 'D', montant: 100 },
+      { id: 'e2', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '436663', libelle: 'TVA 7%', sens: 'D', montant: 7 },
+      { id: 'e3', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '401123', libelle: 'FRS', sens: 'C', montant: 107 },
+      { id: 'e4', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '999999', libelle: 'X', sens: 'D', montant: 1 },
+    ];
+    const r = remapUnknownAccounts(es, tebibLikePlan());
+    const byId: Record<string, string> = {};
+    for (const e of r.ecritures) byId[e.id] = e.compte;
+    expect(byId['e1']).toBe('607000');
+    expect(byId['e2']).toBe('436660');
+    expect(byId['e3']).toBe('401999');
+    expect(byId['e4']).toBe('999999');
+    expect(r.kept).toEqual(['999999']);
+    expect(r.mapping).toHaveLength(3);
   });
 });
 
