@@ -73,13 +73,41 @@ export class SupabaseStatement {
   }
 }
 
+// Cache PK partage entre les requetes. Il ne contient que des RESULTATS :
+// une promesse en cours y serait rattachee au socket de la requete qui l'a
+// lancee, et l'attendre depuis une autre requete reviendrait a faire des I/O
+// pour le compte d'un contexte qui peut deja avoir ete ferme.
+type PkCache = { pk: PkMap | null };
+const SHARED_PK: PkCache = { pk: null };
+
 export class SupabaseAdapter {
-  private client: PgClient;
-  private pk: PkMap | null = null;
+  // UN adaptateur PAR REQUETE. Le socket (client) est propre a l'instance et
+  // rendu par endRequest(). Un adaptateur singleton partageait ce socket entre
+  // requetes concurrentes du meme isolat : A finissait et fermait le socket
+  // pendant que B s'en servait (ou B faisait des I/O sur celui de A),
+  // d'ou des 401/500 intermittents en charge parallele. Seul le cache PK,
+  // en lecture seule une fois charge, est partage. Fabrique plutot que client :
+  // le constructeur accepte toujours un client direct (tests).
+  private mkClient: () => PgClient;
+  private client: PgClient | null = null;
+  private cache: PkCache;
   private pkLoading: Promise<PkMap> | null = null;
 
-  constructor(client: PgClient) {
-    this.client = client;
+  constructor(client: PgClient | (() => PgClient), cache: PkCache = { pk: null }) {
+    this.mkClient = typeof client === 'function' ? client : () => client;
+    this.cache = cache;
+  }
+
+  private get c(): PgClient {
+    if (!this.client) this.client = this.mkClient();
+    return this.client;
+  }
+
+  // Fin de requete : referme la connexion, la prochaine en ouvrira une autre.
+  endRequest(): void {
+    const c = this.client;
+    this.client = null;
+    if (c) { try { c.close(); } catch { /* deja ferme */ } }
   }
 
   prepare(sql: string): SupabaseStatement {
@@ -92,7 +120,7 @@ export class SupabaseAdapter {
   async batch(stmts: SupabaseStatement[]): Promise<any[]> {
     if (stmts.length === 0) return [];
     const pk = await this.pkMap();
-    return this.client.transaction(async (q) => {
+    return this.c.transaction(async (q) => {
       const out: any[] = [];
       for (const s of stmts) {
         const r = await q(toPg(s.sql, { pk }), s.params);
@@ -105,15 +133,17 @@ export class SupabaseAdapter {
 
   async exec(sql: string, params: unknown[]) {
     const pk = await this.pkMap();
-    return this.client.query(toPg(sql, { pk }), params);
+    return this.c.query(toPg(sql, { pk }), params);
   }
 
-  // PK de toutes les tables (une requete) : necessaire a INSERT OR REPLACE
+  // PK de toutes les tables (une requete) : necessaire a INSERT OR REPLACE.
+  // La promesse de chargement est propre a l'instance : seule la carte
+  // terminee est publiee dans le cache partage.
   private async pkMap(): Promise<PkMap> {
-    if (this.pk) return this.pk;
+    if (this.cache.pk) return this.cache.pk;
     if (!this.pkLoading) {
       this.pkLoading = (async () => {
-        const r = await this.client.query(
+        const r = await this.c.query(
           "SELECT tc.table_name AS tbl, kcu.column_name AS col FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public' ORDER BY tc.table_name, kcu.ordinal_position",
         );
         const map: PkMap = {};
@@ -121,7 +151,7 @@ export class SupabaseAdapter {
           const t = String(row.tbl);
           (map[t] = map[t] || []).push(String(row.col));
         }
-        this.pk = map;
+        this.cache.pk = map;
         return map;
       })().catch(e => {
         this.pkLoading = null;
@@ -132,18 +162,14 @@ export class SupabaseAdapter {
   }
 
   close(): void {
-    this.client.close();
+    this.endRequest();
   }
 }
 
-// Singleton par URL : une connexion reutilisee par isolate Worker
-const adapters = new Map<string, SupabaseAdapter>();
-
+// UN adaptateur par appel — donc par requete, avec son propre socket. Le
+// partage se limite au cache PK : l'URL Hyperdrive tourne a chaque requete,
+// impossible de s'en servir comme cle, et le Worker ne connait qu'une seule
+// base Supabase.
 export function getSupabaseAdapter(dbUrl: string, tf?: TransportFactory): SupabaseAdapter {
-  let a = adapters.get(dbUrl);
-  if (!a) {
-    a = new SupabaseAdapter(new PgClient(dbUrl, tf || cloudflareTransport));
-    adapters.set(dbUrl, a);
-  }
-  return a;
+  return new SupabaseAdapter(() => new PgClient(dbUrl, tf || cloudflareTransport), SHARED_PK);
 }

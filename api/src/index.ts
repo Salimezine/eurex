@@ -1,4 +1,6 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
+import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
+import { DualDb, type DbLike, type MissedWrite } from './dual-write.ts';
 
 export interface Env {
   DB: D1Database;
@@ -9,8 +11,14 @@ export interface Env {
   DOCS_KV?: any;
   // Secret partage avec le serveur local du cabinet (wrangler secret put EUREX_INTERNAL_SECRET)
   EUREX_INTERNAL_SECRET?: string;
-  // URI PostgreSQL Supabase (wrangler secret put SUPABASE_DB_URL) — backend "supabase"
+  // URI PostgreSQL Supabase (wrangler secret put SUPABASE_DB_URL) — backend "supabase".
+  // Chemin historique : le TLS direct depuis un Worker echoue (Supabase presente
+  // une CA privee que Cloudflare rejete), il n'a donc jamais ete utilisable.
   SUPABASE_DB_URL?: string;
+  // Binding Hyperdrive (wrangler.jsonc) : Worker -> Hyperdrive (TCP interne,
+  // auth MD5) -> Supabase (TLS valide avec la CA Supabase televersee). C'est
+  // le seul chemin fonctionnel vers PostgreSQL depuis un Worker.
+  HYPERDRIVE?: { connectionString: string };
 }
 
 function genId(): string {
@@ -248,6 +256,14 @@ async function rolloverExercices(env: Env, opts: { orgId: string; source: string
   return { year: y, created, closed };
 }
 
+// D1 refuse plus de 100 parametres par requete : les listes d'IN sont
+// decoupees. Le plafond tient largement pour les cabinets reels (~70 clients).
+function chunkIds(ids: string[], size = 80): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
 // Securite au chargement du dashboard : verification rapide (2 requetes) puis rollover si besoin.
 // Le cron du 1er janvier fait le meme travail — cette passe rattrape un cron rate/impossible.
 async function ensureCurrentExercice(env: Env, orgId: string): Promise<void> {
@@ -388,6 +404,22 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+// Corps conserve pour le rejou apres bascule automatique : une requete ne peut
+// etre executee qu'une fois, son corps etant un flux qui se consomme. On ne
+// garde que les petits corps, pour ne pas faire grimper la memoire des uploads.
+// ATTENTION : appeler cette fonction consomme le corps de `request` ; il faut
+// ensuite servir `fresh()` et non `request` ( sinon "Body has already been used").
+const REPLAY_MAX_BYTES = 1_000_000;
+
+export async function bufferBody(request: Request): Promise<{ fresh: () => Request } | null> {
+  if (request.method === 'GET' || request.method === 'HEAD') return null; // sans corps : rejouable tel quel
+  const len = Number(request.headers.get('content-length') || 0);
+  if (!len || len > REPLAY_MAX_BYTES) return null;
+  let buf: ArrayBuffer;
+  try { buf = await request.arrayBuffer(); } catch { return null; }
+  return { fresh: () => new Request(request.url, { method: request.method, headers: request.headers, body: buf }) };
+}
+
 function cors(): Response {
   return new Response(null, {
     status: 204,
@@ -399,81 +431,391 @@ function cors(): Response {
   });
 }
 
-// --- MIGRATION LOCALE : mode relais vers le PC du cabinet -------------------
-// Cle KV "__local/mode" = '1' : la base de donnees vit en local (SQLite), le Worker
-// ne fait que relayer les requetes vers l'URL du tunnel cloudflared (cote cabinet).
-// Cle "__local/url" = URL du tunnel (change a chaque redemarrage, rafraichie par heartbeat).
-let relayCache: { mode: boolean; url: string; ts: number } | null = null;
-
-async function localRelayState(env: Env): Promise<{ mode: boolean; url: string; ts: number }> {
-  if (relayCache && Date.now() - relayCache.ts < 10000) return relayCache;
-  let mode = false;
-  let url = '';
-  try {
-    if (env.DOCS_KV) {
-      mode = (await env.DOCS_KV.get('__local/mode')) === '1';
-      if (mode) url = (await env.DOCS_KV.get('__local/url')) || '';
-    }
-  } catch { /* KV indisponible : on reste en mode cloud (D1) */ }
-  relayCache = { mode, url, ts: Date.now() };
-  return relayCache;
-}
-
-function resetRelayCache(): void { relayCache = null; }
-
-// --- BASCULE BACKEND : D1 / relais local / Supabase -------------------------
+// --- BASCULE BACKEND : D1 / Supabase ----------------------------------------
 // Cle KV "__backend/mode" = 'supabase' : le Worker execute les requetes lui-meme
 // contre PostgreSQL (Supabase) via l'adaptateur PG (env.DB remplace). Absente ou
-// autre : comportement precedent (relais local si "__local/mode", sinon D1).
-let backendCache: { mode: string; ts: number } | null = null;
+// autre : D1. (Le relais local vers le cabinet a ete retire ; le paquet
+// api/local reste autonome et n'est plus relaye par ce Worker.)
+// Cles KV du pilote de bascule.
+const MODE_KEY = '__backend/mode';       // 'd1' | 'supabase'
+const DUAL_KEY = '__backend/dual_write'; // 'on' : double ecriture
+// Une ecriture secondaire a echoue alors que D1 etait primaire : Supabase est
+// en retard. La resync nocturne copie Supabase -> D1 et PURGE les orphelins :
+// elle ecraserait donc l'ecriture que D1 a bien retenue, transformant un
+// retard en perte definitive. Tant que ce drapeau est leve, la resync
+// s'abstient (voir resyncAndFlipBack).
+const FWD_GAP_KEY = '__backend/forward_gap';
+// Journal des ecritures secondaires manquees : SQL + parametres, pour pouvoir
+// les REJOUIRE exactement. Distinct de forward_gap, qui reste le temoin
+// grossier — et le seul qui subsiste si cette ecriture echoue elle-meme.
+const OUTBOX_KEY = '__backend/outbox';
+// Garde-fou : si le journal grossit autant, ce n'est plus un ecart mais une
+// divergence de masse, qu'un rejeu ne resoudra pas. On arrete d'accumuler et
+// on laisse l'operateur decider (voir api/supabase/README.md).
+const MAX_OUTBOX = 500;
+// Meme duree de vie que le drapeau : les deux vivent et meurent ensemble.
+const GAP_TTL = 86400 * 7;
 
-async function backendMode(env: Env): Promise<string> {
-  if (backendCache && Date.now() - backendCache.ts < 10000) return backendCache.mode;
-  let mode = 'd1';
-  try {
-    if (env.DOCS_KV) mode = (await env.DOCS_KV.get('__backend/mode')) || 'd1';
-  } catch { /* KV indisponible : on garde D1 */ }
-  backendCache = { mode, ts: Date.now() };
-  return mode;
+// Parametres d'ecriture tels qu'ils peuvent etre conserves en JSON. D1 renvoie
+// des bigint et des Uint8Array, que JSON ne sait pas ecrire ; on les encadre
+// plutot que de les convertir, pour que le rejeu soit identique au depart
+// (confondre un bigint et un nombre changerait le type cible).
+type EncParam = null | number | string | { b: string } | { u: string };
+type BoxItem = { s: string; p: EncParam[] };
+
+function encParams(params: unknown[]): EncParam[] {
+  const out: EncParam[] = [];
+  for (const p of params) {
+    if (p === null || p === undefined) out.push(null);
+    else if (typeof p === 'number' || typeof p === 'string') out.push(p);
+    else if (typeof p === 'bigint') out.push({ b: p.toString() });
+    else if (p instanceof Uint8Array) {
+      // btoa attend une chaine d'octets : on passe par des codes, pas par
+      // String.fromCharCode(...tab) qui deborde au-dela de quelques milliers.
+      let s = '';
+      for (let i = 0; i < p.length; i++) s += String.fromCharCode(p[i]);
+      out.push({ u: btoa(s) });
+    } else out.push(String(p));
+  }
+  return out;
 }
+
+function decParams(params: EncParam[]): unknown[] {
+  return params.map((p) => {
+    if (p === null || typeof p === 'number' || typeof p === 'string') return p;
+    if (typeof p === 'object' && 'b' in p) return BigInt(p.b);
+    if (typeof p === 'object' && 'u' in p) {
+      const s = atob(p.u);
+      const u = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+      return u;
+    }
+    return null;
+  });
+}
+
+let backendCache: { mode: string; dual: boolean; ts: number } | null = null;
+
+// Etat du pilote, lu une fois par requete (cache 10 s) : mode de service et
+// eventuelle double ecriture sont recus ensemble pour ne pas doubler les
+// lectures KV sur chaque requete.
+async function backendState(env: Env): Promise<{ mode: string; dual: boolean }> {
+  if (backendCache && Date.now() - backendCache.ts < 10000) {
+    return { mode: backendCache.mode, dual: backendCache.dual };
+  }
+  let mode = 'd1';
+  let dual = false;
+  try {
+    if (env.DOCS_KV) {
+      mode = (await env.DOCS_KV.get(MODE_KEY)) || 'd1';
+      dual = (await env.DOCS_KV.get(DUAL_KEY)) === 'on';
+    }
+  } catch { /* KV indisponible : on garde D1, sans double ecriture */ }
+  backendCache = { mode, dual, ts: Date.now() };
+  return { mode, dual };
+}
+
+async function backendMode(env: Env): Promise<string> { return (await backendState(env)).mode; }
 
 function resetBackendCache(): void { backendCache = null; }
 
-// Basculee Supabase active : env.DB devient l'adaptateur PG (interface D1
-// identique, SQL source traduit a la volee). Sans URI : pas de changement.
-function withSupabaseDb(env: Env): Env {
-  if (!env.SUPABASE_DB_URL) return env;
-  return { ...env, DB: getSupabaseAdapter(env.SUPABASE_DB_URL) as unknown as D1Database };
+// Choix du moteur pour cette requete :
+//   mode supabase -> primaire PostgreSQL, secondaire D1
+//   mode d1       -> primaire D1, secondaire PostgreSQL (si double ecriture)
+// Sans double ecriture, c'est exactement le comportement d'origine : un seul
+// moteur. Hyperdrive est prioritaire sur la secret (voir Env).
+//
+// L'adaptateur PG est paresseux (sa connexion n'est ouverte qu'a la premiere
+// utilisation) : une requete qui ne fait qu'une lecture ne paye rien quand la
+// double ecriture est active.
+function applyBackend(env: Env, mode: string, dual: boolean): Env {
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!dbUrl) return env; // aucun chemin vers PostgreSQL : D1 seul
+  if (!dual) {
+    if (mode !== 'supabase') return env;
+    return { ...env, DB: getSupabaseAdapter(dbUrl) as unknown as D1Database };
+  }
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  const d1 = env.DB;
+  const prim = mode === 'supabase' ? pg : d1;
+  const sec = mode === 'supabase' ? d1 : pg;
+  const db = new DualDb(prim as unknown as DbLike, sec as unknown as DbLike, {
+    onSecondaryFailure: (_e, entries) => { void markForwardGap(env, mode, entries); },
+  });
+  return { ...env, DB: db as unknown as D1Database };
 }
 
-// Relaye la requete vers le serveur local du cabinet ; le tunnel ferme = 503 explicite.
-async function relayRequest(request: Request, base: string): Promise<Response> {
-  const url = new URL(request.url);
-  const target = base.replace(/\/+$/, '') + url.pathname + url.search;
+// Une ecriture n'a pas atteint la base secondaire : on conserve CE QUI MANQUE
+// (SQL + parametres) pour pouvoir le rejouer, et on signale l'ecart — jamais en
+// laissant la resync copier dans le mauvais sens.
+//
+// Conserver le contenu plutot que le seul drapeau n'est pas un confort : c'est
+// la condition pour que la reparation tienne dans le budget processeur du
+// Worker gratuit. Retrouver un ecart a posteriori exigerait de recopier toute
+// la base, operation mesuree et abandonnee le 2026-10-11 a 219 ms de CPU.
+async function markForwardGap(env: Env, mode: string, entries: MissedWrite[]): Promise<void> {
+  const kv = env.DOCS_KV;
+  if (!kv) return;
   try {
-    const init: RequestInit = { method: request.method, headers: request.headers, redirect: 'manual' };
-    if (request.method !== 'GET' && request.method !== 'HEAD') init.body = request.body;
-    const res = await fetch(target, init);
-    const ct = res.headers.get('content-type') || '';
-    // Origine/tunnel coupe : cloudflared renvoie 502/504 (text/plain vide) ou page 503/530 HTML.
-    // Le code applicatif ne produit jamais 502/504 ; ses 503 sont en JSON et transitent tels quels.
-    const offline = res.status === 502 || res.status === 504 ||
-      ((res.status === 503 || res.status === 530) && ct.includes('text/html'));
-    if (offline) {
-      try { await res.body?.cancel(); } catch { /* deja consomme */ }
-      return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
+    if (mode === 'supabase') {
+      // D1 est en retard : c'est precisement ce que la resync Supabase -> D1
+      // repare toute seule. Marquer "dirty" suffit a interdire un retour
+      // manuel sans copie prealable.
+      //
+      // Le test n'est pas un detail d'optimisation : le plan gratuit KV n'offre
+      // que 1 000 ecritures par jour, et ce branchement se produit UNE FOIS PAR
+      // ECRITURE D'APPLICATION refusee par D1. Or c'est exactement ce qui s'est
+      // passe le 2026-10-11 apres la bascule, D1 ayant epuise son quota
+      // d'ecritures — quelques milliers de "dirty" identiques auraient
+      // consomme le budget de ce qui sert a signaler les ecarts, et le catch
+      // ci-dessous avale l'echec : le jour ou un vrai ecart aurait ete a
+      // conserver, l'ecriture KV aurait ete refusee sans rien dire, rendant
+      // possible l'ecrasement qu'evite justement le drapeau.
+      if ((await kv.get('__backend/d1_state')) !== 'dirty') {
+        await kv.put('__backend/d1_state', 'dirty');
+      }
+      return;
     }
-    const headers = new Headers(res.headers);
-    headers.set('Access-Control-Allow-Origin', '*');
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
-  } catch (e: any) {
-    return json({
-      error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé (' + String(e?.message || e) + ')',
-    }, 503);
+    const opt = { expirationTtl: GAP_TTL };
+    const prev = await kv.get(OUTBOX_KEY);
+    const box: BoxItem[] = prev ? JSON.parse(prev) : [];
+    for (const e of entries) box.push({ s: e.sql, p: encParams(e.params) });
+    if (box.length > MAX_OUTBOX) {
+      // A ce stade ce n'est plus un ecart mais une divergence de masse, qu'un
+      // rejeu ne resoudra pas : on arrete d'accumuler. Le drapeau reste leve
+      // (la copie nocturne continue de s'abstenir) et l'operateur tranche.
+      console.error('journal de rejeu plein (' + box.length + ' ecritures) : rejeu hors budget, divergence a traiter a la main');
+      return;
+    }
+    await kv.put(OUTBOX_KEY, JSON.stringify(box), opt);
+    // Drapeau apres le journal : si l'on s'arrete entre les deux, la copie
+    // nocturne reste autorisee plutot que bloquee par un ecart innommable.
+    await kv.put(FWD_GAP_KEY, new Date().toISOString(), opt);
+  } catch (e) {
+    console.error('signalement de divergence impossible :', String((e as any)?.message || e));
   }
 }
 
-// Endpoints internes Worker <-> serveur local (secret obligatoire, fail-closed).
+// Rend la connexion PostgreSQL ouverte pendant cette requete : un socket cree
+// dans le contexte d'une requete ne peut pas etre reutilise par la suivante.
+// No-op quand on est reste sur D1.
+function releaseSupabaseConn(env: Env): void {
+  const a = env.DB as unknown as { endRequest?: () => void } | null;
+  if (a && typeof a.endRequest === 'function') a.endRequest();
+}
+
+// --- BASCULE AUTOMATIQUE D1 -> SUPABASE --------------------------------------
+// D1 plafonne les lignes lues par jour en gratuit (remis a zero a 00:00 UTC).
+// Quand le plafond saute, chaque requete echoue et l'application est down
+// jusqu'au lendemain : on passe donc automatiquement a Supabase, qui n'a pas
+// de plafond de lignes. Le retour se fait par le cron 00:05 UTC, apres
+// synchronisation (cf. resyncAndFlipBack).
+async function failoverToSupabase(e: unknown, env: Env): Promise<boolean> {
+  if (!isD1QuotaError(e)) return false;
+  const kv = env.DOCS_KV;
+  if (!kv) return false; // pas de KV : pas de bascule possible
+  try {
+    if ((await kv.get('__backend/mode') || 'd1') === 'supabase') return false; // deja bascule
+    // D1 contient les donnees d'avant la bascule : toute ecriture faite sur
+    // Supabase depuis le rend perime. Marque-le pour interdire un retour sans
+    // synchronisation prealable (cf. /internal/backend).
+    await kv.put('__backend/mode', 'supabase');
+    await kv.put('__backend/d1_state', 'dirty');
+    await kv.put('__backend/last_failover', new Date().toISOString());
+    resetBackendCache();
+    console.error('FALLBACK D1 -> Supabase :', String((e as any)?.message || e));
+    return true;
+  } catch (err) {
+    console.error('bascule automatique impossible :', String((err as any)?.message || err));
+    return false;
+  }
+}
+
+// Resync en cours : D1 est reecrit pendant que Supabase sert encore les
+// requetes. Les laisser passer laisserait des ecritures dans Supabase apres
+// que la copie ait eu lieu — elles seraient perdues au retour sur D1. On
+// attend donc (plafonne : le verrou se auto-expire en KV au bout de 15 min).
+async function waitWhileSyncing(env: Env): Promise<void> {
+  const kv = env.DOCS_KV;
+  if (!kv) return;
+  for (let i = 0; i < 100; i++) { // ~30 s au total
+    let flag: string | null = null;
+    try { flag = await kv.get(SYNC_KEY); } catch { return; } // KV indisponible : on sert
+    if (!flag) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+// --- REPARTITION DES LECTURES LOURDES (etape C) ------------------------------
+// Le quota D1 se compte en lignes LUES, et deux requetes en consomment a elles
+// seules l'essentiel : l'agregat /org/comptables (5 953 lignes) et le sondage
+// /org/tasks/recent (~4 100 lignes), pillés toutes les 60 et 30 secondes par
+// chaque poste ouvert. Un GROUP BY n'y changerait rien : l'aggregate doit
+// quand meme parcourir toutes les lignes pour les compter. Le seul levier est
+// donc de les faire executer par PostgreSQL, qui n'a pas de plafond de lignes.
+//
+// Garde-fou : ce routage n'est sans danger QUE depuis la double ecriture. Les
+// deux bases sont alors ecrites a chaque modification et restent identiques, ce
+// qui fait lire l'une ou l'autre autant dire la meme chose. Sans double
+// ecriture, seule la primaire recoit les ecritures et servir Supabase
+// rendrait une creation faite sur D1 invisible — une donnee perdue pour
+// l'utilisateur. Le drapeau repose donc la remarque toute seule.
+async function pgAll<T = any>(
+  env: Env, sql: string, ...params: unknown[]
+): Promise<{ results: T[]; success: boolean; meta: any }> {
+  const state = await backendState(env);
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!state.dual || state.mode === 'supabase' || !dbUrl) {
+    // Double ecriture inactive (comportement d'origine), ou le moteur en
+    // service EST deja PostgreSQL : rien a changer, et l'on economise une
+    // connexion Hyperdrive par appel.
+    return env.DB.prepare(sql).bind(...params).all();
+  }
+  // Mode d1 + double ecriture : on lit cote PostgreSQL. Adaptateur dedie,
+  // un par appel, dont le socket ne survit pas a la requete (cf.
+  // releaseSupabaseConn) — donc referme ici, ici meme.
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  try {
+    return await pg.prepare(sql).bind(...params).all();
+  } catch (e) {
+    // Repli sur la primaire plutot qu'un echec visible a l'utilisateur.
+    //
+    // Ce routage a AJOUTE une dependance : sans lui, cette requete n'avait
+    // besoin que de D1 ; avec lui, elle echoue aussi si Hyperdrive ou Supabase
+    // tousse — et c'est arrive en production le 2026-10-11, le tableau de bord
+    // cabinet affichant ses quatre compteurs a zero derriere "l'API est
+    // momentanement indisponible", alors que les memes appels repondaient
+    // normalement une minute plus tard.
+    //
+    // Revenir sur D1 est sans risque et c'est tout l'interet de la double
+    // ecriture : les deux bases recoivent chaque modification et restent
+    // identiques, donc lire l'une ou l'autre revient au meme — D1 est de plus
+    // la primaire, donc au moins aussi fraiche que la copie. Sans cette
+    // garantie, le repli serait dangereux et il faudrait plutot laisser
+    // echouer.
+    //
+    // Le cout est mesure : l'aggregate revient sur le quota de lignes lues de
+    // D1. C'est le prix d'une page qui s'affiche, et l'incidence est faible
+    // puisque la panne est aussi rare que celle d'Hyperdrive.
+    console.error('lecture repartie indisponible, repli sur D1 :', String((e as any)?.message || e));
+    return env.DB.prepare(sql).bind(...params).all();
+  } finally {
+    const a = pg as unknown as { endRequest?: () => void } | null;
+    if (a && typeof a.endRequest === 'function') a.endRequest();
+  }
+}
+
+// --- REPARATION DE L'ECART AVANT : rejeu du journal ---------------------------
+// Une double ecriture n'a pas atteint Supabase alors que D1 etait primaire.
+// La resync nocturne copie Supabase -> D1 et PURGE les orphelins : elle
+// ecraserait donc l'ecriture que D1 a bien retenue, et supprimerait la ligne en
+// plus. D'ou le drapeau __backend/forward_gap, qui faisait s'abandonner les
+// deux chemins (cron et /internal/resync) sans jamais reparer, jusqu'a son
+// expiration de sept jours.
+//
+// On ne recopie PAS la base : l'ecriture manquante est connue, elle a ete
+// conservee au moment ou elle a echoue (voir markForwardGap), et on la rejoue
+// telle quelle. Recopier etait l'alternative, et elle est hors budget —
+// mesuree le 2026-10-11 : la copie pleine base meurt a 219 ms de processeur,
+// sur la neuvieme table des trente-cinq, sans avoir encore ecrit une ligne.
+// Le coup est FIXE par invocation (connexion PostgreSQL + lecture du schema,
+// soit l'essentiel des 219 ms) plutot que proportionnel aux lignes, donc
+// fractionner sur plusieurs appels n'aurait fait que payer ce fixe plusieurs
+// fois. Voir aussi l'identifiant non quote de sync.ts, qui a fait echouer la
+// toute premiere tentative de cette copie sur une colonne que PG ne trouvait
+// pas — autre preuve que ce chemin n'etait pas tenable.
+//
+// Rejouer est inoffensif quel que soit le mode en service : la cible est
+// Supabase, qui n'a justement PAS recu l'ecriture, donc le rejeu ne peut pas
+// doubler. Et si une insertion venait pourtant a heurter une cle deja
+// presente, on ne la prend PAS pour un succes : elle reste dans le journal et
+// le rapport le dit. L'operateur garde la main via allow_forward_gap.
+async function repairForwardGap(env: Env, log: (m: string) => void): Promise<{ ok: boolean; error?: string; rows?: number }> {
+  const kv = env.DOCS_KV;
+  if (!kv) return { ok: false, error: 'DOCS_KV manquant' };
+  const raw = await kv.get(OUTBOX_KEY);
+  const box: BoxItem[] = raw ? JSON.parse(raw) : [];
+  if (box.length === 0) {
+    // Drapeau leve mais rien de conserve : la journalisation a echoue elle
+    // aussi, ou le drapeau vient d'avant l'introduction du journal. On ne sait
+    // PAS ce qui diverge, et deviner vaut mieux que de recopier au hasard —
+    // la copie nocturne continue de s'abstenir, l'operateur voit le message.
+    return { ok: false, error: "ecart signale sans journal des ecritures manquantes : rien a rejouer. Traitement manuel (api/supabase/README.md)" };
+  }
+  const dbUrl = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!dbUrl) return { ok: false, error: 'aucune connexion PostgreSQL (HYPERDRIVE ou SUPABASE_DB_URL)' };
+  const pg = getSupabaseAdapter(dbUrl) as unknown as D1Database;
+  const left: BoxItem[] = [];
+  try {
+    for (const it of box) {
+      try {
+        await pg.prepare(it.s).bind(...decParams(it.p)).run();
+      } catch (e: any) {
+        // On ne reconserv que ce qui echoue encore : tout le reste est
+        // desormais arrive, et reprogrammer l'integralite re-exposerait au
+        // meme refus tout en reecrivant pour rien.
+        left.push(it);
+        log('rejet : ' + it.s.slice(0, 90) + ' : ' + String(e?.message || e));
+      }
+    }
+  } finally {
+    const a = pg as unknown as { endRequest?: () => void } | null;
+    if (a && typeof a.endRequest === 'function') a.endRequest();
+  }
+  const done = box.length - left.length;
+  if (left.length) {
+    await kv.put(OUTBOX_KEY, JSON.stringify(left), { expirationTtl: GAP_TTL });
+    return { ok: false, rows: done, error: done + ' ecriture(s) rejouee(s), ' + left.length + ' refusee(s) encore' };
+  }
+  await kv.delete(OUTBOX_KEY);
+  return { ok: true, rows: done };
+}
+
+// Cron 00:05 UTC : le quota D1 vient d'etre remis a zero (00:00 UTC). On
+// reporte dans D1 ce qui a change pendant la bascule, puis on y retourne.
+// Ignoree si on sert deja D1 (D1 n'aurait rien de perime a ecraser).
+async function resyncAndFlipBack(env: Env): Promise<void> {
+  try {
+    // 1. Reparation inverse d'abord, et AVANT le test de mode. Ce drapeau ne
+    //    peut se lever que lorsque D1 sert : si on testait le mode en premier,
+    //    on sortirait par "deja sur D1" et le drapeau resterait leve jusqu'a
+    //    son expiration de sept jours, abandonnant chaque nuit pour rien.
+    const fwd = await env.DOCS_KV.get(FWD_GAP_KEY);
+    if (fwd) {
+      const rep = await repairForwardGap(env, (m) => console.log('[reparation]', m));
+      if (!rep.ok) {
+        // On s'abstient : copier Supabase -> D1 ecraserait (et purgerait) une
+        // ecriture que D1 a bien retenue. D1 reste primaire et sert
+        // correctement — un retard, pas une perte. Le cron suivant reprend.
+        console.error('[resync] abandonnee : ecart inverse non repare (' + (rep.error || '?') + ') depuis ' + fwd);
+        return;
+      }
+      await env.DOCS_KV.delete(FWD_GAP_KEY);
+      console.log('[reparation] D1 -> Supabase reussie (' + (rep.rows || 0) + ' lignes fusionnees), drapeau leve');
+    }
+
+    // 2. Puis le retour classique sur D1.
+    const mode = await backendMode(env);
+    if (mode !== 'supabase') { console.log('[resync] ignoree (backend ' + mode + ')'); return; }
+    const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
+      onSuccess: async () => {
+        await env.DOCS_KV.put('__backend/mode', 'd1');
+        await env.DOCS_KV.put('__backend/d1_state', 'clean');
+        await env.DOCS_KV.put('__backend/last_resync', new Date().toISOString());
+        resetBackendCache();
+        console.log('[resync] bascule retour sur D1');
+      },
+      log: (m) => console.log('[resync]', m),
+    });
+    console.log('[resync]', JSON.stringify(report));
+  } catch (e: any) {
+    // Verrou libere par resyncSupabaseToD1 ; on reste sur Supabase, qui sert
+    // toujours les requetes. Le cron suivant reprendra (operation idempotente).
+    console.error('[resync] ECHEC :', String(e?.message || e));
+  }
+}
+
+// Endpoints internes (secret obligatoire, fail-closed).
 async function handleInternal(request: Request, env: Env, path: string): Promise<Response> {
   const secret = env.EUREX_INTERNAL_SECRET || '';
   const got = request.headers.get('X-Internal-Secret') || '';
@@ -481,7 +823,8 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
   const kv = env.DOCS_KV;
   if (!kv) return json({ error: 'DOCS_KV manquant' }, 500);
 
-  // IA : Workers AI reste sur Cloudflare (quota 10k/jour), le local ne fait que relayer.
+  // IA : Workers AI reste sur Cloudflare (quota 10k/jour) ; le serveur du
+  // cabinet appelle cet endpoint au lieu de porter sa propre cle.
   if (path === '/internal/ai' && request.method === 'POST') {
     const { model, opts } = await request.json() as any;
     try {
@@ -493,50 +836,137 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     }
   }
 
-  if (path === '/internal/register' && request.method === 'POST') {
-    const { url } = await request.json() as any;
-    if (!url) return json({ error: 'url requise' }, 400);
-    await kv.put('__local/url', String(url));
-    await kv.put('__local/mode', '1');
-    await kv.put('__local/seen', new Date().toISOString());
-    resetRelayCache();
-    return json({ ok: true, mode: 'local', url });
-  }
-
-  if (path === '/internal/heartbeat' && request.method === 'POST') {
-    const { url } = await request.json() as any;
-    const mode = (await kv.get('__local/mode')) === '1';
-    if (!mode) return json({ ok: true, mode: 'cloud' }); // pas encore bascule : on ne bascule pas tout seul
-    if (url) await kv.put('__local/url', String(url));
-    await kv.put('__local/seen', new Date().toISOString());
-    resetRelayCache();
-    return json({ ok: true, mode: 'local' });
-  }
-
-  // Rollback explicite : { mode: 'cloud' } repasse le Worker sur D1 (donnees de l'instant du dump),
-  // { mode: 'local' } reactive le relais (si une URL est deja enregistree).
-  if (path === '/internal/cloud_mode' && request.method === 'POST') {
-    const { mode } = await request.json() as any;
-    if (mode === 'cloud') { await kv.delete('__local/mode'); await kv.delete('__local/url'); }
-    else if (mode === 'local') { await kv.put('__local/mode', '1'); }
-    else return json({ error: "mode attendu: 'local' ou 'cloud'" }, 400);
-    resetRelayCache();
-    return json({ ok: true, mode });
-  }
-
   // Bascule backend : 'supabase' = le Worker requete PostgreSQL directement,
-  // 'd1' = comportement precedent (D1 ou relais local). Prioritaire sur le relais.
+  // 'd1' = D1.
   if (path === '/internal/backend' && request.method === 'POST') {
-    const { backend } = await request.json() as any;
+    const body = await request.json() as any;
+
+    // Double ecriture seule : n'emet que le drapeau, sans toucher au moteur
+    // en service. {"dual_write":true} | {"dual_write":false}
+    if (body.dual_write !== undefined && body.backend === undefined) {
+      const on = body.dual_write === true;
+      await kv.put(DUAL_KEY, on ? 'on' : 'off');
+      resetBackendCache();
+      return json({ ok: true, dual_write: on });
+    }
+
+    const backend = body.backend;
     if (backend !== 'supabase' && backend !== 'd1') {
       return json({ error: "backend attendu: 'supabase' ou 'd1'" }, 400);
     }
+    // Retour sur D1 refuse tant que D1 n'a pas ete remis a jour : il contient
+    // les donnees d'avant la bascule, y retourner tout de suite effacerait ce
+    // qui a ete saisi depuis. Le cron 00:05 UTC le fait automatiquement.
+    if (backend === 'd1' && body.force !== true) {
+      const state = (await kv.get('__backend/d1_state')) || 'dirty';
+      if (state !== 'clean') {
+        return json({
+          error: "D1 est perime (etat 'dirty') : lancer d'abord POST /internal/resync, ou relancer avec {\"force\":true} en acceptant de perdre les saisies faites depuis la bascule.",
+        }, 409);
+      }
+    }
     await kv.put('__backend/mode', backend);
+    // Bascule vers Supabase : D1 cesse de recevoir les ecritures, donc il
+    // devient perime des cette bascule (meme logique que failoverToSupabase).
+    // Sans cela un retour manuel sur D1 serait autorise alors que tout ce qui
+    // a ete saisi depuis serait ecrase.
+    if (backend === 'supabase') await kv.put('__backend/d1_state', 'dirty');
     resetBackendCache();
     return json({ ok: true, backend });
   }
   if (path === '/internal/backend' && request.method === 'GET') {
-    return json({ backend: await backendMode(env), has_url: Boolean(env.SUPABASE_DB_URL) });
+    return json({
+      backend: await backendMode(env),
+      has_url: Boolean(env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL),
+      d1_state: (await kv.get('__backend/d1_state')) || 'dirty',
+      syncing: Boolean(await kv.get(SYNC_KEY)),
+      // Horodatages des deux transitions : permet de verifier la bascule
+      // nocturne (resync 00:05 UTC -> D1) et le repli automatique sur
+      // Supabase quand D1 atteint son quota, sans fouiller le KV.
+      last_resync: (await kv.get('__backend/last_resync')) || null,
+      last_failover: (await kv.get('__backend/last_failover')) || null,
+      // Double ecriture : les deux bases recoivent-elles chaque modification ?
+      dual_write: (await kv.get(DUAL_KEY)) === 'on',
+      // Ecart en attente : une ecriture n'a pas atteint PostgreSQL alors que
+      // D1 etait primaire. La resync nocturne s'abstient tant que c'est leve.
+      forward_gap: (await kv.get(FWD_GAP_KEY)) || null,
+      // ...et ce qu'il reste a REJOUPER pour le lever. Zero alors que
+      // forward_gap est renseigne = rien de conserve, donc rien que le rejeu
+      // puisse resoudre (traitement manuel).
+      outbox: (JSON.parse((await kv.get(OUTBOX_KEY)) || '[]') as BoxItem[]).length,
+    });
+  }
+
+  // Synchronisation Supabase -> D1 puis retour sur D1. { "dry": true } ne fait
+  // que lire Supabase et rendre le plan (aucune ecriture ni bascule) : utile
+  // pour verifier le schema avant de laisser le cron faire la vraie copie.
+  if (path === '/internal/resync' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({})) as any;
+    // Meme garde que le cron : tant qu'un ecart inverse est en attente, copier
+    // Supabase -> D1 ecraserait (et purgerait) une ecriture que D1 a retenue.
+    // On tente d'abord la reparation D1 -> Supabase, qui FUSIONNE sans rien
+    // detruire. Faire ici ce que le cron faisait seul evite d'etre bloque
+    // jusqu'a minuit pour une reparation pourtant faisable a la main.
+    const fwd = await kv.get(FWD_GAP_KEY);
+    let repair: { ok: boolean; error?: string; rows?: number } | null = null;
+    if (fwd && body?.dry) {
+      return json({
+        ok: false, dry: true, forward_gap: fwd,
+        error: "ecart inverse en attente : relancer sans {\"dry\":true} pour reparer D1 -> Supabase avant la copie",
+      }, 409);
+    } else if (fwd && body?.allow_forward_gap === true) {
+      // Passage outre assume : la copie ecrasera l'ecriture retenue par D1.
+      console.warn('[resync] ecart inverse passe outre sur demande : cet ecart sera perdu');
+    } else if (fwd) {
+      repair = await repairForwardGap(env, (m) => console.log('[reparation]', m));
+      if (!repair.ok) {
+        return json({
+          ok: false,
+          error: 'ecart a reparer en sens inverse depuis ' + fwd + ' : ' + (repair.error || '?') +
+                 ". Relancer avec {\"allow_forward_gap\":true} pour passer outre en acceptant la perte.",
+          repair,
+        }, 409);
+      }
+      await kv.delete(FWD_GAP_KEY);
+    }
+    const report = await resyncSupabaseToD1(env as unknown as SyncEnv, {
+      dry: Boolean(body?.dry),
+      onSuccess: body?.dry ? undefined : async () => {
+        await kv.put('__backend/mode', 'd1');
+        await kv.put('__backend/d1_state', 'clean');
+        await kv.put('__backend/last_resync', new Date().toISOString());
+        resetBackendCache();
+      },
+      log: (m) => console.log('[resync]', m),
+    });
+    return json(repair ? { ...report, repair } : report, report.ok ? 200 : 500);
+  }
+
+  // Copie integrale D1 -> eurex-db-copy. Appel MANUEL, depuis 2026-10-11 :
+  // c'etait le cron 02:00 UTC, retire parce que Supabase est desormais une
+  // copie complete et permanente, tenue a jour en continu (double ecriture) et
+  // resynchronisee chaque nuit — mieux qu'une copie figee, et interrogeable.
+  // Le cout etait reel pourtant : ~6500 lignes lues par nuit sur le quota D1
+  // gratuit, pour un contenu deja present ailleurs.
+  // Reste disponible a la main, par exemple avant un changement de schema ou
+  // si l'on venait a retirer Supabase : la requete est refusee sans
+  // { "force": true }, parce que cette operation vide chaque table avant de la
+  // reecrire — un echec au milieu laisse la copie incomplete.
+  if (path === '/internal/sync-copy' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({})) as any;
+    if (!env.COPY_DB) return json({ ok: false, error: 'COPY_DB non configure' }, 500);
+    if (body?.force !== true) {
+      return json({
+        ok: false,
+        error: 'cette copie vide chaque table avant de la reecrire : relancer avec {"force":true}',
+      }, 400);
+    }
+    try {
+      const r = await syncToCopy(env);
+      return json({ ok: true, tables: r.tables, rows: r.rows });
+    } catch (e: any) {
+      return json({ ok: false, error: String(e?.message || e) }, 500);
+    }
   }
 
   // Sauvegardes quotidiennes du SQLite local (gzip, gardees 7 jours)
@@ -667,22 +1097,38 @@ export default {
 
     if (method === 'OPTIONS') return cors();
 
-    // Endpoints internes : gere ici meme en mode relais (secret obligatoire)
+    // Endpoints internes (secret obligatoire)
     if (path.startsWith('/internal/')) return await handleInternal(request, env, path);
 
+    // Corps conserve en memoire : quand D1 epuise son quota au milieu d'une
+    // requete, on bascule sur Supabase puis on rejoue — ce qui exige un corps
+    // non consomme. Seuls les petits corps sont gardes : un upload de fichier
+    // n'est pas rejouable et rendra un 503 explicite.
+    // Attention : la conservation consomme le flux d'origine, on sert donc
+    // desormais la copie (sinon "Body has already been used").
+    const buffered = await bufferBody(request);
+    if (buffered) request = buffered.fresh();
+
+    // Corps du dispatch, rejouable apres bascule automatique. L'indentation
+    // d'origine est conservee : le corps n'a pas bouge d'un seul caractere.
+    const run = async (): Promise<Response> => {
     try {
-      // Backend Supabase : le Worker parle directement a PostgreSQL (prioritaire)
-      const backend = await backendMode(env);
-      if (backend === 'supabase') {
-        env = withSupabaseDb(env);
-      } else {
-        // Mode relais : la base vit en local, on relaye vers le PC du cabinet
-        const relay = await localRelayState(env);
-        if (relay.mode) {
-          if (relay.url) return await relayRequest(request, relay.url);
-          return json({ error: 'API locale hors ligne : le PC du cabinet est éteint ou le tunnel est coupé.' }, 503);
-        }
+      // Choix du moteur : Supabase en primaire quand la bascule est active, et
+      // double ecriture si le drapeau est leve (les deux bases recues alors a
+      // chaque modification).
+      const { mode: backend, dual } = await backendState(env);
+      // Resync en cours : on attend la fin plutot que d'etre servi entre deux
+      // versions des donnees (voir waitWhileSyncing).
+      //
+      // Aussi en mode d1 DES QUE la double ecriture est activee : pgAll() lit
+      // alors Supabase pour les requetes lourdes, et une reparation inverse
+      // (D1 -> Supabase) est en train de recopier cette meme base. Laisser
+      // passer une lecture exposerait un contenu a moitie reconstruit — le
+      // verrou n'etait jusque la utile qu'en mode supabase.
+      if (backend === 'supabase' || dual) {
+        await waitWhileSyncing(env);
       }
+      env = applyBackend(env, backend, dual);
 
       // --- SEED DATA ---
       if (path === '/api/seed' && method === 'POST') {
@@ -2232,6 +2678,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const auth = request.headers.get('Authorization');
         if (!auth?.startsWith('Bearer ')) return null;
         const token = auth.slice(7);
+        let payload: any;
+        // Jeton : malforme, signature erronee ou expire -> 401.
         try {
           const [dataB64, sigHex] = token.split('.');
           if (!dataB64 || !sigHex) return null;
@@ -2240,15 +2688,24 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const sigBytes = new Uint8Array(sigHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
           const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
           if (!valid) return null;
-          const payload = JSON.parse(data);
+          payload = JSON.parse(data);
           if (payload.exp < Date.now()) return null;
-          const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
-          if (!user || !user.is_active) return null;
-          if (user.role_label) user.role = user.role_label;
-          // Presence : marque l'utilisateur comme "vu" (max 1 ecriture/60s)
-          await env.DB.prepare("UPDATE org_users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now','-60 seconds'))").bind(user.id).run();
-          return user;
         } catch { return null; }
+        // Base de donnees : en dehors du try ci-dessus, expres. Une erreur
+        // transitoire (socket, saturation) n'est PAS une erreur
+        // d'authentification — la propager en 500 plutot que de renvoyer 401
+        // evite de faire croire a l'utilisateur que son jeton est invalide,
+        // et permet au client de reessayer. Un catch global transformait
+        // n'importe quel raté de requete en "Non autorisé" en charge parallele.
+        const user = await env.DB.prepare('SELECT id, organization_id, full_name, email, role, role_label, is_active, must_change_password FROM org_users WHERE id = ? AND organization_id = ?').bind(payload.user_id, payload.organization_id).first() as any;
+        if (!user || !user.is_active) return null;
+        if (user.role_label) user.role = user.role_label;
+        // Presence : ecriture best-effort (1/min par utilisateur). Jamais au
+        // prix d'un refus d'acces : si elle echoue, on sert quand meme.
+        try {
+          await env.DB.prepare("UPDATE org_users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now','-60 seconds'))").bind(user.id).run();
+        } catch (e) { console.error('last_seen_at non ecrit :', String((e as any)?.message || e)); }
+        return user;
       }
 
       // Grant (renfort) actif : acces temporaire ouvert par un expert/manager
@@ -2364,27 +2821,62 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? ORDER BY c.name').bind(user.organization_id, user.id).all();
           clients = r.results;
         }
-        // Enrich with dossier + progress
-        const enriched = await Promise.all(clients.map(async (c: any) => {
-          const d = exerciceSel
-            ? await env.DB.prepare('SELECT * FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(c.id, exerciceSel).first() as any
-            : await env.DB.prepare("SELECT * FROM org_dossiers WHERE client_id = ? AND status = 'en_cours' ORDER BY exercice DESC LIMIT 1").bind(c.id).first() as any;
-          // Exercice filtre : le client sans dossier cette annee disparait du dashboard
-          if (exerciceSel && !d) return null;
+        // Enrich with dossier + progress. AVANT : 1 requete dossiers + 1 taches
+        // + 1 documents PAR CLIENT (69 clients -> 207 requetes, 3,5 s de
+        // va-et-vient). Maintenant 3 requetes groupees. Le plafond CPU du Worker
+        // gratuit (10 ms) se partage entre les requetes concurrentes d'un isolat :
+        // ce N+1 produisait des 503 "error code: 1102" en charge parallele.
+        const ids = clients.map((c: any) => c.id);
+        const dosByClient = new Map<string, any>();
+        for (const chunk of chunkIds(ids)) {
+          const ph = chunk.map(() => '?').join(',');
+          const sql = exerciceSel
+            ? `SELECT * FROM org_dossiers WHERE exercice = ? AND client_id IN (${ph})`
+            : `SELECT * FROM org_dossiers WHERE status = 'en_cours' AND client_id IN (${ph})`;
+          const { results: rows } = await env.DB.prepare(sql)
+            .bind(...(exerciceSel ? [exerciceSel] : []), ...chunk).all();
+          for (const d of rows as any[]) {
+            const cur = dosByClient.get(d.client_id);
+            // Exercice filtre : une seule rangee par client. Sinon : le
+            // dossier en_cours de l'exercice le plus recent (ORDER BY ... LIMIT 1).
+            if (!cur || (!exerciceSel && Number(d.exercice) > Number(cur.exercice))) dosByClient.set(d.client_id, d);
+          }
+        }
+        // Exercice filtre : le client sans dossier cette annee disparait du dashboard
+        const kept = exerciceSel ? clients.filter((c: any) => dosByClient.has(c.id)) : clients;
+        const dossierIds: string[] = [];
+        for (const c of kept as any[]) { const d = dosByClient.get(c.id); if (d) dossierIds.push(d.id); }
+
+        const tasksByDossier = new Map<string, any[]>();
+        const docByDossier = new Map<string, any>();
+        for (const id of dossierIds) tasksByDossier.set(id, []);
+        for (const chunk of chunkIds(dossierIds)) {
+          const ph = chunk.map(() => '?').join(',');
+          const { results: tr } = await env.DB.prepare(
+            `SELECT dossier_id, status, export_scope, month FROM org_tasks WHERE hidden = 0 AND dossier_id IN (${ph})`,
+          ).bind(...chunk).all();
+          for (const t of tr as any[]) tasksByDossier.get(t.dossier_id)!.push(t);
+          const { results: dr } = await env.DB.prepare(
+            `SELECT dossier_id, COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id IN (${ph}) GROUP BY dossier_id`,
+          ).bind(...chunk).all();
+          for (const r of dr as any[]) docByDossier.set(r.dossier_id, r);
+        }
+
+        const enriched = kept.map((c: any) => {
+          const d = dosByClient.get(c.id) || null;
           let taskStats = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let docStats = { total: 0, received: 0 };
           if (d) {
-            const { results: tasks } = await env.DB.prepare('SELECT status, export_scope, month FROM org_tasks WHERE dossier_id = ? AND hidden = 0').bind(d.id).all();
-            for (const t of tasks as any[]) {
+            for (const t of (tasksByDossier.get(d.id) || []) as any[]) {
               if (!exportScopeKeeps(t.export_scope, c.export_status)) continue;
               if (!inDashboardScope(t.month)) continue;
               taskStats.total++; if (t.status === 'fait') taskStats.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') taskStats.en_cours++; else if (t.status === 'bloque_client') taskStats.bloque_client++;
             }
-            const ds = await env.DB.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents WHERE dossier_id = ?').bind(d.id).first() as any;
+            const ds = docByDossier.get(d.id);
             if (ds) { docStats.total = ds.total || 0; docStats.received = ds.received || 0; }
           }
-          return { ...c, dossier_actuel: d || null, task_stats: taskStats, doc_stats: docStats, progress: taskStats.total > 0 ? Math.round(taskStats.fait / taskStats.total * 100 * 10) / 10 : 0 };
-        }));
+          return { ...c, dossier_actuel: d, task_stats: taskStats, doc_stats: docStats, progress: taskStats.total > 0 ? Math.round(taskStats.fait / taskStats.total * 100 * 10) / 10 : 0 };
+        });
         return json(enriched.filter(Boolean));
       }
 
@@ -2939,7 +3431,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           ? 'c.organization_id = ?'
           : "(c.organization_id = ? AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))";
         const binds: any[] = isSupervisor(user.role) ? [user.organization_id] : [user.organization_id, user.id, user.id];
-        const { results } = await env.DB.prepare(`SELECT t.id, t.label, t.status, t.created_at, t.due_date, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE ${access} AND t.hidden = 0 AND t.created_by IS NOT NULL AND t.created_at >= datetime('now', '-' || ? || ' days') ${exSel ? 'AND d.exercice = ?' : ''} ORDER BY t.created_at DESC, t.id DESC LIMIT 10`).bind(...binds, days, ...(exSel ? [exSel] : [])).all();
+        const { results } = await pgAll(env, `SELECT t.id, t.label, t.status, t.created_at, t.due_date, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE ${access} AND t.hidden = 0 AND t.created_by IS NOT NULL AND t.created_at >= datetime('now', '-' || ? || ' days') ${exSel ? 'AND d.exercice = ?' : ''} ORDER BY t.created_at DESC, t.id DESC LIMIT 10`, ...binds, days, ...(exSel ? [exSel] : []));
         // J-x rapporté à la date en Tunisie (UTC+1)
         const today = new Date(Date.now() + 3600000).toISOString().slice(0, 10);
         const tasks = (results as any[]).map(t => ({
@@ -3750,7 +4242,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const { results: hDRows } = await env.DB.prepare(`SELECT te.dossier_id, COALESCE(SUM(te.duration_seconds), 0) as secs${hFrom} GROUP BY te.dossier_id`).bind(...hBinds).all();
         const hByD = new Map((hDRows as any[]).map(r => [String(r.dossier_id), Number(r.secs) || 0]));
         const { results: hURows } = await env.DB.prepare(
-          `SELECT te.user_id, u.full_name, COALESCE(SUM(te.duration_seconds), 0) as secs, COUNT(*) as entries FROM org_time_entries te JOIN org_users u ON te.user_id = u.id JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope} GROUP BY te.user_id ORDER BY secs DESC`
+          `SELECT te.user_id, u.full_name, COALESCE(SUM(te.duration_seconds), 0) as secs, COUNT(*) as entries FROM org_time_entries te JOIN org_users u ON te.user_id = u.id JOIN org_dossiers d ON te.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND te.stopped_at IS NOT NULL AND datetime(te.started_at, '+60 minutes') >= ? AND datetime(te.started_at, '+60 minutes') < ?${isSup ? '' : ' AND te.user_id = ?'}${scope} GROUP BY te.user_id, u.full_name ORDER BY secs DESC`
         ).bind(...hBinds).all();
 
         const { results: lateRows } = await env.DB.prepare(
@@ -3841,9 +4333,28 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         // Norme 8h30 uniquement lun-ven (heure locale TN = UTC+1) ; sam/dim = repos
         const dowTn = new Date(Date.now() + 3600000).getUTCDay();
         const normSec = (dowTn !== 0 && dowTn !== 6) ? 30600 : 0;
-        const enriched = await Promise.all(results.map(async (c: any) => {
-          const { results: clients } = await env.DB.prepare('SELECT c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = \'en_cours\' WHERE c.organization_id = ? AND c.assigned_comptable_id = ?').bind(user.organization_id, c.id).all();
-          const { results: taskStats } = await env.DB.prepare('SELECT t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? AND d.status = \'en_cours\' AND t.hidden = 0').bind(c.id, user.organization_id).all();
+        // 2 requetes groupees au lieu de 2 par comptable (19 requetes pour 8
+        // comptables) : le plafond CPU du Worker gratuit se partage entre les
+        // requetes concurrentes d'un isolat, d'ou des 503 "error code: 1102".
+        const clientsByUid = new Map<string, any[]>();
+        {
+          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = 'en_cours' WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL").bind(user.organization_id).all();
+          for (const r of rows as any[]) {
+            const list = clientsByUid.get(r.uid);
+            if (list) list.push(r); else clientsByUid.set(r.uid, [r]);
+          }
+        }
+        const tasksByUid = new Map<string, any[]>();
+        {
+          const { results: rows } = await pgAll(env, "SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0", user.organization_id);
+          for (const r of rows as any[]) {
+            const list = tasksByUid.get(r.uid);
+            if (list) list.push(r); else tasksByUid.set(r.uid, [r]);
+          }
+        }
+        const enriched = results.map((c: any) => {
+          const clients = clientsByUid.get(c.id) || [];
+          const taskStats = tasksByUid.get(c.id) || [];
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           for (const t of taskStats as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
@@ -3855,7 +4366,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             online: parseUtc(c.last_seen_at) >= nowS - 180,
             worked_today_seconds: (Number(dayByUser.get(c.id)) || 0) + Math.max(0, runStart ? nowS - runStart : 0),
             norm_seconds: normSec };
-        }));
+        });
         return json(enriched);
       }
 
@@ -3965,7 +4476,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         // Comptable info
-        const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
+        const comptable = await env.DB.prepare('SELECT id, full_name, email, is_active, created_at, last_seen_at FROM org_users WHERE id = ? AND organization_id = ?').bind(compId, user.organization_id).first() as any;
         if (!comptable) return json({ error: 'Comptable non trouvé' }, 404);
         // All dossiers assigned to this comptable
         const { results: dossiers } = await env.DB.prepare('SELECT d.*, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? ORDER BY d.exercice DESC, c.name').bind(compId, user.organization_id).all();
@@ -3989,7 +4500,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const totalTimeEntries = timeEntries.reduce((sum: number, te: any) => sum + (te.duration_seconds || 0), 0);
         // Time by dossier : temps TOTAL cumulé sur chaque dossier (toutes personnes — chrono, auto-stop, saisie manuelle)
         const timeByDossier: Record<string, { client_name: string; exercice: number; seconds: number }> = {};
-        const { results: taskTimes } = await env.DB.prepare('SELECT t.dossier_id, COALESCE(SUM(t.total_time_seconds), 0) as seconds, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? GROUP BY t.dossier_id HAVING COALESCE(SUM(t.total_time_seconds), 0) > 0').bind(compId, user.organization_id).all();
+        const { results: taskTimes } = await env.DB.prepare('SELECT t.dossier_id, COALESCE(SUM(t.total_time_seconds), 0) as seconds, d.exercice, c.name as client_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.assigned_comptable_id = ? AND c.organization_id = ? GROUP BY t.dossier_id, d.exercice, c.name HAVING COALESCE(SUM(t.total_time_seconds), 0) > 0').bind(compId, user.organization_id).all();
         for (const tt of taskTimes as any[]) {
           timeByDossier[tt.dossier_id] = { client_name: tt.client_name, exercice: tt.exercice, seconds: tt.seconds };
         }
@@ -4027,8 +4538,20 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const exParam = new URL(request.url).searchParams.get('exercice');
         const exSel = exParam ? Number(exParam) : null;
         const { results } = await env.DB.prepare(`SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ?${exSel ? ' AND d.exercice = ?' : ''} ORDER BY d.exercice DESC, c.name`).bind(user.organization_id, ...(exSel ? [exSel] : [])).all();
-        const enriched = await Promise.all(results.map(async (d: any) => {
-          const { results: tasks } = await env.DB.prepare('SELECT t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.dossier_id = ? AND t.hidden = 0').bind(d.id).all();
+        // UNE requete pour les taches de tous les dossiers, au lieu d'une par
+        // dossier (70 requetes pour 69 dossiers). Le plafond CPU du Worker
+        // gratuit (10 ms) se partage entre les requetes concurrentes d'un
+        // isolat : ce N+1 produisait des 503 "error code: 1102".
+        const tasksByDossier = new Map<string, any[]>();
+        for (const d of results as any[]) tasksByDossier.set(d.id, []);
+        for (const chunk of chunkIds(results.map((d: any) => d.id))) {
+          const { results: tasks } = await env.DB.prepare(
+            `SELECT t.dossier_id, t.status, t.export_scope, COALESCE(t.total_time_seconds, 0) as total_time FROM org_tasks t WHERE t.hidden = 0 AND t.dossier_id IN (${chunk.map(() => '?').join(',')})`,
+          ).bind(...chunk).all();
+          for (const t of tasks as any[]) tasksByDossier.get(t.dossier_id)!.push(t);
+        }
+        const enriched = results.map((d: any) => {
+          const tasks = tasksByDossier.get(d.id) || [];
           const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
           let totalTime = 0;
           for (const t of tasks as any[]) {
@@ -4036,7 +4559,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             s.total++; totalTime += t.total_time || 0; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           return { ...d, task_stats: s, progress: s.total > 0 ? Math.round(s.fait / s.total * 1000) / 10 : 0, total_time_seconds: totalTime };
-        }));
+        });
         return json(enriched);
       }
 
@@ -4369,43 +4892,63 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
       }
 
       return json({ error: 'Not found: ' + path }, 404);
-    } catch (e: any) {
-      return json({ error: e.message || 'Internal error' }, 500);
+    } finally {
+      releaseSupabaseConn(env);
+    }
+  };
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await run();
+      } catch (e: any) {
+        // D1 a epuise son quota de lignes lues : bascule automatique sur
+        // Supabase puis rejoue. La requete qui a touche le plafond est la seule
+        // a pouvoir echouer (et encore, seulement si son corps ne peut pas etre
+        // rejoue) ; toutes les suivantes passeront par Supabase.
+        if (attempt === 0 && (await failoverToSupabase(e, env))) {
+          if (buffered !== null || request.method === 'GET' || request.method === 'HEAD') {
+            if (buffered) request = buffered.fresh();
+            continue;
+          }
+          return json({ error: 'Bascule vers Supabase effectuée : cette requête n’a pas pu être rejouée (fichier trop volumineux). Renvoyez-la.' }, 503);
+        }
+        return json({ error: e?.message || 'Internal error' }, 500);
+      }
     }
   },
   // Cron 1er janvier (00:15 UTC) : passage automatique au nouvel exercice
   // cloture forcee du dossier n-1 + ouverture de l'exercice courant pour chaque client.
-  // Cron quotidien (02:00 UTC) : copie de sauvegarde integrale vers eurex-db-copy.
+  // Cron quotidien (00:05 UTC) : resync Supabase -> D1 puis retour sur D1.
+  // Il n'y a plus de copie D1 -> eurex-db-copy la nuit : Supabase tient ce role
+  // depuis 2026-10-11, en continu et de facon interrogable. L'operation reste
+  // disponible a la main via POST /internal/sync-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Backend Supabase : les crons D1 (sync vers COPY_DB) sont sans objet —
-    // la base managee gere sa propre sauvegarde ; le rollover local est gere
-    // par le serveur du cabinet (a migrer en fin de bascule, cf. api/supabase/README.md).
+    // Retour sur D1 : le quota gratuit se remet a zero a 00:00 UTC, on attend
+    // donc 00:05 pour refaire le point. Traite avant le test backend, puisque
+    // c'est justement le mode supabase que ce cron est cote a resoudre.
+    if (event.cron === '5 0 * * *') {
+      ctx.waitUntil(resyncAndFlipBack(env));
+      return;
+    }
+    // Backend Supabase : le cron du 1er janvier (ouverture d'exercice) s'appuie
+    // sur les tables D1 et n'a donc pas de sens — la base geree ne les expose
+    // pas de la meme facon. Sa migration est notee dans api/supabase/README.md.
     const backend = await backendMode(env);
     if (backend === 'supabase') {
       console.log('cron', event.cron, 'ignore (backend supabase)');
       return;
     }
-    // Mode local : le serveur du cabinet execute lui-meme ces crons sur SQLite
-    const relay = await localRelayState(env);
-    if (relay.mode) {
-      console.log('cron', event.cron, 'ignore (base locale)');
-      return;
-    }
     if (event.cron === '15 0 1 1 *') {
       ctx.waitUntil(rolloverAllOrganizations(env));
-    }
-    if (event.cron === '0 2 * * *') {
-      ctx.waitUntil(syncToCopy(env).then(
-        r => console.log('sync-copy OK: ' + r.tables + ' tables, ' + r.rows + ' lignes'),
-        err => console.error('sync-copy FAILED: ' + (err?.message || err)),
-      ));
     }
   },
 };
 
-// Copie de sauvegarde quotidienne : recopie integrale de DB (eurex-db) vers COPY_DB
-// (eurex-db-copy). Chaque table est vidée puis réécrite — INSERT en paquets (limite
-// de 100 paramètres liés par requête). Les tables internes d1_* ne sont pas copiées.
+// Copie integrale D1 -> COPY_DB (eurex-db-copy), appelee a la main par
+// POST /internal/sync-copy. Chaque table est vidée puis réécrite — INSERT en
+// paquets (limite de 100 paramètres liés par requête). Les tables internes d1_*
+// ne sont pas copiées. N'EST PLUS DECLENCHEE PAR UN CRON depuis 2026-10-11 :
+// Supabase fournit une copie complete tenue a jour en continu.
 async function syncToCopy(env: Env): Promise<{ tables: number; rows: number }> {
   if (!env.COPY_DB) throw new Error('COPY_DB non configuré');
   const { results: tblRows } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*' ORDER BY name").all();

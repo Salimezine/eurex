@@ -28,17 +28,22 @@ export default function OrgDashboardComptable() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([orgApi.getClients(exercice), orgApi.getMyGrants(), orgApi.getExercices()])
-      .then(([cs, gs, ex]) => {
-        const list = ex.exercices || [];
-        setExercices(list);
-        // Exercice choisi disparu (client supprime) : on retombe sur le plus recent
-        if (list.length && !list.includes(exercice)) setExercice(list[0]);
-        setClients(cs);
-        setMyGrants(gs);
-        setLoadError(false);
+    // Même raison que sur le tableau de bord expert : une route en échec ne
+    // doit pas effacer celles qui ont répondu. On n'affiche l'erreur que si
+    // la liste des clients — le contenu principal — n'est pas venue.
+    Promise.allSettled([orgApi.getClients(exercice), orgApi.getMyGrants(), orgApi.getExercices()])
+      .then(([rc, rg, rex]) => {
+        if (rc.status === 'fulfilled') setClients(rc.value);
+        if (rg.status === 'fulfilled') setMyGrants(rg.value);
+        if (rex.status === 'fulfilled') {
+          const list = rex.value.exercices || [];
+          setExercices(list);
+          // Exercice choisi disparu (client supprime) : on retombe sur le plus recent
+          if (list.length && !list.includes(exercice)) setExercice(list[0]);
+        }
+        [rc, rg, rex].forEach(r => { if (r.status === 'rejected') console.error(r.reason); });
+        setLoadError(rc.status !== 'fulfilled');
       })
-      .catch(e => { console.error(e); setLoadError(true); })
       .finally(() => setLoading(false));
   };
 

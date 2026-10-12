@@ -169,7 +169,7 @@ du `prepare()` — aucun SQL source n'est modifié.
 
 ```
 Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG → Supabase (PostgreSQL)
-                         └─ sinon : relais local (tunnel) → SQLite local | D1 gelée (rollback)
+                         └─ sinon : D1
 ```
 
 **Composants** (`api/src/`) :
@@ -178,10 +178,12 @@ Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG 
 |---------|------|
 | `pg/translate.ts` | SQLite→PG à la volée : `datetime()`/`date()`/`strftime()` (57+ formes réelles de `index.ts`), `INSERT OR REPLACE/IGNORE`→`ON CONFLICT`, `LIKE`→`ILIKE`, `?`→`$n` (hors littéraux), `sqlite_master`→`information_schema`. Tout motif non couvert **lève une erreur** plutôt que de partir en silence |
 | `pg/scram.ts` | Auth SCRAM-SHA-256 (RFC 5802/7677, Web Crypto) |
+| `pg/md5.ts` | Auth MD5 (RFC 1321 écrite à la main) — c'est celle qu'utilise l'endpoint local d'Hyperdrive, `node:crypto` n'existant pas côté Worker |
 | `pg/protocol.ts` | Protocole PG v3 : startup, extended query (Parse/Bind/Describe/Execute/Sync), parser tolérant aux fragments |
 | `pg/client.ts` | Handshake, file d'attente sérialisante, timeouts, reconnexion (1 reprise), transactions |
 | `pg/transport.ts` | `cloudflare:sockets` (import dynamique → compatible Node) |
 | `supabase-adapter.ts` | Interface D1 identique (`prepare/bind/first/all/run/batch`), PK map via `information_schema` (pour `ON CONFLICT`), casse `bonsAchat` |
+| `sync.ts` | Reprise de la main sur D1 après une bascule : copie Supabase→D1 puis purge (§9) |
 
 **Bascule** (secret `X-Internal-Secret` requis, fail-closed) :
 
@@ -190,18 +192,38 @@ Front GH Pages → Worker ─┬─ __backend/mode = supabase → adaptateur PG 
 curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
 # → {"backend":"d1|supabase","has_url":true|false}
 
-# activer / revenir en arrière (cache 10 s, prioritaire sur le relais)
+# activer / revenir en arrière (cache 10 s)
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"supabase"}' .../internal/backend
 curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"d1"}'      .../internal/backend
+
+# copie Supabase -> D1 puis bascule retour (le cron 00:05 UTC le fait tout seul)
+# {"dry":true} ne lit que Supabase et rend le plan, sans rien écrire ni basculer
+curl -X POST -H "X-Internal-Secret: ..." -d '{"dry":true}' .../internal/resync
 ```
 
+- **Le retour manuel sur D1 est refusé tant que `d1_state != 'clean'`** (409) :
+  D1 contiendrait les données d'avant la bascule et toutes les saisies faites
+  depuis seraient perdues. `{"backend":"d1","force":true}` passe outre.
+- **`{"dry":true}` renvoie toujours `"purged": 0`, et ce n'est pas une mesure.**
+  La passe de purge est sautée entièrement en mode `dry` (`sync.ts` :
+  `if (!opts.dry)`), donc le compte est une constante, jamais un écart réel.
+  Lire `purged: 0` comme « les deux bases sont synchrones » est faux : une
+  copie réelle peut très bien purger alors que le `dry` annonçait zéro.
+  Exemple concret du 2026-10-11 : D1 portait encore le compte de test
+  `sweep-test@eurex.tn` (supprimé de Supabase, la suppression secondaire ayant
+  échoué faute de quota) — 1 ligne de trop — alors que le `dry` affichait
+  `purged: 0`. Le `dry` reste utile pour le **plan** (ordre des tables,
+  avertissements de schéma), pas pour la divergence de contenu.
 - Secret Worker : `wrangler secret put SUPABASE_DB_URL` (URI **Direct/Session
   pooler** de Supabase). Sans secret, `has_url:false` et la bascule est sans effet.
-- Crons Worker (`scheduled`) : ignorés en mode supabase (sauvegardes/rollover →
-  à définir côté Supabase).
+  Chemin réellement utilisé : le **binding Hyperdrive** (`wrangler.jsonc`), prioritaire
+  sur la secret — le TLS direct depuis un Worker vers Supabase est impossible
+  (CA privée rejetée par Cloudflare).
+- Crons Worker : le `00:05` gère le retour sur D1 (§9) ; les autres sont sans
+  objet en mode supabase (sauvegardes D1 → D1).
 - `transaction(fn)` : `fn` reçoit un **queryFn** déjà dans la transaction ;
   appeler `client.query()` depuis `fn` provoquerait un deadlock (file non réentrant).
-- Tests : `cd api && npm test` → **47 tests** dont l'**inventaire SQL** qui
+- Tests : `cd api && npm test` → **88 tests** dont l'**inventaire SQL** qui
   soumet *toutes* les chaînes `.prepare()` et les fragments SQLite de `index.ts`
   au traducteur (filet contre toute nouvelle construction non couverte).
 
@@ -215,4 +237,430 @@ curl -X POST -H "X-Internal-Secret: ..." -d '{"backend":"d1"}'      .../internal
 `schema.sql` ne contient que le **schéma** ; les données viennent du dump SQLite
 (`import.ts` → `data.sql`). Le portage du dialecte applicatif n'est **pas**
 nécessaire : il est assuré à la volée par `pg/translate.ts` (voir §7).
+
+---
+
+## 9. Bascule automatique et resync quotidienne
+
+Incident du **2026-10-10** : D1 a épuisé son quota gratuit de lignes lues (5 M/jour,
+remise à zéro à 00:00 UTC) et l'application est restée **down** jusqu'au lendemain.
+Cause racine : la migration 0025 avait reconstruit `org_tasks` et
+`org_expected_documents` sans recréer leurs 6 index → chaque `WHERE dossier_id = ?`
+faisait un `SCAN` complet (11,28 M lignes lues). Restaurés (migration 0035), mais
+le point de rupture architectural restait.
+
+Deux mécanismes le comblent désormais, dans `api/src/index.ts` + `api/src/sync.ts` :
+
+**1. Bascule automatique D1 → Supabase, à la volée.**
+Une erreur de quota reconnue (`isD1QuotaError`) pose `__backend/mode=supabase` et
+**rejoue** la requête : l'utilisateur ne voit rien. Le corps des petites requêtes
+(< 1 Mo) est donc conservé en mémoire au début de `fetch` — la conservation
+**consomme** le flux d'origine, il faut donc servir la copie. Au-delà, un 503
+explicite, mais la bascule a déjà eu lieu.
+
+**2. Resync Supabase → D1, puis retour (cron `5 0 * * *`, 00:05 UTC).**
+Deux passes, dans `sync.ts` :
+
+| Passe | Ordre | Pourquoi |
+|-------|-------|----------|
+| upsert des lignes de Supabase | **mères d'abord** | les clés étrangères sont actives dans D1 (vérifié par `SQLITE_CONSTRAINT_FOREIGNKEY`) |
+| purge des orphelins | **filles d'abord** | une fille ne peut pas disparaître après sa mère |
+
+Pendant la copie, un **verrou KV** (`__backend/sync`) fait attendre les requêtes :
+servir entre-temps laisserait des écritures derrière, et elles seraient perdues au
+retour. Le verrou est levé **après** la bascule, jamais avant.
+
+Le retour n'a lieu qu'après **réussite complète** : un échec en cours de route
+laisse D1 inutilisé (et marqué `d1_state=dirty`) mais l'application continue de
+tourner sur Supabase, et le cron suivant reprend — l'opération est idempotente.
+
+### Pièges rencontrés, validés en production plutôt qu'écrits au hasard
+
+- **`INSERT OR REPLACE` est interdit ici.** Il supprime la ligne en conflit avant
+  de la réécrire, ce qui déclenche les clés étrangères qui la référencent :
+  mettre à jour `organizations` échouerait à cause de `org_users`. D'où
+  `ON CONFLICT ... DO UPDATE` (vérifié sur le moteur D1).
+- **D1 refuse aussi les *écritures*** une fois le quota de lectures atteint : la
+  copie de diagnostic s'est cassée dès la 3ᵉ table. D1 est donc totalement
+  indisponible pendant l'incident, pas seulement ralenti — d'où l'intérêt de la
+  bascule.
+- **Pas de `WHERE pk NOT IN (...)`** pour la purge : D1 refuse plus de 100
+  paramètres liés par requête. Les clés primaires de D1 sont lues une par une.
+- **L'ordre topologique vient du schéma Supabase**, jamais de D1 : pendant la
+  bascule, D1 est justement à court de quota de lecture.
+- **Les clés primaires sont normalisées via `Number()`** : Postgres peut rendre un
+  `bigint` là où SQLite rend un nombre, et la comparaison d'orphelins échouerait.
+- **Limite CPU des Workers (plan gratuit : 10 ms/requête).** La bascule a montré
+  que ce n'est pas le réseau qui coûte le plus, c'est le **décodage** et le
+  **nombre de requêtes**. Deux pièges trouvés en production, corrigés et couverts
+  par des tests :
+
+  | Symptôme prod | Cause racine | Correctif |
+  |---|---|---|
+  | `503 error code: 1102` sur `/api/org/clients`, `/dossiers`, `/comptables`, `/alerts` — les petites routes (`/exercices`, `/auth/me`) passaient | `FrameParser.push()` faisait `this.buf.slice(total)` **par message** : décodage **O(n²)** en octets. Au-delà de ~15 Ko de réponse, le seul parsing dépassait 10 ms | curseur de lecture `pos`, plus aucune copie du reste du tampon ; `PgClient` lit `msgs` par index (`takeBuffered`) au lieu de `shift()` |
+  | `401 {"error":"Non autorisé"}` sporadique | un adaptateur **singleton d'isolate** partageait sa socket entre requêtes concurrentes ; la fermeture de l'une coupait l'autre | `getSupabaseAdapter()` renvoie une instance **par requête** ; seule une **mémoire des PK déjà chargées** est partagée (jamais une promesse en vol, liée à la socket d'une autre requête) |
+
+  Règle : un `5xx` avec un `error code: 1102` ne se diagnostique **qu'avec
+  `wrangler tail`** (le corps HTTP ne dit rien) — chercher « Exceeded CPU Limit ».
+- **Les motifs N+1 explosent très vite ce budget** : `/api/org/clients` émettait
+  208 requêtes, `/api/org/dossiers` 70, `/api/org/comptables` 19. Regroupés en 2 à
+  5 requêtes chacun (IDs découpés par blocs de 80 pour rester sous la limite de
+  100 paramètres liés de D1), la logique de statistiques JS reste identique.
+- **Hyperdrive met en cache les réponses SQL, indexées sur le texte de la
+  requête** : une suppression validée par PostgreSQL restait invisible sur
+  `GET /api/org/comptables` pendant ~10 min alors que le détail (autre SQL)
+  répondait déjà 404. Corrigé par `wrangler hyperdrive update <id>
+  --caching-disabled` — détails et protocole de constat en §7.
+- **Le quota de lectures D1 ne se diagnostique pas avec `SELECT 1`.** En fin de
+  quota, `SELECT 1` (0 ligne) et un `INSERT ... ON CONFLICT` **sans conflit**
+  (`rows_read: 0`) passent, alors qu'un `DELETE` par clé ou un upsert qui
+  *conflit* — soit **2 à 3 lignes lues** — échoue avec « exceeded D1's free tier
+  daily row read limit ». Constat de prod : `wrangler d1 execute` semblait donc
+  « fonctionner » alors que la resync échouait sur la 3ᵉ table. Le bon test est
+  `meta.rows_read` d'une lecture de vraies lignes, pas l'exécution de la
+  commande. La resync ne copie que ~6 500 lignes : elle ne peut pas être la
+  cause, elle ne fait que tomber sur un quota déjà consommé.
+- **Le coupable se trouve avec `wrangler d1 insights <db>`** (expérimental), qui
+  classe les requêtes par `totalRowsRead` et donne une `queryEfficiency`. Constat
+  du 2026-10-10 : **5 requêtes seulement avaient consommé 6 973 520 lignes**,
+  dont 6 132 161 pour deux `SELECT ... FROM org_tasks WHERE dossier_id = ?`,
+  soit **~5 000 lignes lues par exécution** pour une table de ~5 000 lignes.
+  C'est le profil exact d'un **balayage complet** : les index de `org_tasks`
+  manquaient (restaurés par la migration 0035). Après restauration,
+  `EXPLAIN QUERY PLAN` rend `SEARCH org_tasks USING INDEX idx_org_tasks_month
+  (dossier_id=?)` et la même requête coûte **`rows_read: 0`**. Conséquence
+  pratique : le quota épuisé était un **avant-correctif**, la bascule nocturne
+  est tenable — ~6 500 lectures contre 5 000 000.
+- **Un index juste peut être refusé par le planificateur : SQLite n'est pas
+  PostgreSQL.** Le composant `NouvellesTaches` (monté sur le tableau de bord
+  expert **et** comptable, donc sur chaque poste ouvert) appelle
+  `/api/org/tasks/recent` toutes les 30 s, dont le
+  `ORDER BY t.created_at DESC, t.id DESC LIMIT 10` forçait un
+  `USE TEMP B-TREE` : **5 954 lignes lues pour 10 lignes rendues**, soit
+  ~714 000 lignes/heure et par poste ouvert. Le quota D1 étant un plafond
+  **plat par compte**, il ne dépend pas du nombre de comptables — c'est leur
+  *coût* qui croît avec eux. Migration 0036 : `org_tasks(created_at, id)`.
+  Les **deux** colonnes sont nécessaires : `(created_at)` seul laisse un
+  `TEMP B-TREE` pour le départage par `id`, donc aucun gain. Résultat mesuré,
+  même requête :
+
+  | moteur | avant | après |
+  |---|---|---|
+  | PostgreSQL | `Sort` + `Seq Scan`, **4 920** lignes | `Index Scan Backward`, aucun nœud de tri, **10** lignes (492×) |
+  | SQLite (D1) | `TEMP B-TREE` | **inchangé** — 5 954 lignes |
+
+  SQLite **refuse** l'index sur *cette* requête : l'ajout de la seule
+  condition `c.organization_id = ?` le fait repartir de `c`, puis `d`, puis
+  `t`, ce qui rend le tri complet inévitable (le `LIMIT 10` n'est pas assez
+  crédité au chemin alternatif). Vérifié sur un banc d'essai local reproduisant
+  le schéma réel : ni `(created_at, id)`, ni un index **couvrant** sur
+  toutes les colonnes lues, ni `ANALYZE` ne le font changer d'avis. L'index
+  est conservé (il sert Supabase, et les requêtes sans filtre
+  d'organisation côté D1) ; la mitigation réelle sur D1 est le garde
+  `document.hidden` ajouté à `NouvellesTaches` — aligné sur les trois autres
+  sondeurs de l'app, un onglet en arrière-plan ne consomme plus rien et le
+  retour sur l'onglet recharge déjà via `onFocus`. **Règle : ne jamais
+  supposer qu'un index sera utilisé — `EXPLAIN QUERY PLAN` sur les deux
+  moteurs, après chaque index.**
+- **`created_by` est NULL pour les 5 747 lots existants, et c'est voulu.**
+  `/api/org/tasks/recent` filtre `t.created_by IS NOT NULL` : seules les
+  tâches créées **à la main** remontent (index.ts:3369 renseigne
+  `created_by = user.id`), pas celles issues des gabarits ou du roulement
+  d'exercice. Le flux de notifications est donc vide aujourd'hui et se
+  remplira dès la première création manuelle — d'où l'importance de l'index
+  côté Supabase.
+- **`wrangler d1 insights` est la seule mesure fiable du quota — et elle
+  change la donne.** Arrivé à un plafond, l'instinct est de chercher lequel
+  des index manque. Mesuré plutôt : `wrangler d1 insights eurex-db
+  --sort-by reads --limit 60 --time-period 1h --json` (nettoyer les ANSI
+  wrangler avant de parser, sinon `ConvertFrom-Json` échoue). Sur 24 h,
+  **74 % des 8,2 M lignes lues venaient de deux requêtes** — et ces deux
+  requêtes **n'existent plus dans la source** : elles appartenaient à une
+  version antérieure du Worker. Sans cette mesure on aurait optimisé à
+  l'aveugle du code mort. Vérifier toujours qu'une requête du rapport est
+  bien encore déployée avant de la soigner.
+- **Le planificateur SQLite ne donne pas le même plan selon qu'une valeur est
+  écrite en dur ou liée.** Requête strictement identique, exécutée en prod :
+
+  | forme | `rows_read` |
+  |---|---|
+  | `WHERE t.dossier_id = '00a610b1-…'` (littéral) | **85** — `SEARCH … USING INDEX` |
+  | `WHERE t.dossier_id = ?` (paramètre, ce que fait l'app) | **5 403** — balayage complet |
+
+  `EXPLAIN QUERY PLAN` rend donc `SEARCH` dans les deux cas : **il ne
+  détecte pas le problème**, puisqu'il est exécuté avec la valeur en dur.
+  Chaque dossier ne contient que 84 tâches (répartition parfaitement
+  régulière, et `sqlite_stat1` le sait : `5747 84`) — donc ces 5 403 lignes
+  sont bien un refus du planificateur, pas une donnée volumineuse. Ni index
+  couvrant, ni `ANALYZE` ne l'ont corrigé par le passé : voir plus haut.
+- **Lecture répartie : `pgAll()` fait passer les requêtes lourdes par
+  PostgreSQL quand `mode=d1`.** Ne pas tenter un `GROUP BY` pour « économiser
+  des lignes » : l'**agrégat doit tout parcourir pour compter**, les lignes
+  *lues* ne baissent pas. Seul un autre moteur retire le coût du quota.
+  Cibles : `/api/org/comptables` (5 953 lignes/appel, sondé toutes les 60 s
+  par l'expert) et `/api/org/me/tasks/recent` (~4 100 lignes, toutes les
+  30 s par **chaque** poste ouvert) — soit à elles seules plus de la moitié
+  d'un quota de 5 M/jour. Mesuré avant/après par `d1 insights` : la requête
+  routée reste bloquée à son ancien nombre d'exécutions **pendant que les
+  deux voisines non routées du même handler continuent d'augmenter** — ce
+  trio (témoin + test) est ce qui rend la mesure recevable malgré la latence
+  des statistiques. Aucun octet de réponse modifié : balayée de 27 routes
+  identique à l'octet près, hors la suppression des comptes de test.
+- **`pgAll()` refuse de router sans double écriture**, et c'est le garde le
+  plus important du dispositif : seule la primaire reçoit les écritures,
+  donc servir Supabase pendant qu'on écrit sur D1 exposerait une création
+  invisible à l'utilisateur. Le drapeau `__backend/dual_write` repose donc la
+  condition toute seule — couper la double écriture désactive aussi la
+  répartition, sans modifier une ligne de code.
+- **Le routage a *ajouté* une dépendance : `pgAll()` retombe maintenant sur D1.**
+  Avant lui, une requête routée n'avait besoin que de D1 ; avec lui, elle
+  échoue aussi si Hyperdrive ou Supabase tousse — et c'est arrivé en production
+  le 2026-10-11 : le tableau de bord cabinet affichait ses quatre compteurs à
+  zéro derrière « l'API est momentanément indisponible », alors que les mêmes
+  appels répondaient normalement une minute plus tard. Le repli sur D1 est
+  sans risque et c'est tout l'intérêt de la double écriture : les deux bases
+  reçoivent chaque modification et restent identiques, donc lire l'une ou
+  l'autre revient au même, D1 étant en plus la primaire. **Sans cette
+  garantie, le repli serait dangereux et il faudrait laisser échouer** — c'est
+  le drapeau `dual_write` qui rend la chute acceptable.
+  Complément côté navigateur : `OrgDashboardExpert`, `OrgDashboardComptable` et
+  `OrgSettings` assemblaient leurs routes avec `Promise.all`, qui **annule les
+  réponses déjà résolues** dès qu'une seule route échoue. Passées en
+  `Promise.allSettled`, elles affichent ce qui est venu et ne signalent
+  l'erreur que si rien n'est arrivé — un échec isolé ne vide plus une page
+  entière.
+- **L'écart avant (`forward_gap`) se répare par rejeu, jamais par recopie.** Le drapeau
+  `__backend/forward_gap` se lève quand une écriture de second rang n'atteint
+  pas PostgreSQL alors que D1 sert. Copier ensuite Supabase → D1 — ce que fait la
+  resync nocturne — **écraserait et purgerait** cette écriture ; d'où l'abstention
+  de 409. Depuis 2026-10-11, le cron et `POST /internal/resync` tente d'abord
+  `repairForwardGap()`, qui **rejoue les écritures manquantes** conservées dans
+  `__backend/outbox` (SQL + paramètres), captées au moment précis où elles ont
+  échoué.
+  **La première version de cette réparation recopiait toute la base, et ne
+  fonctionne pas** : abandon mesuré à **219 ms de CPU**, sur la 9ᵉ table des 35,
+  alors qu'aucune ligne n'avait encore été écrite. Le coût est **fixe par
+  invocation** (connexion PostgreSQL + lecture du schéma) plus que
+  proportionnel au volume, donc fractionner sur plusieurs appels n'aurait fait
+  que payer ce fixe plusieurs fois. C'est ce qui a motivé la conservation du
+  contenu au moment de l'échec : c'est la seule réparation qui tient dans le
+  budget du Worker gratuit. On ne sait donc rien deviner : si le drapeau est levé
+  mais que le journal est vide (journalisation elle-même tombée en panne, ou
+  drapeau antérieur), la réparation **refuse** et le dit — recopier au hasard
+  coûterait plus cher que de traiter à la main.
+- **Rejouer est sûr dans les deux sens.** La cible est Supabase, qui n'a
+  justement *pas* reçu l'écriture : le rejeu ne peut pas doubler, quel que soit
+  le mode en service. Si une insertion venait pourtant à heurter une clé déjà
+  présente, elle n'est **pas** prise pour un succès : elle reste dans le journal
+  et le rapport le mentionne. Un lot (`batch`) est atomique et son échec ne dit
+  pas quelle portion a échoué — on reprogramme le lot complet, en ordre, chaque
+  instruction étant un upsert ou un remplacement.
+- **Le verrou `__backend/sync` s'applique aussi en mode `d1`** dès que la double
+  écriture est active : `pgAll()` lit alors Supabase, et une réparation inverse
+  est en train de recopier cette même base — laisser passer une lecture
+  exposerait un contenu à moitie reconstruit. La condition a été élargie
+  (`backend === 'supabase' || dual`) ; elle ne servait qu'à `supabase` avant
+  que la lecture soit répartie.
+- **Un échec de resync ne bascule rien et ne corrompt rien** : vérifié deux fois
+  en production (`ok:false`, mode resté `supabase`, `d1_state` resté `dirty`,
+  verrou libéré). Seul `onSuccess` — appelé après copie *et* purge complètes —
+  écrit `mode=d1`.
+- **Le quota d'ÉCRITURES D1 (100 000 lignes/jour, remis à zéro à 00:00 UTC,
+  compté par compte donc `eurex-db` *et* `eurex-db-copy`) a été dépassé le
+  2026-10-11 à 110 k — et le coupable n'était pas l'application.**
+  `wrangler d1 insights eurex-db --sort-by writes --limit 15 --time-period 24h`
+  (119 159 lignes au total) se décompose ainsi :
+
+  | consommateur | lignes | part |
+  |---|---:|---:|
+  | `org_tasks` — **resync**, en deux entrées (celle écrite en dur et celle guillemetée, anciennes et nouvelles versions d'`upsertSql`) | 109 068 | **92 %** |
+  | `CREATE INDEX` + `ANALYZE` (migration ponctuelle, une seule fois) | 5 800 | 5 % |
+  | l'application (journal d'audit, dossiers, clients, notifications) | ~4 000 | **4 %** |
+
+  La preuve que les deux grosses entrées viennent bien de `sync.ts` :
+  `index.ts` ne contient **aucun** `ON CONFLICT`, l'application n'upserte donc
+  jamais. Le surcoût était la resync, relancée l'équivalent d'une quinzaine de
+  copies complètes pendant une journée de test — **pas un problème
+  d'exploitation**. Deux règles en découlent : une resync complète coûte
+  **~36 750 écritures, soit ~37 % du quota d'un jour** (lancer avec
+  `{"dry":true}` d'abord) ; et un quota dépassé **ne se constate pas en
+  essayant une écriture** — l'écriture de test a encore réussi à 110 k, la
+  limite n'est donc pas un refus immédiat.
+
+  **Le coût d'une copie n'est pas le nombre de lignes copiées.** D1
+  comptabilise ~6 lignes écrites pour **un seul** `INSERT … ON CONFLICT` à une
+  ligne : les 6 525 lignes de la copie reviennent à **36 750 unités facturées**,
+  mesuré le 2026-10-12 au tableau de bord Cloudflare (36,75 k écrits ce jour-là,
+  la copie de 00:05 étant la seule écriture de la journée). Relever « 6 500 »
+  comme coût conduit à sous-estimer la resync d'un facteur ~5,6. C'est
+  l'attribution par requête de `wrangler d1 insights` qui le montre, en
+  confrontant `avgRowsWritten` au nombre de lignes réelles.
+
+  Enfin, `--time-period` **filtre bien** — 1h, 6h, 12h et 24h ont rendu des
+  chiffres différents — mais certaines fenêtres se confondent (6h et 12h ont
+  donné le même total au chiffre près), et aucune ne coïncide avec la journée
+  de quota qui démarre à 00:00 UTC. La commande est donc inutilisable pour
+  calculer un reste ; seule l'attribution par requête l'est.
+
+### Opérations
+
+```bash
+# état complet (backend, propreté de D1, resync en cours, horodatages)
+curl -H "X-Internal-Secret: $EUREX_INTERNAL_SECRET" https://eurex-api.<acc>.workers.dev/internal/backend
+# → {"backend":"supabase","d1_state":"dirty|clean","syncing":false,
+#    "last_resync":"2026-10-11T00:05:12Z"|null,
+#    "last_failover":"2026-10-10T12:52:47.892Z"|null,
+#    "dual_write":false,             ← les deux bases écrites-elles à chaque modification ?
+#    "forward_gap":null,             ← écriture non parvenue à Supabase : la resync s'abstient
+#    "outbox":0}                     ← écritures restant à REJOUPER pour lever ce drapeau
+
+# forcer une resync (par ex. pour tester) — {"dry":true} ne touche à rien
+curl -X POST -H "X-Internal-Secret: ..." -d '{}' .../internal/resync
+# Un forward_gap éventuel est d'abord levé par REJEU du journal, puis la copie
+# a lieu ; si le rejeu échoue : 409, rien n'est copié.
+# {"repair":{"ok":true,"rows":3}} apparaît en tête de réponse.
+# {"dry":true} refuse d'agir tant que l'écart existe plutôt que de rendre un
+# résultat qui ne se produirait pas pour de vrai.
+
+# double écriture seule (ne change pas le moteur en service) ; désactiver
+# cette commande désactive aussi la lecture répartie pgAll(), qui en dépend
+curl -X POST -H "X-Internal-Secret: ..." -d '{"dual_write":true}' .../internal/backend
+
+# copie D1 -> eurex-db-copy : APPEL MANUEL depuis 2026-10-11, et {"force":true}
+# est exigé — l'opération vide chaque table avant de la réécrire
+curl -X POST -H "X-Internal-Secret: ..." -d '{"force":true}' .../internal/sync-copy
+```
+
+- **La copie nocturne vers `eurex-db-copy` a été retirée** (cron `0 2 * * *`),
+  non pas pour économiser — 6 500 lignes lues par nuit, soit 0,13 % du quota —
+  mais parce qu'elle était **redondante** : Supabase est depuis la double
+  écriture une copie complète, tenue à jour en continu et **interrogeable**,
+  là où `eurex-db-copy` était une image figée à laquelle rien ne pouvait accéder.
+  L'opération existe toujours (`POST /internal/sync-copy`), ce qui supprime aussi
+  son seul défaut réel : un plantage au milieu laissait chaque table vidée.
+  Le binding `COPY_DB` est conservé.
+
+**Quand le rejeu ne suffit pas** (`outbox: 0` alors que `forward_gap` est
+renseigné) : le Worker ne sait pas ce qui diverge, et refuse de deviner. Ne
+tenter **jamais** une copie pleine base depuis le Worker — c'est l'opération qui
+meurt à 219 ms de processeur, documentée plus haut. Traiter à la main :
+comparer les tables suspectes (`wrangler d1 execute … --remote` d'un côté,
+`SELECT` sur Supabase de l'autre), réinsérer ce qui manque côté Supabase, puis
+lever le drapeau :
+
+```bash
+wrangler kv key delete --namespace-id 9becacff… --remote __backend/forward_gap
+wrangler kv key delete --namespace-id 9becacff… --remote __backend/outbox
+```
+
+À défaut, `{"allow_forward_gap":true}` fait passer la copie outre en acceptant
+de **perdre** l'écriture non rejouée.
+
+**Vérifier le cycle nocturne** (la question « est-ce que D1 reprend la main,
+puis retombe sur Supabase ? ») se répond avec ce seul GET :
+
+| Quand | À constater |
+|---|---|
+| après 00:05 UTC **après une bascule** (mode `supabase`) | copie exécutée : `backend:"d1"`, `d1_state:"clean"`, **`last_resync` avancé** |
+| après 00:05 UTC **en temps normal** (mode `d1`) | journal `[resync] ignoree (backend d1)` : il n'y a rien de périmé à écraser. `last_resync` **ne bouge pas** — c'est voulu, et cela économise ~36 750 écritures par nuit |
+| dans la journée, D1 à court de quota | `backend:"supabase"`, `d1_state:"dirty"`, `last_failover` renseigné |
+| retour manuel sur D1 entre-temps | **409** (`d1_state` = `dirty`) — refusé, c'est voulu |
+
+Le cron teste d'abord `forward_gap` **avant** le test de mode, sinon le drapeau
+resterait levé jusqu'à son expiration de sept jours en passant chaque nuit par
+la sortie « déjà sur D1 ». Conséquence pratique : dans l'état courant
+(`mode=d1`, pas d'écart) il ne fait qu'ouvrir et refermer le KV — le chemin
+`repairForwardGap()` ne s'exécute réellement que lorsqu'un écart est levé.
+
+- **Une chaîne reste à vérifier de bout en bout en production** : provoquer un
+  échec *réel* du second rang. Elle n'a jamais été déclenchée naturellement
+  (ce serait un heureux accident), et `forward_gap: null` ne prouve rien — c'est
+  l'absence d'accident, pas le bon fonctionnement du parapluie.
+
+  Le montage tient en une asymétrie : **provoquer exige des données présentes
+  en D1 seul**, or on ne sait écrire directement que dans D1. On choisit donc
+  une paire parent/enfant dont les deux extrémités ont chacune un endpoint de
+  suppression dans l'application, ce qui permet de **nettoyer sans jamais
+  toucher PostgreSQL à la main** : parent = une tâche, enfant = un document
+  attendu (`org_expected_documents.task_id → org_tasks(id)`, clé étrangère
+  présente dans les deux bases).
+
+  **Prérequis : `mode = "d1"`.** En mode `supabase`, `markForwardGap` se
+  contente de marquer D1 `dirty` et ne remplit jamais l'outbox (cf. son
+  commentaire) : le test serait impossible. C'est le cron 00:05 UTC qui ramène
+  `mode=d1` après une bascule.
+
+  1. **Parent, en D1 seul** — la double écriture est contournée volontairement.
+     `hidden=1` : la tâche n'apparaît nulle part, et surtout
+     `orgRecalcProgress` compte `WHERE t.hidden = 0`, donc la progression du
+     dossier ne bouge pas sous les yeux de l'utilisateur. Le dossier doit être
+     un dossier réel de la production :
+
+     ```bash
+     wrangler d1 execute eurex-db --remote --command \
+       "INSERT INTO org_tasks (id, dossier_id, label, status, order_index, hidden, created_at) \
+        VALUES ('TESTGAPTASK', '<DOSSIER_REEL>', 'TEST ECART AVANT', 'a_faire', 9999, 1, '<ISO UTC>');"
+     ```
+
+  2. **Échec du second rang** — `POST /api/org/dossiers/<DOSSIER_REEL>/documents`
+     avec `{"task_id":"TESTGAPTASK","label":"TEST ECART AVANT"}`. Trois
+     écritures s'enchaînent et c'est précisément ce qui rend le test propre :
+
+     | Écriture | D1 (primaire) | Supabase (secondaire) | Journal |
+     |---|---|---|---|
+     | validation `SELECT … FROM org_tasks WHERE id=? AND dossier_id=?` | trouve | — | lecture seule |
+     | `INSERT INTO org_expected_documents` | accepte | **refuse** (clé étrangère) | **1 entrée** |
+     | `INSERT INTO org_audit_log` | accepte | accepte (aucune clé étrangère) | — |
+
+     L'application répond **201** : le primaire a réussi, l'échec du second rang
+     est invisible pour l'utilisateur. C'est voulu.
+
+  3. **LA PREUVE** — `GET /internal/backend` doit afficher `forward_gap`
+     renseigné **et `outbox: 1`**. C'est le seul lien du dispositif jamais tiré.
+
+  4. **Sortie automatique, sans accès PostgreSQL.** Rejouer la seule écriture
+     manquante échouerait : le parent est toujours absent de Supabase, la
+     clé étrangère refuse de nouveau et `repairForwardGap` ne fait que
+     conserver ce qui échoue encore. On précède donc le journal de l'INSERT du
+     parent, mêmes colonnes et mêmes paramètres (`created_at` en valeur
+     explicite, jamais `datetime('now')` — syntaxe SQLite que PG refuse) :
+
+     ```bash
+     # 1. relever l'entrée écrite par markForwardGap
+     wrangler kv key get --namespace-id 9becacff… --remote __backend/outbox
+     # 2. la réécrire avec l'INSERT du parent en tête, puis :
+     POST /internal/resync   →   {"repair":{"ok":true,"rows":2}}
+     ```
+
+     Le rejeu est ordonné dans l'ordre du tableau : le parent part en premier,
+     l'enfant le suit. Puis la copie Supabase → D1 se déroule normalement.
+
+  5. **Nettoyage par l'application** — les deux endpoints existent et passent
+     par la double écriture, donc les deux bases sont nettoyées sans requête
+     SQL manuelle, dans cet ordre (enfant avant parent) :
+
+     ```
+     DELETE /api/org/dossiers/<DOSSIER_REEL>/documents/<id du document>
+     DELETE /api/org/dossiers/<DOSSIER_REEL>/tasks/TESTGAPTASK
+     ```
+
+  6. **État final attendu** : `forward_gap:null`, `outbox:0`, `backend:"d1"`,
+     `d1_state:"clean"`, `last_resync` avancé.
+
+  Coût : **une copie complète**, soit **~36 750 unités facturées sur les
+  100 000 du quota quotidien (≈ 37 %)** — voir le paragraphe du coût réel d'une
+  copie plus haut : ce n'est pas le nombre de lignes copiées qui compte. C'est
+  pourquoi on la fait après remise à zéro à 00:00 UTC ; sur un quota vierge,
+  il reste largement de quoi absorber le test et l'activité de la journée.
+  Seul résidu voulu : une entrée `document_added` libellée « TEST ECART AVANT »
+  dans le journal d'audit — trace assumée de l'opération.
+
+
+- **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
+  Les endpoints `/internal/register|heartbeat|cloud_mode` et les clés KV
+  `__local/*` n'existent plus ; le paquet `api/local` reste dans le dépôt mais
+  n'est plus joignable. Il n'y a donc plus d'étape manuelle de bascule locale.
+- Tests : `cd api && npm test` → **101 tests**, dont la double écriture (avec la
+  conservation des paramètres des écritures manquantes), la synchronisation sur
+  doubles et la conservation de corps.
 

@@ -46,6 +46,33 @@ export default function OrgComptableDetail() {
     return dt.toLocaleDateString('fr-TN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   };
 
+  // Presence : derniere connexion (last_seen_at = UTC SQLite, heure locale TN = UTC+1)
+  const parseUtc = (s?: string | null) => (s ? Date.parse(String(s).replace(' ', 'T') + 'Z') : 0);
+  const seenS = parseUtc(c.last_seen_at);
+  const online = seenS > 0 && Math.floor(Date.now() / 1000) - Math.floor(seenS / 1000) < 180;
+  const fmtAgo = (s?: string | null) => {
+    const t = parseUtc(s);
+    if (!t) return 'jamais connecté';
+    const diff = Math.floor(Date.now() / 1000) - Math.floor(t / 1000);
+    if (diff < 60) return "à l'instant";
+    if (diff < 3600) return `il y a ${Math.floor(diff / 60)} min`;
+    const loc = new Date(t + 3600000);
+    const hhmm = `${String(loc.getUTCHours()).padStart(2, '0')}h${String(loc.getUTCMinutes()).padStart(2, '0')}`;
+    if (diff < 86400) {
+      const h = Math.floor(diff / 3600);
+      return h < 3 ? `il y a ${h} h ${Math.floor((diff % 3600) / 60)} min` : `il y a ${h} h`;
+    }
+    if (diff < 172800) return `hier à ${hhmm}`;
+    if (diff < 604800) return `il y a ${Math.floor(diff / 86400)} j`;
+    return `le ${String(loc.getUTCDate()).padStart(2, '0')}/${String(loc.getUTCMonth() + 1).padStart(2, '0')}/${loc.getUTCFullYear()} à ${hhmm}`;
+  };
+  const agoFull = (s?: string | null) => {
+    const t = parseUtc(s);
+    if (!t) return 'Aucune connexion enregistrée';
+    const loc = new Date(t + 3600000);
+    return `Dernière connexion : ${String(loc.getUTCDate()).padStart(2, '0')}/${String(loc.getUTCMonth() + 1).padStart(2, '0')}/${loc.getUTCFullYear()} ${String(loc.getUTCHours()).padStart(2, '0')}:${String(loc.getUTCMinutes()).padStart(2, '0')} (UTC+1)`;
+  };
+
   const STATUS_COLORS: Record<string, string> = {
     fait: 'text-emerald-600 bg-emerald-50',
     en_cours: 'text-gray-500 bg-gray-50',
@@ -82,9 +109,21 @@ export default function OrgComptableDetail() {
           </h2>
           <p className="text-sm text-gray-500">{c.email} • Membre depuis {new Date(c.created_at).toLocaleDateString('fr-TN')}</p>
         </div>
-        <span className={`px-3 py-1 rounded-full text-xs font-medium ${c.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
-          {c.is_active ? 'Actif' : 'Inactif'}
-        </span>
+        <div className="flex items-center gap-2">
+          {/* Presence : en ligne (vu < 3 min) ou derniere connexion relative */}
+          <span
+            title={agoFull(c.last_seen_at)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
+              online ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-400'}`} />
+            {online ? 'En ligne' : fmtAgo(c.last_seen_at)}
+          </span>
+          <span className={`px-3 py-1 rounded-full text-xs font-medium ${c.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+            {c.is_active ? 'Actif' : 'Inactif'}
+          </span>
+        </div>
       </div>
 
       {/* Active timer alert */}

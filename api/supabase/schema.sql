@@ -544,3 +544,14 @@ CREATE INDEX IF NOT EXISTS idx_task_collab_task ON org_task_collaborators(task_i
 CREATE UNIQUE INDEX IF NOT EXISTS idx_org_dossiers_client_exercice ON org_dossiers(client_id, exercice);
 
 CREATE INDEX IF NOT EXISTS idx_org_task_templates_client ON org_task_templates(client_id);
+
+-- 0036 : /api/org/tasks/recent trie sur
+--   ORDER BY created_at DESC, id DESC LIMIT 10
+-- et est sonde toutes les 30 s par chaque poste ouvert (composant
+-- NouvellesTaches, present sur le tableau de bord expert ET comptable).
+-- Sans cet index, SQLite collecte puis trie toute la table avant d'en
+-- garder 10 : 5954 lignes lues par appel mesurees en production le
+-- 2026-10-10. Les deux colonnes sont necessaires : (created_at) seul
+-- laisserait un TEMP B-TREE pour le depouillement par id, ce qui
+-- annule tout gain. Voir migrations/0036_index_tasks_created.sql.
+CREATE INDEX IF NOT EXISTS idx_org_tasks_created ON org_tasks(created_at, id);

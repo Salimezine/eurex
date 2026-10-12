@@ -58,7 +58,14 @@ export default function NouvellesTaches({ exercice }: { exercice?: number | null
       }).catch(() => {});
     };
     pull();
-    const iv = setInterval(pull, 30000);
+    // Pause quand l'onglet est cache, comme les trois autres sondeurs de l'app
+    // (OrgNotifications, OrgDashboardExpert x2). Mesure en production le
+    // 2026-10-10 : la requete du serveur balayait 5954 lignes de org_tasks a
+    // chaque appel (USE TEMP B-TREE FOR ORDER BY, aucun index sur created_at),
+    // soit ~714 000 lignes lues par poste et par heure - de quoi epuiser a lui
+    // seul le quota gratuit de D1 (5 M de lignes/jour) en une journee. Le
+    // rafraichissement au retour sur l'onglet est assure par onFocus ci-dessous.
+    const iv = setInterval(() => { if (!document.hidden) pull(); }, 30000);
     const onFocus = () => pull();
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onFocus);
