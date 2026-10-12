@@ -6,45 +6,65 @@ import { getDefaultPlanComptable } from '../../lib/achatsPlanComptableDefault';
 import { savePlanForDossier, deletePlanForDossier, planSourceForDossier, parsePlanFromFile } from '../../lib/achatsPlanStore';
 
 interface Dossier { id: string; societe_id: string; nom: string; mois: number; annee: number; statut: string; nb_factures: number; nb_ecritures: number; }
+interface Societe { id: string; nom: string; }
 
 const STORAGE_KEY_DOSSIERS = 'achats_dossiers';
-const SOCIETE_ID = 'proyash-metropoli';
+const STORAGE_KEY_SOCIETES = 'achats_societes';
+const DEFAULT_SOCIETE: Societe = { id: 'proyash-metropoli', nom: 'PROYASH METROPOLI' };
 
-function loadDossiers(): Dossier[] {
+function loadSocietes(): Societe[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SOCIETES);
+    if (!raw) return [DEFAULT_SOCIETE];
+    const arr: Societe[] = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length === 0) return [DEFAULT_SOCIETE];
+    return arr.filter(s => s && s.id && s.nom);
+  } catch { return [DEFAULT_SOCIETE]; }
+}
+function saveSocietes(societes: Societe[]) {
+  try { localStorage.setItem(STORAGE_KEY_SOCIETES, JSON.stringify(societes)); } catch {}
+}
+function loadAllDossiers(): Dossier[] {
   try {
     const all: Dossier[] = JSON.parse(localStorage.getItem(STORAGE_KEY_DOSSIERS) || '[]');
-    return all.filter(d => d.societe_id === SOCIETE_ID);
+    return Array.isArray(all) ? all : [];
   } catch { return []; }
 }
 function saveDossiers(dossiers: Dossier[]) {
-  try {
-    const all: Dossier[] = JSON.parse(localStorage.getItem(STORAGE_KEY_DOSSIERS) || '[]');
-    const others = all.filter(d => d.societe_id !== SOCIETE_ID);
-    localStorage.setItem(STORAGE_KEY_DOSSIERS, JSON.stringify([...others, ...dossiers]));
-  } catch {}
+  try { localStorage.setItem(STORAGE_KEY_DOSSIERS, JSON.stringify(dossiers)); } catch {}
 }
 function genId() { return Math.random().toString(36).substring(2, 10) + Date.now().toString(36); }
 
 export default function AchatsSocietes() {
   const navigate = useNavigate();
   const [dossiers, setDossiers] = useState<Dossier[]>([]);
+  const [societes, setSocietes] = useState<Societe[]>([DEFAULT_SOCIETE]);
+  const [selectedSocieteId, setSelectedSocieteId] = useState<string>(DEFAULT_SOCIETE.id);
+  const [newSocieteNom, setNewSocieteNom] = useState('');
+  const [societeErr, setSocieteErr] = useState('');
   const [newDossierMonth, setNewDossierMonth] = useState('');
   const [newDossierNom, setNewDossierNom] = useState('');
+  const [dossierErr, setDossierErr] = useState('');
   const [planMode, setPlanMode] = useState<'default' | 'upload'>('default');
   const [pendingPlanFile, setPendingPlanFile] = useState<File | null>(null);
   const [planUploadErr, setPlanUploadErr] = useState('');
   const [defaultPlan, setDefaultPlan] = useState<PlanComptable | null>(null);
 
   useEffect(() => {
-    let loadedDossiers = loadDossiers();
+    const loadedSocietes = loadSocietes();
+    saveSocietes(loadedSocietes);
+    setSocietes(loadedSocietes);
+    setSelectedSocieteId(loadedSocietes[0].id);
+
+    let loadedDossiers = loadAllDossiers();
     const def = getDefaultPlanComptable();
     setDefaultPlan(def);
 
     if (loadedDossiers.length === 0) {
       const now = new Date();
       const d: Dossier = {
-        id: genId(), societe_id: SOCIETE_ID,
-        nom: 'PROYASH METROPOLI', mois: now.getMonth() + 1, annee: now.getFullYear(),
+        id: genId(), societe_id: loadedSocietes[0].id,
+        nom: loadedSocietes[0].nom, mois: now.getMonth() + 1, annee: now.getFullYear(),
         statut: 'brouillon', nb_factures: 0, nb_ecritures: 0,
       };
       loadedDossiers = [d];
@@ -59,13 +79,54 @@ export default function AchatsSocietes() {
     setDossiers(loadedDossiers);
   }, []);
 
+  const selectedSociete = societes.find(s => s.id === selectedSocieteId) || societes[0];
+  const visibleDossiers = dossiers.filter(d => d.societe_id === selectedSociete.id);
+
+  const createSociete = () => {
+    const nom = newSocieteNom.trim().toUpperCase();
+    if (!nom) { setSocieteErr('Nom de société requis'); return; }
+    if (societes.some(s => s.nom.toUpperCase() === nom)) { setSocieteErr('Société déjà existante'); return; }
+    const slug = nom.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'societe';
+    const s: Societe = { id: `${slug}-${genId()}`, nom };
+    const updated = [...societes, s];
+    setSocietes(updated);
+    saveSocietes(updated);
+    setSelectedSocieteId(s.id);
+    setNewSocieteNom('');
+    setSocieteErr('');
+  };
+
+  const deleteSociete = (id: string) => {
+    if (societes.length <= 1) { setSocieteErr('Impossible : une société minimum'); return; }
+    const s = societes.find(x => x.id === id);
+    if (!s) return;
+    if (!confirm(`Supprimer ${s.nom} et ses dossiers ?`)) return;
+    const dossierIds = new Set(dossiers.filter(d => d.societe_id === id).map(d => d.id));
+    for (const did of dossierIds) deletePlanForDossier(did);
+    try {
+      const raw = localStorage.getItem('achats_dossier_data');
+      if (raw) {
+        const all = JSON.parse(raw);
+        for (const did of dossierIds) delete all[did];
+        localStorage.setItem('achats_dossier_data', JSON.stringify(all));
+      }
+    } catch {}
+    setDossiers(dossiers.filter(d => d.societe_id !== id));
+    const updated = societes.filter(x => x.id !== id);
+    setSocietes(updated);
+    saveSocietes(updated);
+    if (selectedSocieteId === id) setSelectedSocieteId(updated[0].id);
+    setSocieteErr('');
+  };
+
   const createDossier = async () => {
-    if (!newDossierMonth || !defaultPlan) return;
+    if (!newDossierMonth) { setDossierErr('Choisissez le mois/année du dossier'); return; }
+    if (!defaultPlan) { setDossierErr('Plan par défaut non chargé'); return; }
     const [y, m] = newDossierMonth.split('-').map(Number);
     const id = genId();
-    const nom = (newDossierNom.trim() || `PROYASH ${String(m).padStart(2, '0')}/${y}`);
+    const nom = (newDossierNom.trim() || `${selectedSociete.nom} ${String(m).padStart(2, '0')}/${y}`);
     const d: Dossier = {
-      id, societe_id: SOCIETE_ID,
+      id, societe_id: selectedSociete.id,
       nom, mois: m, annee: y,
       statut: 'brouillon', nb_factures: 0, nb_ecritures: 0,
     };
@@ -90,6 +151,7 @@ export default function AchatsSocietes() {
     saveDossiers(updated);
     setNewDossierMonth('');
     setNewDossierNom('');
+    setDossierErr('');
     setPlanMode('default');
     setPendingPlanFile(null);
     setPlanUploadErr('');
@@ -119,9 +181,36 @@ export default function AchatsSocietes() {
       <div className="flex items-center gap-3">
         <ShoppingCart size={28} className="text-orange-600" />
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">ACHATS — PROYASH METROPOLI</h1>
+          <h1 className="text-2xl font-bold text-gray-800">ACHATS — {selectedSociete.nom}</h1>
           <p className="text-sm text-gray-500">Factures d'achat, Plan comptable, Journal AC</p>
         </div>
+      </div>
+
+      {/* Sociétés */}
+      <div className="bg-white rounded-lg border p-4">
+        <h2 className="font-semibold text-gray-700 text-sm mb-3">Sociétés</h2>
+        <div className="flex gap-2 flex-wrap items-center mb-3">
+          {societes.map(s => (
+            <div key={s.id} className={`flex items-center gap-1 border rounded px-3 py-1.5 text-sm ${s.id === selectedSociete.id ? 'border-orange-500 bg-orange-50 text-orange-800 font-medium' : 'hover:bg-gray-50'}`}>
+              <button onClick={() => setSelectedSocieteId(s.id)}>{s.nom}</button>
+              {societes.length > 1 && (
+                <button onClick={() => deleteSociete(s.id)} title={`Supprimer ${s.nom}`} className="text-red-300 hover:text-red-600 ml-1"><Trash2 size={12} /></button>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2 flex-wrap items-end">
+          <div className="flex-1 min-w-[180px]">
+            <label className="text-xs text-gray-500 block mb-1">Nouvelle société</label>
+            <input value={newSocieteNom} onChange={e => { setNewSocieteNom(e.target.value); setSocieteErr(''); }}
+              onKeyDown={e => { if (e.key === 'Enter') createSociete(); }}
+              placeholder="TEBIB TUNISIE" className="border rounded px-3 py-2 text-sm w-full" />
+          </div>
+          <button onClick={createSociete} className="bg-gray-700 text-white px-3 py-2 rounded text-sm hover:bg-gray-800 flex items-center gap-1">
+            <Plus size={14} /> Ajouter société
+          </button>
+        </div>
+        {societeErr && <p className="text-xs text-red-600 mt-2">{societeErr}</p>}
       </div>
 
       {/* Plan Comptable par défaut */}
@@ -137,7 +226,7 @@ export default function AchatsSocietes() {
       {/* Nouveau dossier */}
       <div className="bg-white rounded-lg border p-4">
         <div className="flex items-center justify-between mb-3 gap-4 flex-wrap">
-          <h2 className="font-semibold text-gray-700 text-sm">Dossiers</h2>
+          <h2 className="font-semibold text-gray-700 text-sm">Dossiers — {selectedSociete.nom}</h2>
         </div>
 
         {/* Form create */}
@@ -145,23 +234,24 @@ export default function AchatsSocietes() {
           <div className="flex gap-3 flex-wrap items-end">
             <div>
               <label className="text-xs text-gray-500 block mb-1">Mois/Année</label>
-              <input type="month" value={newDossierMonth} onChange={e => setNewDossierMonth(e.target.value)} className="border rounded px-3 py-2 text-sm" />
+              <input type="month" value={newDossierMonth} onChange={e => { setNewDossierMonth(e.target.value); setDossierErr(''); }} className="border rounded px-3 py-2 text-sm" />
             </div>
             <div className="flex-1 min-w-[180px]">
               <label className="text-xs text-gray-500 block mb-1">Nom du dossier</label>
-              <input value={newDossierNom} onChange={e => setNewDossierNom(e.target.value)} placeholder="PROYASH 10/2026" className="border rounded px-3 py-2 text-sm w-full" />
+              <input value={newDossierNom} onChange={e => setNewDossierNom(e.target.value)} placeholder={`${selectedSociete.nom} 10/2026`} className="border rounded px-3 py-2 text-sm w-full" />
             </div>
             <button onClick={createDossier} className="bg-orange-500 text-white px-3 py-2 rounded text-sm hover:bg-orange-600 flex items-center gap-1">
               <Plus size={14} /> Nouveau dossier
             </button>
           </div>
+          {dossierErr && <p className="text-xs text-red-600">{dossierErr}</p>}
 
           <div className="space-y-2">
             <label className="text-xs text-gray-500 block">Plan comptable du dossier</label>
             <div className="flex gap-4 flex-wrap text-sm">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="radio" checked={planMode === 'default'} onChange={() => { setPlanMode('default'); setPendingPlanFile(null); setPlanUploadErr(''); }} />
-                Plan PROYASH par défaut
+                Plan par défaut
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="radio" checked={planMode === 'upload'} onChange={() => setPlanMode('upload')} />
@@ -185,11 +275,11 @@ export default function AchatsSocietes() {
           </div>
         </div>
 
-        {dossiers.length === 0 ? (
-          <p className="text-xs text-gray-400">Aucun dossier. Créez-en un pour commencer.</p>
+        {visibleDossiers.length === 0 ? (
+          <p className="text-xs text-gray-400">Aucun dossier pour {selectedSociete.nom}. Créez-en un pour commencer.</p>
         ) : (
           <div className="space-y-2">
-            {dossiers.map(d => (
+            {visibleDossiers.map(d => (
               <div key={d.id} className="flex items-center justify-between border rounded px-3 py-2 hover:bg-gray-50">
                 <div className="flex items-center gap-3">
                   <FolderOpen size={16} className="text-orange-500" />
