@@ -1,5 +1,65 @@
 import { describe, expect, it } from 'vitest';
 import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency } from '../achatsAI';
+import { matchAchatCompte, type PlanComptable } from '../achatsPlanComptable';
+
+// Plan minimal façon TEBIB : SANS 606600 ni 436663 (absents du vrai fichier)
+function tebibLikePlan(): PlanComptable {
+  const mk = (code: string, libelle: string) => ({ code, libelle, nature: 'Comptable' as const, sens: 'D' as const });
+  const list = [
+    mk('607000', 'Achats de marchandises'),
+    mk('601000', 'Matieres premieres'),
+    mk('436660', 'TVA DEDUCTIBLE'),
+    mk('436670', 'TVA autre taux'),
+    mk('401000', 'FOURNISSEURS BIENS ET SERVICES'),
+    mk('401999', 'FRS DIVERS'),
+  ];
+  const comptes = new Map(list.map(c => [c.code, c]));
+  const fournisseurs = new Map([['401000', comptes.get('401000')!], ['401999', comptes.get('401999')!]]);
+  const allByCode: Record<string, any> = {};
+  for (const c of list) allByCode[c.code] = c;
+  return { comptes, fournisseurs, achats: [comptes.get('607000')!, comptes.get('601000')!], tva: [comptes.get('436660')!, comptes.get('436670')!], taxes: [], allByCode };
+}
+
+describe('ACHATS plan dossier (TEBIB)', () => {
+  it('TVA jamais gonflée: HT mal lu, la TVA imprimée est gardée telle quelle', () => {
+    // HT lu 95 au lieu de 100, TVA imprimée 19, TTC 119 → TVA=19 (pas max(19, 24)=24)
+    const inv: any = { numero: 'F-TVA', date: '2026-09-05', fournisseur: 'TEST', ht0: 0, ht19: 95, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const es = buildBalancedEcritures(inv, '607000', '401999');
+    const tvaLine = es.find(e => e.compte === '436660');
+    expect(tvaLine!.montant).toBeCloseTo(19, 3);
+    const achat = es.find(e => e.compte === '607000')!;
+    expect(achat.montant).toBeCloseTo(100, 3); // écart résiduel dans l'achat, TTC fait foi
+    const totalD = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const totalC = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(totalD).toBeCloseTo(119, 3);
+    expect(totalC).toBeCloseTo(119, 3);
+  });
+
+  it('plan sans 436663: la TVA 7% va sur un autre 436xxx du plan', () => {
+    const inv: any = { numero: 'F-TVA7', date: '2026-09-05', fournisseur: 'TEST', ht0: 100, ht19: 0, tva19: 0, tva7: 7, fodec: 0, timbre: 0, ttc: 107 };
+    const es = buildBalancedEcritures(inv, '607000', '401999', tebibLikePlan());
+    expect(es.find(e => e.compte === '436663')).toBeUndefined();
+    const tva7 = es.find(e => e.libelle.includes('7%'))!;
+    expect(tva7).toBeDefined();
+    expect(tva7.compte).toBe('436670');
+    expect(tva7.montant).toBeCloseTo(7, 3);
+  });
+
+  it('plan sans 436660: la TVA 19% va sur un autre 436xxx du plan', () => {
+    const plan = tebibLikePlan();
+    plan.comptes.delete('436660');
+    const inv: any = { numero: 'F-TVA19', date: '2026-09-05', fournisseur: 'TEST', ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119 };
+    const es = buildBalancedEcritures(inv, '607000', '401999', plan);
+    const tva = es.find(e => e.libelle.includes('19%'))!;
+    expect(tva.compte).toBe('436670');
+  });
+
+  it('matchAchatCompte sans 606600: repli sur un 6xxx du plan', () => {
+    const c = matchAchatCompte(tebibLikePlan(), 'fournitures diverses inconnues');
+    expect(c).not.toBeNull();
+    expect(c!.code).toMatch(/^6\d{5}$/);
+  });
+});
 
 describe('ACHATS rules', () => {
   it('fixDate rejette une année trop éloignée du lot (2018 → 2026)', () => {

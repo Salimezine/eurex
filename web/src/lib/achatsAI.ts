@@ -102,7 +102,7 @@ RÈGLES CRITIQUES (TOUJOURS les respecter):
 
 3. COHÉRENCE: Si la somme des lignes ≠ Total imprimé, le montant net à payer (chiffré + toutes lettres) fait foi.
 
-4. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur de la facture. Le fournisseur est en en-tête du document.
+4. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur de la facture. Le fournisseur est en en-tête du document.
 
 5. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 
@@ -490,7 +490,7 @@ export async function parseInvoiceWithAI(
 RÈGLES CRITIQUES À RESPECTER:
 1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
-3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
+3. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
 6. REMISE: Si une remise est imprimée (DT ou %), extrais-la dans "remise" (0 si absente).
@@ -585,7 +585,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
 RÈGLES CRITIQUES À RESPECTER:
 1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
-3. FOURNISSEUR: Ne confonds PAS le client (PROYASH METROPOLI) avec l'émetteur. Le fournisseur est en en-tête.
+3. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur. Le fournisseur est en en-tête.
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
 6. IMAGE FLOUE: Lis d'abord le TOTAL / montant en toutes lettres. Ne devine pas un chiffre illisible (0 plutôt qu'inventer).
@@ -752,7 +752,7 @@ export async function generateEcrituresWithAI(
 ): Promise<EcritureAchat[]> {
   const fournText = getFournisseursText(plan);
 
-  let compteAchat = pickCompteAchat(invoice.description);
+  let compteAchat = pickCompteAchat(invoice.description, plan);
   let compteFournisseur = pickCompteFournisseur(invoice.fournisseur, plan);
 
   try {
@@ -788,7 +788,7 @@ Réponds UNIQUEMENT ce JSON.`,
     // garde le fallback
   }
 
-  return buildBalancedEcritures(invoice, compteAchat, compteFournisseur);
+  return buildBalancedEcritures(invoice, compteAchat, compteFournisseur, plan);
 }
 
 function getAchatComptesText(plan: PlanComptable): string {
@@ -800,20 +800,26 @@ function getAchatComptesText(plan: PlanComptable): string {
   return lines.join('\n');
 }
 
-function pickCompteAchat(description: string): string {
-  let compteAchat = '606600';
+function pickCompteAchat(description: string, plan?: PlanComptable): string {
+  let preferred = '606600';
   if (description) {
     const d = description.toLowerCase();
-    if (/marchandise|produits?|alimentaire/.test(d)) compteAchat = '607000';
-    else if (/mati[eè]re/.test(d)) compteAchat = '601000';
-    else if (/entretien|maintenance/.test(d)) compteAchat = '601002';
-    else if (/bureau/.test(d)) compteAchat = '602400';
-    else if (/transport|livraison/.test(d)) compteAchat = '624100';
-    else if (/location|loyer/.test(d)) compteAchat = '613002';
-    else if (/assurance/.test(d)) compteAchat = '616000';
-    else if (/quincaill/.test(d)) compteAchat = '601010';
+    if (/marchandise|produits?|alimentaire/.test(d)) preferred = '607000';
+    else if (/mati[eè]re/.test(d)) preferred = '601000';
+    else if (/entretien|maintenance/.test(d)) preferred = '601002';
+    else if (/bureau/.test(d)) preferred = '602400';
+    else if (/transport|livraison/.test(d)) preferred = '624100';
+    else if (/location|loyer/.test(d)) preferred = '613002';
+    else if (/assurance/.test(d)) preferred = '616000';
+    else if (/quincaill/.test(d)) preferred = '601010';
   }
-  return compteAchat;
+  if (!plan) return preferred;
+  // Le code prefere doit exister dans LE plan du dossier (ex: 606600 absent du plan TEBIB)
+  if (plan.comptes.get(preferred)?.nature === 'Comptable') return preferred;
+  for (const [code, c] of plan.comptes) {
+    if (/^6\d{5}$/.test(code) && c.nature === 'Comptable') return code;
+  }
+  return preferred; // plan sans 6xxx : la verification le signalera en erreur
 }
 
 function pickCompteFournisseur(fournisseur: string, plan: PlanComptable): string {
@@ -824,7 +830,12 @@ function pickCompteFournisseur(fournisseur: string, plan: PlanComptable): string
       if (c.libelle.toUpperCase().includes(fournisseur.toUpperCase())) return code;
     }
   }
-  return '401999';
+  // 401999 uniquement s'il existe dans LE plan, sinon 1er 401xxx du plan
+  if (plan.comptes.get('401999')?.nature === 'Comptable') return '401999';
+  for (const [code, c] of plan.comptes) {
+    if (/^401\d{3}$/.test(code) && c.nature === 'Comptable') return code;
+  }
+  return '401999'; // aucun 401xxx : la verification le signalera en erreur
 }
 
 function frsTag(invoice: AchatInvoice): string {
@@ -841,8 +852,18 @@ function safeDocNum(invoice: AchatInvoice): string {
   return `NC-${frsTag(invoice)}-${datePart}-${String(invoice.ttc).replace('.', '_')}`;
 }
 
-function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: number; c19: number } {
-  if (tva <= 0.005) return { c7: 0, c19: 0 };
+// Compte TVA depuis LE plan du dossier (ex: 436663 absent du plan TEBIB).
+// Sans plan (tests) : le code prefere historique.
+function resolveTvaAccount(plan: PlanComptable | undefined, preferred: string, exclude?: string): string {
+  if (!plan) return preferred;
+  if (plan.comptes.get(preferred)?.nature === 'Comptable') return preferred;
+  for (const [code, c] of plan.comptes) {
+    if (/^436\d{3}$/.test(code) && c.nature === 'Comptable' && code !== exclude) return code;
+  }
+  return preferred; // aucun 436xxx : la verification le signalera en erreur
+}
+
+function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: number; c19: number } {  if (tva <= 0.005) return { c7: 0, c19: 0 };
   if (tva7Model > 0 && tva19Model > 0) {
     const r = tva7Model / (tva7Model + tva19Model);
     const c7 = Math.round(tva * r * 1000) / 1000;
@@ -852,7 +873,7 @@ function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: num
   return { c7: 0, c19: round3(tva) };
 }
 
-export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string): EcritureAchat[] {
+export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string, plan?: PlanComptable): EcritureAchat[] {
   const docNum = safeDocNum(invoice);
   const date_operation = invoice.date;
   // Règles 7 & 11: lignes incertaines (n° non lisible, date absente, tiers illisible) → à vérifier,
@@ -887,7 +908,9 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
     if (Math.abs(implied) < 0.011) {
       tva = 0;
     } else if (tvaModel > 0) {
-      tva = Math.max(tvaModel, Math.max(0, implied));
+      // JAMAIS d'invention : la TVA comptabilisee = la TVA lue sur le document.
+      // L'ecart residuel eventuel reste dans l'achat (achat = ttc - tva, equilibre garanti).
+      tva = tvaModel;
     } else {
       tva = 0; // aucun taux affiché: écart résiduel → tout va en achat
     }
@@ -915,8 +938,10 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
     entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: achat });
   }
   const { c7, c19 } = splitTVA(tva, invoice.tva7, invoice.tva19);
-  if (c19 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436660', libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: c19 });
-  if (c7 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: '436663', libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: c7 });
+  const tva19Account = resolveTvaAccount(plan, '436660');
+  const tva7Account = resolveTvaAccount(plan, '436663', tva19Account);
+  if (c19 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: tva19Account, libelle: 'TVA DEDUCTIBLE 19%', sens: 'D', montant: c19 });
+  if (c7 > 0.005) entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: tva7Account, libelle: 'TVA DEDUCTIBLE 7%', sens: 'D', montant: c7 });
   // FODEC: intégré au compte d'achat (602100), comme le timbre — jamais sur 436680
   // Règle 2+3: Le timbre ET le fodec sont inclus dans le compte d'achat
 
@@ -972,7 +997,7 @@ export function checkRemiseConsistency(
 
     // La remise doit être reflétée dans l'achat (libellé [REMISE…] ou montant net)
     const entries = ecritures.filter(e => e.numero_doc === inv.numero);
-    const achatEntry = entries.find(e => e.sens === 'D' && /^(60[127]|607)/.test(e.compte)) || entries.find(e => e.sens === 'D');
+    const achatEntry = entries.find(e => e.sens === 'D' && /^6/.test(e.compte)) || entries.find(e => e.sens === 'D');
     if (achatEntry && !achatEntry.libelle.includes('REMISE')) {
       const achatExpected = round3(Math.max(0, ttc > 0 ? ttc - tva : ht - remise + others));
       if (Math.abs(achatEntry.montant - achatExpected) > 0.03 && byInvoice.has(inv.numero)) {

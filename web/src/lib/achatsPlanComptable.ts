@@ -110,12 +110,16 @@ export function matchAchatCompte(plan: PlanComptable, description: string): Comp
     if (regex.test(d)) {
       for (const code of accounts) {
         const c = plan.comptes.get(code);
-        if (c) return c;
+        if (c && c.nature === 'Comptable') return c;
       }
     }
   }
 
-  return plan.comptes.get('606600') || null;
+  // Fallback : 1er 6xxxxx du plan (606600 n'existe pas dans tous les plans)
+  for (const [code, c] of plan.comptes) {
+    if (/^6\d{5}$/.test(code) && c.nature === 'Comptable') return c;
+  }
+  return null;
 }
 
 export function formatPlanComptable(plan: PlanComptable): string {
