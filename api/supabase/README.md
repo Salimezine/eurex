@@ -482,13 +482,25 @@ tourner sur Supabase, et le cron suivant reprend — l'opération est idempotent
   jamais. Le surcoût était la resync, relancée l'équivalent d'une quinzaine de
   copies complètes pendant une journée de test — **pas un problème
   d'exploitation**. Deux règles en découlent : une resync complète coûte
-  **~6 500 écritures, soit 6,5 % du quota d'un jour** (lancer avec
+  **~36 750 écritures, soit ~37 % du quota d'un jour** (lancer avec
   `{"dry":true}` d'abord) ; et un quota dépassé **ne se constate pas en
   essayant une écriture** — l'écriture de test a encore réussi à 110 k, la
-  limite n'est donc pas un refus immédiat. Enfin `--time-period 1h` et
-  `--time-period 24h` ont rendu **exactement les mêmes chiffres** : cette
-  option ne filtre rien, les statistiques sont figées — impossible d'en tirer
-  un débit, seule l'attribution par requête est exploitable.
+  limite n'est donc pas un refus immédiat.
+
+  **Le coût d'une copie n'est pas le nombre de lignes copiées.** D1
+  comptabilise ~6 lignes écrites pour **un seul** `INSERT … ON CONFLICT` à une
+  ligne : les 6 525 lignes de la copie reviennent à **36 750 unités facturées**,
+  mesuré le 2026-10-12 au tableau de bord Cloudflare (36,75 k écrits ce jour-là,
+  la copie de 00:05 étant la seule écriture de la journée). Relever « 6 500 »
+  comme coût conduit à sous-estimer la resync d'un facteur ~5,6. C'est
+  l'attribution par requête de `wrangler d1 insights` qui le montre, en
+  confrontant `avgRowsWritten` au nombre de lignes réelles.
+
+  Enfin, `--time-period` **filtre bien** — 1h, 6h, 12h et 24h ont rendu des
+  chiffres différents — mais certaines fenêtres se confondent (6h et 12h ont
+  donné le même total au chiffre près), et aucune ne coïncide avec la journée
+  de quota qui démarre à 00:00 UTC. La commande est donc inutilisable pour
+  calculer un reste ; seule l'attribution par requête l'est.
 
 ### Opérations
 
@@ -550,7 +562,7 @@ puis retombe sur Supabase ? ») se répond avec ce seul GET :
 | Quand | À constater |
 |---|---|
 | après 00:05 UTC **après une bascule** (mode `supabase`) | copie exécutée : `backend:"d1"`, `d1_state:"clean"`, **`last_resync` avancé** |
-| après 00:05 UTC **en temps normal** (mode `d1`) | journal `[resync] ignoree (backend d1)` : il n'y a rien de périmé à écraser. `last_resync` **ne bouge pas** — c'est voulu, et cela économise ~6 500 écritures par nuit |
+| après 00:05 UTC **en temps normal** (mode `d1`) | journal `[resync] ignoree (backend d1)` : il n'y a rien de périmé à écraser. `last_resync` **ne bouge pas** — c'est voulu, et cela économise ~36 750 écritures par nuit |
 | dans la journée, D1 à court de quota | `backend:"supabase"`, `d1_state:"dirty"`, `last_failover` renseigné |
 | retour manuel sur D1 entre-temps | **409** (`d1_state` = `dirty`) — refusé, c'est voulu |
 
@@ -635,10 +647,13 @@ la sortie « déjà sur D1 ». Conséquence pratique : dans l'état courant
   6. **État final attendu** : `forward_gap:null`, `outbox:0`, `backend:"d1"`,
      `d1_state:"clean"`, `last_resync` avancé.
 
-  Coût : **une copie complète** (~6 500 écritures, ≈ 6,5 % du quota quotidien),
-  c'est pourquoi on la fait après remise à zéro à 00:00 UTC. Seul résidu voulu :
-  une entrée `document_added` libellée « TEST ECART AVANT » dans le journal
-  d'audit — trace assumée de l'opération.
+  Coût : **une copie complète**, soit **~36 750 unités facturées sur les
+  100 000 du quota quotidien (≈ 37 %)** — voir le paragraphe du coût réel d'une
+  copie plus haut : ce n'est pas le nombre de lignes copiées qui compte. C'est
+  pourquoi on la fait après remise à zéro à 00:00 UTC ; sur un quota vierge,
+  il reste largement de quoi absorber le test et l'activité de la journée.
+  Seul résidu voulu : une entrée `document_added` libellée « TEST ECART AVANT »
+  dans le journal d'audit — trace assumée de l'opération.
 
 
 - **Le relais local a été retiré** : le Worker ne sert plus que D1 ou Supabase.
