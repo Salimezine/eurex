@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Upload, FileText, Table2, Trash2, Download, Zap, CheckCircle, ShieldCheck, Search, FileSpreadsheet, Plus, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AchatInvoice } from '../../lib/achatsParser';
-import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures, DuplicateGroup, RemapResult } from '../../lib/achatsAI';
+import { generateEcrituresWithAI, verifyEcrituresWithAI, verifyEcrituresLocally, EcritureAchat, VerificationResult, processFileWithAI, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures, flagClientAsFournisseur, DuplicateGroup, RemapResult } from '../../lib/achatsAI';
 import { PlanComptable, CompteComptable, searchComptes, getPlanSummary } from '../../lib/achatsPlanComptable';
 import { loadPlanForDossier, savePlanForDossier, planSourceForDossier, parsePlanFromFile } from '../../lib/achatsPlanStore';
 
@@ -49,6 +49,13 @@ function saveDossierData(id: string, factures: AchatInvoice[], ecritures: Ecritu
     all[id] = { factures, ecritures };
     localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(all));
   } catch {}
+}
+
+function loadSocieteNoms(): string[] {
+  try {
+    const arr: any[] = JSON.parse(localStorage.getItem('achats_societes') || '[]');
+    return arr.map(s => String(s?.nom || '')).filter(Boolean);
+  } catch { return []; }
 }
 
 export default function AchatsDossierPage() {
@@ -105,10 +112,13 @@ export default function AchatsDossierPage() {
     }
     // Anti-doublons : un fichier déjà importé est ignoré (même n° + même TTC)
     const { fresh, skipped } = dedupeInvoices(factures, newFactures);
+    // Fournisseur = client (société suivie) : on vide → tag [À VÉRIFIER MANUELLEMENT]
+    const flagged = flagClientAsFournisseur(fresh, loadSocieteNoms());
     const updatedFactures = [...factures, ...fresh];
     setFactures(updatedFactures);
     setUploading(false);
-    const dupNote = skipped > 0 ? `${skipped} doublon(s) ignoré(s). ` : '';
+    const dupNote = skipped > 0 ? `${skipped} doublon(s) ignoré(s). ` : ''
+      + (flagged.count > 0 ? `${flagged.count} fournisseur(s) = client → à vérifier. ` : '');
 
     if (fresh.length === 0 && files.length > 0) {
       setMsg(skipped > 0

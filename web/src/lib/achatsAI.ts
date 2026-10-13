@@ -82,7 +82,7 @@ function round3(n: number): number {
   return Math.round((n || 0) * 1000) / 1000;
 }
 
-function buildExtractionPrompt(plan: PlanComptable, planText: string, fournText: string): string {
+export function buildExtractionPrompt(plan: PlanComptable, planText: string, fournText: string): string {
   return `Extrais les données COMPLÈTES des factures d'achat tunisiennes sur cette page.
 
 IMPORTANT: la page peut contenir UNE seule facture OU PLUSIEURS factures collées (souvent un tableau récapitulatif).
@@ -457,6 +457,15 @@ export function normalizeInvoiceData(data: any): any {
     ttc = computedSum;
   }
 
+  // Garde-fou : HT == TVA (reçu de paiement ou montants dupliqués lus comme
+  // facture). Une vraie facture tunisienne n'a jamais TVA == HT (taux 0/7/19%).
+  const htTot = Math.round((ht0 + ht19 + ht7) * 1000) / 1000;
+  const tvaTot = Math.round((tva19 + tva7) * 1000) / 1000;
+  if (htTot > 0 && tvaTot > 0 && Math.abs(htTot - tvaTot) < 0.001) {
+    console.warn('[ACHATS] Lecture dégénérée rejetée (HT == TVA):', data.numero, data.fournisseur);
+    return null;
+  }
+
   const description = String(data.description || '').trim()
     || lignes.map((l: any) => String(l.designation || '').trim()).filter(Boolean).join(', ');
 
@@ -690,12 +699,15 @@ Réponds UNIQUEMENT en JSON valide, sans markdown:
   if (allInvoices.length === 0 && !isImage && !scannedPDF && text.replace(/\s/g, '').length >= 50) {
     console.log('[ACHATS] PDF texte → callAI multi-factures...');
     const textPrompt = `## TEXTE EXTRAIT DU PDF\n${text}\n\n${prompt}`;
-    const response = await callAI(textPrompt, systemPrompt);
-    const data = extractJSON(response);
-    if (data) {
-      addParsed(data, undefined, text);
-    } else {
-      console.warn('[ACHATS] Text AI JSON absent:', lastAIError || response?.substring(0, 120));
+    // 2 tentatives : le modèle renvoie parfois null/JSON invalide au 1er essai
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const response = await callAI(textPrompt, systemPrompt);
+      const data = extractJSON(response);
+      if (data) {
+        addParsed(data, undefined, text);
+        break;
+      }
+      console.warn(`[ACHATS] Text AI essai ${attempt} JSON absent:`, lastAIError || response?.substring(0, 120));
     }
   }
 
@@ -1007,6 +1019,25 @@ export function checkRemiseConsistency(
   }
 
   return checks;
+}
+
+// --- FOURNISSEUR = CLIENT (IA confond l'émetteur et la société du dossier) ---
+// Si le fournisseur lu est le nom d'une société suivie (un client ne se
+// facture pas à lui-même en achats), on le vide : l'écriture reçoit le tag
+// [À VÉRIFIER MANUELLEMENT] et l'utilisateur corrige dans l'onglet Factures.
+
+export function flagClientAsFournisseur(invoices: AchatInvoice[], societeNoms: string[]): { count: number } {
+  const norms = societeNoms.map(n => (n || '').trim().toUpperCase()).filter(Boolean);
+  if (norms.length === 0) return { count: 0 };
+  let count = 0;
+  for (const inv of invoices) {
+    const f = (inv.fournisseur || '').trim().toUpperCase();
+    if (f && norms.includes(f)) {
+      inv.fournisseur = '';
+      count++;
+    }
+  }
+  return { count };
 }
 
 // --- ANTI-DOUBLONS À L'IMPORT ---
@@ -1387,6 +1418,25 @@ export function verifyEcrituresLocally(
     detail: gDiff <= 0.011 ? `D=C=${globalD.toFixed(3)}` : `D=${globalD.toFixed(3)} ≠ C=${globalC.toFixed(3)} (écart ${gDiff.toFixed(3)})`,
   });
   if (gDiff > 0.011) errors++;
+
+  // Écart arithmétique signalé à l'extraction (sous-totaux ≠ TOTAL écrit) :
+  // montants relus avec doute (échelle ×1000 ?, colonne € au lieu de DT ?).
+  for (const [num, entries] of byFacture) {
+    if (entries.some(e => e.libelle.includes('Écart de calcul'))) {
+      checks.push({ name: `Écart arithmétique (${num || '?'})`, status: 'warning', detail: `Sous-totaux ≠ TOTAL écrit : montants suspects (échelle, devise, lecture). Vérifier HT/TVA/TTC sur le scan.` });
+      warnings++;
+    }
+  }
+
+  // Montants anormaux : une facture d'achat PME dépasse rarement 20 000 DT —
+  // au-delà, probable erreur d'échelle (×1000) ou de lecture à vérifier sur le scan.
+  for (const [num, entries] of byFacture) {
+    const t = round3(entries.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0));
+    if (t > 20000) {
+      checks.push({ name: `Montant élevé (${num || '?'})`, status: 'warning', detail: `TTC ${t.toFixed(3)} DT > 20 000 DT : vérifier l'échelle (×1000 ?) et le TOTAL sur le scan.` });
+      warnings++;
+    }
+  }
 
   for (const e of ecritures) {
     const compte = plan.comptes.get(e.compte);

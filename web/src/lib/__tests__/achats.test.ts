@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures } from '../achatsAI';
+import { fixDate, harmonizeDatesAndFournisseurs, buildBalancedEcritures, normalizeInvoiceData, verifyAndFixTVA, applyTVACorrections, checkRemiseConsistency, findDuplicateGroups, remapUnknownAccounts, dedupeInvoices, autoCleanEcritures, flagClientAsFournisseur, verifyEcrituresLocally } from '../achatsAI';
 import { matchAchatCompte, type PlanComptable } from '../achatsPlanComptable';
 
 // Plan minimal façon TEBIB : SANS 606600 ni 436663 (absents du vrai fichier)
@@ -162,6 +162,46 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     const r = autoCleanEcritures(once, tebibLikePlan());
     expect(r.notes).toHaveLength(0);
     expect(r.ecritures).toHaveLength(once.length);
+  });
+
+  it('flagClientAsFournisseur: client pris pour fournisseur → vidé', () => {
+    const invs: any[] = [
+      { id: 'a', numero: 'F1', fournisseur: 'TEBIB TUNISIE', ttc: 100 },
+      { id: 'b', numero: 'F2', fournisseur: 'tebib tunisie ', ttc: 50 },
+      { id: 'c', numero: 'F3', fournisseur: 'VRAI FOURNISSEUR', ttc: 30 },
+    ];
+    const { count } = flagClientAsFournisseur(invs, ['PROYASH METROPOLI', 'TEBIB TUNISIE']);
+    expect(count).toBe(2);
+    expect(invs[0].fournisseur).toBe('');
+    expect(invs[1].fournisseur).toBe('');
+    expect(invs[2].fournisseur).toBe('VRAI FOURNISSEUR');
+  });
+
+  it('verifyEcrituresLocally: TTC > 20000 → avertissement montant élevé', () => {
+    const inv: any = { numero: 'BIG', date: '2026-09-05', fournisseur: 'X', ht0: 0, ht19: 43554, tva19: 0, tva7: 0, fodec: 0, timbre: 0, ttc: 43554 };
+    const es = buildBalancedEcritures(inv, '607000', '401999');
+    const v = verifyEcrituresLocally(es, tebibLikePlan());
+    expect(v.checks.some(c => c.name.includes('Montant élevé') && c.status === 'warning')).toBe(true);
+  });
+
+  it('normalize: HT == TVA (reçu de paiement) → rejeté', () => {
+    expect(normalizeInvoiceData({ numero: 'R1', date: '2026-09-05', fournisseur: 'TT', ht0: 0, ht19: 176360, tva19: 176360, tva7: 0, fodec: 0, timbre: 0, ttc: 176360 })).toBeNull();
+    // cas normal untouched
+    expect(normalizeInvoiceData({ numero: 'F1', date: '2026-09-05', fournisseur: 'X', ht0: 0, ht19: 100, tva19: 19, ttc: 119 })).not.toBeNull();
+  });
+
+  it('verifyEcrituresLocally: tag Écart de calcul → avertissement', () => {
+    const es: any[] = [
+      { id: 'e1', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '607000', libelle: 'ACHAT X [Écart de calcul: sous-totaux (34.130) ≠ TOTAL écrit]', sens: 'D', montant: 30 },
+      { id: 'e2', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '401999', libelle: 'FRS X', sens: 'C', montant: 30 },
+    ];
+    const v = verifyEcrituresLocally(es, tebibLikePlan());
+    expect(v.checks.some(c => c.name.includes('Écart arithmétique') && c.status === 'warning')).toBe(true);
+    const es2: any[] = [
+      { id: 'e1', numero_doc: 'F2', date_operation: '2026-09-05', journal_code: 'AC', compte: '607000', libelle: 'ACHAT Y', sens: 'D', montant: 30 },
+      { id: 'e2', numero_doc: 'F2', date_operation: '2026-09-05', journal_code: 'AC', compte: '401999', libelle: 'FRS Y', sens: 'C', montant: 30 },
+    ];
+    expect(verifyEcrituresLocally(es2, tebibLikePlan()).checks.some(c => c.name.includes('Écart arithmétique'))).toBe(false);
   });
 });
 
