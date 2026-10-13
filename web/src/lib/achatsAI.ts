@@ -1,5 +1,5 @@
 import { AchatInvoice } from './achatsParser';
-import { PlanComptable, CompteComptable } from './achatsPlanComptable';
+import { PlanComptable, CompteComptable, ruleAccount } from './achatsPlanComptable';
 import * as pdfjsLib from 'pdfjs-dist';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs`;
@@ -484,7 +484,10 @@ export function normalizeInvoiceData(data: any): any {
     }
   }
 
-  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, remise, ttc, arith_note };
+  return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, remise, ttc, arith_note,
+    lignes: lignes
+      .map((l: any) => ({ designation: String(l.designation || '').trim(), montant_ht: parseNum(l.montant_ht || l.montant), taux_tva: parseNum(l.taux_tva) }))
+      .filter((l: { designation: string; montant_ht: number }) => l.designation && l.montant_ht > 0) };
 }
 
 export async function parseInvoiceWithAI(
@@ -566,6 +569,7 @@ Règles:
         description: data.description,
         ht0: data.ht0, ht19: data.ht19, tva19: data.tva19, tva7: data.tva7,
         fodec: data.fodec, timbre: data.timbre, remise: data.remise, ttc: data.ttc,
+        lignes: data.lignes,
       };
     }
   }
@@ -616,7 +620,7 @@ Réponds TOUJOURS en JSON valide (objet, tableau, ou null) sans aucun texte avan
           tva19: inv.tva19, tva7: inv.tva7, fodec: inv.fodec,
           timbre: inv.timbre, remise: inv.remise, ttc: inv.ttc,
           is_handwritten: true, raw_text: rawText.substring(0, 500), ocr_confidence: confidence,
-          page, arith_note: inv.arith_note,
+          page, arith_note: inv.arith_note, lignes: inv.lignes,
         });
         count++;
         console.log(`[ACHATS]   ✓ ${inv.numero || '(sans n°)'} ${inv.fournisseur || 'inconnu'} HT=${inv.ht0 + inv.ht19} TTC=${inv.ttc}`);
@@ -783,16 +787,25 @@ ${getAchatComptesText(plan)}
 
 ## CHOISIS uniquement les comptes pour cette facture (pas les montants):
 {
-  "compte_achat": "compte 6xxxxx adapté à la nature de l'achat (description)",
+  "compte_achat": "compte adapté à la nature de l'achat (voir exemples), EXACT depuis le PLAN",
   "compte_fournisseur": "compte 401xxx EXACT depuis FOURNISSEURS CONNUS, sinon 401999"
 }
+Exemples (si le compte existe dans le PLAN, sinon le plus proche du plan) :
+- loyer/bail → 614000 (syndic/copropriété → 614001)
+- eau/SONEDE → 606003, électricité/STEG → 606002
+- téléphone/mobile/TUNISIP → 626100, internet/FSI → 626200
+- matériel informatique (PC, écrans) → 228300 (immobilisation, pas une charge)
+- tenue comptable/honoraires → 622100, tickets resto/Pluxee → 617010
+- transport → 624100, assurance → 616000, entretien/nettoyage → 615000
+- marchandises → 607000, matières premières → 601000
 Réponds UNIQUEMENT ce JSON.`,
       'Tu es un expert-comptable tunisien spécialisé dans la comptabilisation de factures fournisseurs. Réponds uniquement avec le JSON demandé. Règles: timbre+fodec inclus dans 602100, jamais sur 437xxx ou 436680, TVA jamais inventée.'
     );
     const data = extractJSON(response);
     if (data) {
       const ac = String(data.compte_achat || '').trim();
-      if (/^6\d{5}$/.test(ac) && plan.comptes.has(ac)) compteAchat = ac;
+      // Tout compte 6 chiffres du plan (6xxx, mais aussi 228300 immo, 454000...)
+      if (/^\d{6}$/.test(ac) && plan.comptes.get(ac)?.nature === 'Comptable') compteAchat = ac;
       const fc = String(data.compte_fournisseur || '').trim();
       if (/^401\d{3}$/.test(fc) && plan.comptes.has(fc)) compteFournisseur = fc;
     }
@@ -807,22 +820,33 @@ function getAchatComptesText(plan: PlanComptable): string {
   const lines: string[] = [];
   for (const [code, c] of plan.comptes) {
     if (c.nature !== 'Comptable') continue;
-    if (code.startsWith('6')) lines.push(`${code} | ${c.libelle}`);
+    // 6xxx + immo informatique + retenue tickets resto (comptes d'achat hors 6xxx)
+    if (code.startsWith('6') || code === '228300' || code === '454000') lines.push(`${code} | ${c.libelle}`);
   }
   return lines.join('\n');
 }
 
 function pickCompteAchat(description: string, plan?: PlanComptable): string {
+  // Regles calibrees sur les ecritures de reference du cabinet (TEBIB 01-03/2026).
+  // L'ordre compte : specifique d'abord (syndic avant loyer, eau avant bureau...).
   let preferred = '606600';
   if (description) {
     const d = description.toLowerCase();
-    if (/marchandise|produits?|alimentaire/.test(d)) preferred = '607000';
-    else if (/mati[eè]re/.test(d)) preferred = '601000';
-    else if (/entretien|maintenance/.test(d)) preferred = '601002';
-    else if (/bureau/.test(d)) preferred = '602400';
+    if (/syndic|copropri/.test(d)) preferred = '614001';
+    else if (/loyer|location|bail|\bcle\b|\bsarl\b/.test(d)) preferred = '614000';
+    else if (/\beau\b|sonede/.test(d)) preferred = '606003';
+    else if (/electricit|edf|steg|kwh|energie|énergie/.test(d)) preferred = '606002';
+    else if (/ordinateur|pc\b|ecran|écran|informatique|imprimante|intel|dell/.test(d)) preferred = '228300';
+    else if (/tenue.*comptab|comptab|honoraires|expertise/.test(d)) preferred = '622100';
+    else if (/ticket.*rest|restaurant|pluxee|sodexo|repas|cantine/.test(d)) preferred = '617010';
+    else if (/internet|fsi|wifi|fibre|spacenet/.test(d)) preferred = '626200';
+    else if (/téléphone|telephone|mobile|telecom|gsm|fixe|tunisip/.test(d)) preferred = '626100';
     else if (/transport|livraison/.test(d)) preferred = '624100';
-    else if (/location|loyer/.test(d)) preferred = '613002';
     else if (/assurance/.test(d)) preferred = '616000';
+    else if (/entretien|maintenance|nettoyage|kss/.test(d)) preferred = '615000';
+    else if (/marchandise|produits?|alimentaire/.test(d)) preferred = '607000';
+    else if (/mati[eè]re/.test(d)) preferred = '601000';
+    else if (/bureau/.test(d)) preferred = '602400';
     else if (/quincaill/.test(d)) preferred = '601010';
   }
   if (!plan) return preferred;
@@ -883,6 +907,43 @@ function splitTVA(tva: number, tva7Model: number, tva19Model: number): { c7: num
   }
   if (tva7Model > 0) return { c7: round3(tva), c19: 0 };
   return { c7: 0, c19: round3(tva) };
+}
+
+// Ventilation multi-comptes : ex. loyer 2625 (614000) + syndic 170 (614001).
+// Chaque ligne à désignation est mappée par les règles ; si ≥2 comptes
+// distincts couvrent le HT, l'achat total est ventilé au prorata (TVA unique
+// inchangée, équilibre garanti par construction). Sinon null (ligne unique).
+function splitAchatLines(
+  invoice: AchatInvoice, achatTotal: number, compteAchat: string, plan: PlanComptable | undefined,
+): { compte: string; designation: string; montant: number }[] | null {
+  if (!plan || achatTotal <= 0.005) return null;
+  if (plan.comptes.get(compteAchat)?.nature !== 'Comptable') return null;
+  const lignes = invoice.lignes || [];
+  if (lignes.length < 2) return null;
+  const ht = round3(invoice.ht0 + invoice.ht19);
+  if (ht <= 0) return null;
+  const buckets = new Map<string, { ht: number; designation: string }>();
+  for (const l of lignes) {
+    const m = round3(l.montant_ht || 0);
+    if (m <= 0 || !l.designation) continue;
+    const code = ruleAccount(plan, l.designation) || compteAchat;
+    const cur = buckets.get(code) || { ht: 0, designation: l.designation };
+    cur.ht = round3(cur.ht + m);
+    buckets.set(code, cur);
+  }
+  if (buckets.size < 2) return null;
+  const sumHt = round3(Array.from(buckets.values()).reduce((s, b) => s + b.ht, 0));
+  // Les lignes doivent couvrir le HT (sinon : lecture partielle → ligne unique)
+  if (Math.abs(sumHt - ht) > Math.max(1, ht * 0.05)) return null;
+  const out: { compte: string; designation: string; montant: number }[] = [];
+  const entries = Array.from(buckets.entries());
+  let acc = 0;
+  entries.forEach(([compte, b], i) => {
+    const montant = i < entries.length - 1 ? round3(achatTotal * b.ht / sumHt) : round3(achatTotal - acc);
+    acc = round3(acc + montant);
+    if (montant > 0.005) out.push({ compte, designation: b.designation, montant });
+  });
+  return out.length > 1 ? out : null;
 }
 
 export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: string, compteFournisseur: string, plan?: PlanComptable): EcritureAchat[] {
@@ -946,7 +1007,12 @@ export function buildBalancedEcritures(invoice: AchatInvoice, compteAchat: strin
   }
 
   const entries: EcritureAchat[] = [];
-  if (achat > 0.005) {
+  const splits = splitAchatLines(invoice, achat, compteAchat, plan);
+  if (splits) {
+    for (const s of splits) {
+      entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: s.compte, libelle: lib + ` — ${s.designation}`, sens: 'D', montant: s.montant });
+    }
+  } else if (achat > 0.005) {
     entries.push({ id: genId(), numero_doc: docNum, date_operation, journal_code: 'AC', compte: compteAchat, libelle: lib, sens: 'D', montant: achat });
   }
   const { c7, c19 } = splitTVA(tva, invoice.tva7, invoice.tva19);
@@ -1009,7 +1075,7 @@ export function checkRemiseConsistency(
 
     // La remise doit être reflétée dans l'achat (libellé [REMISE…] ou montant net)
     const entries = ecritures.filter(e => e.numero_doc === inv.numero);
-    const achatEntry = entries.find(e => e.sens === 'D' && /^6/.test(e.compte)) || entries.find(e => e.sens === 'D');
+    const achatEntry = entries.find(e => e.sens === 'D' && /^(6|228300)/.test(e.compte)) || entries.find(e => e.sens === 'D');
     if (achatEntry && !achatEntry.libelle.includes('REMISE')) {
       const achatExpected = round3(Math.max(0, ttc > 0 ? ttc - tva : ht - remise + others));
       if (Math.abs(achatEntry.montant - achatExpected) > 0.03 && byInvoice.has(inv.numero)) {

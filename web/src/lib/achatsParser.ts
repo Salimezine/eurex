@@ -20,6 +20,8 @@ export interface AchatInvoice {
   ocr_confidence: number;
   page?: number;
   arith_note?: string;
+  /** lignes HT lues sur le document (pour ventilation multi-comptes) */
+  lignes?: { designation: string; montant_ht: number; taux_tva: number }[];
 }
 
 function genId(): string {

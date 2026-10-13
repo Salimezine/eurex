@@ -84,25 +84,43 @@ export function findFournisseurByName(plan: PlanComptable, name: string): Compte
 }
 
 export function matchAchatCompte(plan: PlanComptable, description: string): CompteComptable | null {
-  const d = description.toLowerCase();
+  const code = ruleAccount(plan, description);
+  if (code) return plan.comptes.get(code) || null;
+  // Fallback : 1er 6xxxxx du plan (606600 n'existe pas dans tous les plans)
+  for (const [c2, c] of plan.comptes) {
+    if (/^6\d{5}$/.test(c2) && c.nature === 'Comptable') return c;
+  }
+  return null;
+}
+
+// Règles de mapping description → compte, calibrées sur les écritures de
+// référence du cabinet (dossiers TEBIB 01-03/2026). Ne retient que les codes
+// présents dans LE plan (Comptables), sinon null (pas de fallback ici).
+export function ruleAccount(plan: PlanComptable, description: string): string | null {
+  const d = (description || '').toLowerCase();
+  if (!d) return null;
   const rules: [RegExp, string[]][] = [
+    [/syndic|copropri/, ['614001']],
+    [/loyer|location|bail|\bcle\b|\bsarl\b/, ['614000']],
+    [/\beau\b|sonede/, ['606003', '606012', '606013']],
+    [/electricit|edf|steg|kwh|energie|énergie/, ['606002', '606010', '606011']],
+    [/ordinateur|pc\b|ecran|écran|informatique|imprimante|intel|dell|materiel info|matériel info/, ['228300']],
+    [/tenue.*comptab|comptab|honoraires|expertise/, ['622100', '622000']],
+    [/ticket.*rest|restaurant|pluxee|sodexo|repas|cantine/, ['617010', '617000']],
+    [/internet|fsi|wifi|fibre|spacenet/, ['626200']],
+    [/telephone|téléphone|mobile|telecom|gsm|fixe|tunisip/, ['626100']],
+    [/transport|livraison|fret/, ['624100']],
+    [/location.*voit|leasing/, ['613002']],
+    [/assurance|prime.*assur/, ['616000']],
+    [/publicit|pub|marketing/, ['623000']],
+    [/bancaire|commission.*banq|agios/, ['627000']],
+    [/entretien|maintenance|reparation|réparation|nettoyage|kss/, ['615000']],
     [/marchandise|produits alimentaires|alimentaire|nourriture/, ['607000']],
     [/mati[eè]re premi[eè]re|MP\b/, ['601000']],
-    [/entretien|maintenance|r[eé]paration/, ['601002', '615000']],
     [/quincaillerie|outillage|outil/, ['601010']],
     [/consommable/, ['602100', '602200']],
-    [/fourniture.*(bureau|bureautique)/, ['602400', '606700']],
+    [/fourniture.*(bureau|bureautique)|bureau/, ['602400', '606700', '602100']],
     [/emballage/, ['602600', '602601']],
-    [/[eé]lectricit[eé]|EDF|kwh/, ['606002', '606010', '606011']],
-    [/eau|SONEDE/, ['606003', '606012', '606013']],
-    [/transport|livraison|fret/, ['624100']],
-    [/location|loyer|bail/, ['613002']],
-    [/assurance|prime.*assur/, ['616000']],
-    [/r[eé]paration.*clim|climatisation|frig/, ['615000']],
-    [/publicit[eé]|pub|marketing/, ['623000']],
-    [/honoraires|conseil|expertise/, ['622000']],
-    [/t[eé]l[eé]phone|internet|forfait/, ['626000']],
-    [/bancaire|commission.*banq|agios/, ['627000']],
     [/divers|autre/, ['606600']],
   ];
 
@@ -110,14 +128,9 @@ export function matchAchatCompte(plan: PlanComptable, description: string): Comp
     if (regex.test(d)) {
       for (const code of accounts) {
         const c = plan.comptes.get(code);
-        if (c && c.nature === 'Comptable') return c;
+        if (c && c.nature === 'Comptable') return code;
       }
     }
-  }
-
-  // Fallback : 1er 6xxxxx du plan (606600 n'existe pas dans tous les plans)
-  for (const [code, c] of plan.comptes) {
-    if (/^6\d{5}$/.test(code) && c.nature === 'Comptable') return c;
   }
   return null;
 }

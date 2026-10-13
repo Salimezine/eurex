@@ -12,6 +12,22 @@ function tebibLikePlan(): PlanComptable {
     mk('436670', 'TVA autre taux'),
     mk('401000', 'FOURNISSEURS BIENS ET SERVICES'),
     mk('401999', 'FRS DIVERS'),
+    mk('614000', 'Charges locatives et de copropriété'),
+    mk('614001', 'FRAIS SYNDIC'),
+    mk('606003', 'ACHATS NON STOCKES EAU'),
+    mk('606002', 'ACHATS NON STOCKES ELECTRICITE'),
+    mk('228300', 'MATERIEL INFORMATIQUE'),
+    mk('622100', 'FRAIS DE TENUE DE COMPTABILITE'),
+    mk('617010', 'FRAIS SUR ACHAT TICKETS RESTAURANTS'),
+    mk('617000', 'SERVICES EXTERIEUR'),
+    mk('626100', 'COMMUNICATIONS TELEPHONE'),
+    mk('626200', 'TELECOMM INTERNET'),
+    mk('454000', 'RETENUE TICKET REST'),
+    mk('624100', 'Transports sur achats'),
+    mk('616000', 'Primes assurances'),
+    mk('615000', 'ENTRETIENS ET REPARATIONS'),
+    mk('623000', 'Publicite'),
+    mk('627000', 'SERVICES BANCAIRES'),
   ];
   const comptes = new Map(list.map(c => [c.code, c]));
   const fournisseurs = new Map([['401000', comptes.get('401000')!], ['401999', comptes.get('401999')!]]);
@@ -190,8 +206,7 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     expect(normalizeInvoiceData({ numero: 'F1', date: '2026-09-05', fournisseur: 'X', ht0: 0, ht19: 100, tva19: 19, ttc: 119 })).not.toBeNull();
   });
 
-  it('verifyEcrituresLocally: tag Écart de calcul → avertissement', () => {
-    const es: any[] = [
+  it('verifyEcrituresLocally: tag Écart de calcul → avertissement', () => {    const es: any[] = [
       { id: 'e1', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '607000', libelle: 'ACHAT X [Écart de calcul: sous-totaux (34.130) ≠ TOTAL écrit]', sens: 'D', montant: 30 },
       { id: 'e2', numero_doc: 'F1', date_operation: '2026-09-05', journal_code: 'AC', compte: '401999', libelle: 'FRS X', sens: 'C', montant: 30 },
     ];
@@ -202,6 +217,66 @@ describe('ACHATS plan dossier (TEBIB)', () => {
       { id: 'e2', numero_doc: 'F2', date_operation: '2026-09-05', journal_code: 'AC', compte: '401999', libelle: 'FRS Y', sens: 'C', montant: 30 },
     ];
     expect(verifyEcrituresLocally(es2, tebibLikePlan()).checks.some(c => c.name.includes('Écart arithmétique'))).toBe(false);
+  });
+
+  // === MAPPING FAÇON ÉCRITURES DE RÉFÉRENCE (TEBIB 01-03/2026) ===
+  it.each([
+    ['LOYER SEPTEMBRE 2026', '614000'],
+    ['FRAIS SYNDIC COPROPRIETE', '614001'],
+    ['FACT SONEDE EAU', '606003'],
+    ['FACT STEG ELECTRICITE', '606002'],
+    ['2 PC DELL + ECRANS', '228300'],
+    ['TENUE COMPTABILITE 1ER TRIMESTRE', '622100'],
+    ['TICKETS RESTAURANTS PLUXEE', '617010'],
+    ['ABONNEMENT INTERNET FSI', '626200'],
+    ['FACT MOBILE TUNISIP', '626100'],
+    ['TRANSPORT MARCHANDISES', '624100'],
+    ['ASSURANCE LOCAUX', '616000'],
+    ['ENTRETIEN CLIMATISATION', '615000'],
+    ['MARCHANDISES ALIMENTAIRES', '607000'],
+  ])('référence %s → %s', (desc, code) => {
+    expect(matchAchatCompte(tebibLikePlan(), desc)?.code).toBe(code);
+  });
+
+  it('split loyer+syndic : 614000=2625 + 614001=170, TVA unique, équilibré', () => {
+    const inv: any = {
+      numero: 'LOYER-09', date: '2026-09-01', fournisseur: 'CLE SARL',
+      ht0: 0, ht19: 2795, tva19: 498.75, tva7: 0, fodec: 0, timbre: 0, ttc: 3293.75,
+      lignes: [
+        { designation: 'Loyer septembre', montant_ht: 2625, taux_tva: 19 },
+        { designation: 'Syndic', montant_ht: 170, taux_tva: 0 },
+      ],
+    };
+    const es = buildBalancedEcritures(inv, '614000', '401005', tebibLikePlan());
+    const loyer = es.find(e => e.compte === '614000')!;
+    const syndic = es.find(e => e.compte === '614001')!;
+    expect(loyer.montant).toBeCloseTo(2625, 3);
+    expect(syndic.montant).toBeCloseTo(170, 3);
+    expect(es.find(e => e.compte === '436660')!.montant).toBeCloseTo(498.75, 3);
+    const D = es.filter(e => e.sens === 'D').reduce((s, e) => s + e.montant, 0);
+    const C = es.filter(e => e.sens === 'C').reduce((s, e) => s + e.montant, 0);
+    expect(D).toBeCloseTo(3293.75, 3);
+    expect(C).toBeCloseTo(3293.75, 3);
+  });
+
+  it('pas de split : lignes ne couvrant pas le HT → ligne unique', () => {
+    const inv: any = {
+      numero: 'X1', date: '2026-09-05', fournisseur: 'Y',
+      ht0: 0, ht19: 1000, tva19: 190, tva7: 0, fodec: 0, timbre: 0, ttc: 1190,
+      lignes: [{ designation: 'Loyer partiel', montant_ht: 100, taux_tva: 19 }],
+    };
+    const es = buildBalancedEcritures(inv, '614000', '401999', tebibLikePlan());
+    expect(es.filter(e => e.sens === 'D' && e.compte !== '436660')).toHaveLength(1);
+  });
+
+  it('pas de split : une seule ligne → ligne unique', () => {
+    const inv: any = {
+      numero: 'X2', date: '2026-09-05', fournisseur: 'Y',
+      ht0: 0, ht19: 100, tva19: 19, tva7: 0, fodec: 0, timbre: 0, ttc: 119,
+      lignes: [{ designation: 'Marchandises', montant_ht: 100, taux_tva: 19 }],
+    };
+    const es = buildBalancedEcritures(inv, '607000', '401999', tebibLikePlan());
+    expect(es.filter(e => e.sens === 'D' && e.compte !== '436660')).toHaveLength(1);
   });
 });
 
