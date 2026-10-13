@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { orgApi, OrgComptable, OrgDossier, OrgClient, OrgVerifyTask } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
@@ -106,6 +106,22 @@ export default function OrgDashboardExpert() {
   };
 
   useEffect(() => { fetchDashboard(); }, [exercice]);
+
+  // Tâches non vérifiées par dossier / par comptable (depuis verifyTasks)
+  const unverifiedByDossier = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const vt of verifyTasks) m[vt.dossier_id] = (m[vt.dossier_id] || 0) + 1;
+    return m;
+  }, [verifyTasks]);
+  const unverifiedByComptable = useMemo(() => {
+    const compOf: Record<string, string> = Object.fromEntries(allDossiers.map(d => [d.id, d.comptable_id]));
+    const m: Record<string, number> = {};
+    for (const vt of verifyTasks) {
+      const cid = compOf[vt.dossier_id];
+      if (cid) m[cid] = (m[cid] || 0) + 1;
+    }
+    return m;
+  }, [verifyTasks, allDossiers]);
 
   // Presence en direct : rafraichit statut connecte + heures du jour toutes les 60s (pausé si onglet cache)
   useEffect(() => {
@@ -476,6 +492,11 @@ export default function OrgDashboardExpert() {
                         🔴 {c.task_stats.bloque_client} bloqué{c.task_stats.bloque_client > 1 ? 's' : ''} client
                       </span>
                     )}
+                    {(unverifiedByComptable[c.id] || 0) > 0 && (
+                      <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded-lg font-medium" data-testid={`unverified-comptable-${c.id}`}>
+                        ✅ {unverifiedByComptable[c.id]} à vérifier
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -528,6 +549,7 @@ export default function OrgDashboardExpert() {
                   <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Avancement</th>
                   <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Statut</th>
                   <th className="text-center px-5 py-3.5 font-semibold text-gray-600">Bloqué client</th>
+                  <th className="text-center px-5 py-3.5 font-semibold text-gray-600">À vérifier</th>
                 </tr>
               </thead>
               <tbody>
@@ -604,6 +626,18 @@ export default function OrgDashboardExpert() {
                           <AlertTriangle size={11} />
                           {d.task_stats.bloque_client}
                         </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4 text-center">
+                      {(unverifiedByDossier[d.id] || 0) > 0 && (
+                        <Link
+                          to={`/cabinet/dossier/${d.id}`}
+                          data-testid="unverified-dossier"
+                          title={`${unverifiedByDossier[d.id]} tâche(s) en attente de vérification`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-semibold hover:bg-amber-200 transition-colors"
+                        >
+                          ✅ {unverifiedByDossier[d.id]}
+                        </Link>
                       )}
                     </td>
                   </tr>
