@@ -102,7 +102,7 @@ RÈGLES CRITIQUES (TOUJOURS les respecter):
 
 3. COHÉRENCE: Si la somme des lignes ≠ Total imprimé, le montant net à payer (chiffré + toutes lettres) fait foi.
 
-4. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur de la facture. Le fournisseur est en en-tête du document.
+4. FOURNISSEUR: Le fournisseur = qui a ÉMIS le document (en-tête, logo, mentions "Vendeur/Émetteur"). Le destinataire (client de la société du dossier) ne doit JAMAIS être mis en "fournisseur". Si tu hésite, cherche la raison sociale au-dessus du tableau des articles.
 
 5. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 
@@ -112,7 +112,7 @@ RÈGLES CRITIQUES (TOUJOURS les respecter):
 
 8. REMISE: Si une remise commerciale est imprimée (sur une ligne, en % ou en DT), extrais sa valeur en DT dans "remise" (>0 uniquement, sinon 0). Le TTC reste TOUJOURS le montant écrit sur le document.
 
-9. IMAGE FLOUE: Si le texte est difficile à lire, privilégie le montant TOTAL / "Arrêtée à" / montant en toutes lettres. Ne devine JAMAIS un montant illisible — mets 0 plutôt que de inventer.
+9. IMAGE FLOUE: PROCÉDURE OBLIGATOIRE: (1) Lis d'abord le TOTAL / "Arrêtée à" / montant en toutes lettres et note-le; (2) lis le HT et la TVA; (3) vérifie HT+TVA=TTC — si ça ne colle pas, le TOTAL écrit fait foi. Ne devine JAMAIS un montant illisible — mets 0 plutôt que d'inventer.
 
 10. MULTI-FACTURES: Si la page contient plusieurs factures (tableau récapitulatif, feuilles collées), renvoie OBLIGATOIREMENT un tableau JSON avec UNE entrée par facture. Ne fusionne jamais deux factures.
 
@@ -484,6 +484,12 @@ export function normalizeInvoiceData(data: any): any {
     }
   }
 
+  // Arrondi monétaire final (3 décimales) — la vision rend des floats type 287.40368
+  const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  ht0 = r3(ht0); ht19 = r3(ht19); ht7 = r3(ht7);
+  tva19 = r3(tva19); tva7 = r3(tva7); fodec = r3(fodec);
+  timbre = r3(timbre); remise = r3(remise); ttc = r3(ttc);
+
   return { numero, date, fournisseur, description, ht0, ht19, ht7, tva19, tva7, fodec, timbre, remise, ttc, arith_note,
     lignes: lignes
       .map((l: any) => ({ designation: String(l.designation || '').trim(), montant_ht: parseNum(l.montant_ht || l.montant), taux_tva: parseNum(l.taux_tva) }))
@@ -502,7 +508,7 @@ export async function parseInvoiceWithAI(
 RÈGLES CRITIQUES À RESPECTER:
 1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
-3. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur. Le fournisseur est en en-tête.
+3. FOURNISSEUR: Le fournisseur = l'ÉMETTEUR du document (en-tête, logo). Le destinataire/client ne doit JAMAIS être mis en fournisseur. Lis le TOTAL en toutes lettres AVANT les chiffres, puis vérifie HT+TVA=TTC (le TOTAL écrit fait foi).
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
 6. REMISE: Si une remise est imprimée (DT ou %), extrais-la dans "remise" (0 si absente).
@@ -598,7 +604,7 @@ export async function processFileWithAI(file: File, plan: PlanComptable): Promis
 RÈGLES CRITIQUES À RESPECTER:
 1. TIMBRE + FODEC: Le timbre (1 DT) et le FODEC (1%) sont INTÉGRÉS au montant d'achat (602100), JAMAIS sur 437xxx ou 436680 séparé.
 2. ANTI-ERREUR D'ÉCHELLE: Vérifie le montant en toutes lettres. Si ×1000 ou ×100 trop élevé, corrige.
-3. FOURNISSEUR: Ne confonds PAS le client (la société du dossier) avec l'émetteur. Le fournisseur est en en-tête.
+3. FOURNISSEUR: Le fournisseur = l'ÉMETTEUR du document (en-tête, logo). Le destinataire/client ne doit JAMAIS être mis en fournisseur. Lis le TOTAL en toutes lettres AVANT les chiffres, puis vérifie HT+TVA=TTC (le TOTAL écrit fait foi).
 4. TVA: N'invente JAMAIS de TVA non imprimée. Si aucune TVA → pas de ligne 436660.
 5. COHÉRENCE: Le montant net à payer (chiffré + toutes lettres) fait foi.
 6. IMAGE FLOUE: Lis d'abord le TOTAL / montant en toutes lettres. Ne devine pas un chiffre illisible (0 plutôt qu'inventer).
@@ -689,6 +695,30 @@ Réponds UNIQUEMENT en JSON valide, sans markdown:
           response = await callVisionAI([visionImages[i]], fixPrompt, systemPrompt);
           data = extractJSON(response);
           console.log(`[ACHATS] Page ${i + 1} 2e passe:`, data ? 'OK' : 'ÉCHEC');
+        }
+
+        // 3e passe: extraction valide mais SUSPECTE (pas de n° + fournisseur hors plan
+        // ou vide = souvent le client pris pour le fournisseur, montants faux) → relecture ciblée
+        if (data) {
+          const arr = Array.isArray(data) ? data : [data];
+          const suspect = arr.length > 0 && arr.some((x: any) =>
+            !String(x?.numero || '').trim() &&
+            (!String(x?.fournisseur || '').trim() || !matchFournisseur(String(x.fournisseur), plan))
+          );
+          if (suspect) {
+            console.log(`[ACHATS] Page ${i + 1} extraction suspecte (n° vide + fournisseur hors plan) → relecture ciblée...`);
+            const resp2 = await callVisionAI([visionImages[i]], `Relis cette facture d'achat ligne par ligne et réponds en JSON strict:
+{"numero":"","date":"YYYY-MM-DD","fournisseur":"nom du VENDEUR émetteur (PAS le client destinataire)","description":"","ht0":0,"ht19":0,"tva19":0,"tva7":0,"fodec":0,"timbre":0,"remise":0,"ttc":0}
+Pour le TTC: lis d'abord le montant en TOUTES LETTRES ("Arrêtée à..."), puis le chiffre; si HT+TVA ne colle pas, le TOTAL écrit fait foi. TVA jamais inventée. Plusieurs factures sur la page → tableau JSON. Aucune facture → null.`, systemPrompt);
+            const d2 = extractJSON(resp2);
+            if (d2) {
+              const a2 = Array.isArray(d2) ? d2 : [d2];
+              if (a2.some((x: any) => parseNum(x?.ttc) > 0)) {
+                data = d2;
+                console.log(`[ACHATS] Page ${i + 1} relecture: montants conservés (meilleure lecture)`);
+              }
+            }
+          }
         }
 
         addParsed(data, isImage ? undefined : i + 1, text);
@@ -807,7 +837,8 @@ Réponds UNIQUEMENT ce JSON.`,
       // Tout compte 6 chiffres du plan (6xxx, mais aussi 228300 immo, 454000...)
       if (/^\d{6}$/.test(ac) && plan.comptes.get(ac)?.nature === 'Comptable') compteAchat = ac;
       const fc = String(data.compte_fournisseur || '').trim();
-      if (/^401\d{3}$/.test(fc) && plan.comptes.has(fc)) compteFournisseur = fc;
+      // 401xxx normalement, mais aussi comptes partenaires (453001...) s'ils sont au plan
+      if (/^\d{6}$/.test(fc) && plan.comptes.get(fc)?.nature === 'Comptable') compteFournisseur = fc;
     }
   } catch {
     // garde le fallback
@@ -827,35 +858,38 @@ function getAchatComptesText(plan: PlanComptable): string {
 }
 
 function pickCompteAchat(description: string, plan?: PlanComptable): string {
-  // Regles calibrees sur les ecritures de reference du cabinet (TEBIB 01-03/2026).
-  // L'ordre compte : specifique d'abord (syndic avant loyer, eau avant bureau...).
+  // Source unique : les règles calibrées (références cabinet), validées plan.
+  if (plan) {
+    const code = ruleAccount(plan, description);
+    if (code) return code;
+    for (const [c2, c] of plan.comptes) {
+      if (/^6\d{5}$/.test(c2) && c.nature === 'Comptable') return c2;
+    }
+    return '606600'; // plan sans 6xxx : la vérification le signalera
+  }
   let preferred = '606600';
   if (description) {
     const d = description.toLowerCase();
-    if (/syndic|copropri/.test(d)) preferred = '614001';
-    else if (/loyer|location|bail|\bcle\b|\bsarl\b/.test(d)) preferred = '614000';
+    if (/syndic|copropri|syndique/.test(d)) preferred = '614100';
+    else if (/loyer|location|bail/.test(d)) preferred = '613002';
     else if (/\beau\b|sonede/.test(d)) preferred = '606003';
-    else if (/electricit|edf|steg|kwh|energie|énergie/.test(d)) preferred = '606002';
+    else if (/electricit|edf|steg|kwh/.test(d)) preferred = '606002';
     else if (/ordinateur|pc\b|ecran|écran|informatique|imprimante|intel|dell/.test(d)) preferred = '228300';
     else if (/tenue.*comptab|comptab|honoraires|expertise/.test(d)) preferred = '622100';
-    else if (/ticket.*rest|restaurant|pluxee|sodexo|repas|cantine/.test(d)) preferred = '617010';
+    else if (/ticket.*rest|restaurant|pluxee|sodexo|repas/.test(d)) preferred = '617010';
     else if (/internet|fsi|wifi|fibre|spacenet/.test(d)) preferred = '626200';
     else if (/téléphone|telephone|mobile|telecom|gsm|fixe|tunisip/.test(d)) preferred = '626100';
+    else if (/prestation|clinique|bordereau/.test(d)) preferred = '604000';
+    else if (/emballage|packaging/.test(d)) preferred = '602600';
+    else if (/marchandise|produits?|alimentaire/.test(d)) preferred = '607000';
+    else if (/mati[eè]re/.test(d)) preferred = '601000';
     else if (/transport|livraison/.test(d)) preferred = '624100';
     else if (/assurance/.test(d)) preferred = '616000';
     else if (/entretien|maintenance|nettoyage|kss/.test(d)) preferred = '615000';
-    else if (/marchandise|produits?|alimentaire/.test(d)) preferred = '607000';
-    else if (/mati[eè]re/.test(d)) preferred = '601000';
     else if (/bureau/.test(d)) preferred = '602400';
     else if (/quincaill/.test(d)) preferred = '601010';
   }
-  if (!plan) return preferred;
-  // Le code prefere doit exister dans LE plan du dossier (ex: 606600 absent du plan TEBIB)
-  if (plan.comptes.get(preferred)?.nature === 'Comptable') return preferred;
-  for (const [code, c] of plan.comptes) {
-    if (/^6\d{5}$/.test(code) && c.nature === 'Comptable') return code;
-  }
-  return preferred; // plan sans 6xxx : la verification le signalera en erreur
+  return preferred;
 }
 
 function pickCompteFournisseur(fournisseur: string, plan: PlanComptable): string {

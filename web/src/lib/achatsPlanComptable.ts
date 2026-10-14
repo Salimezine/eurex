@@ -100,8 +100,8 @@ export function ruleAccount(plan: PlanComptable, description: string): string | 
   const d = (description || '').toLowerCase();
   if (!d) return null;
   const rules: [RegExp, string[]][] = [
-    [/syndic|copropri/, ['614001']],
-    [/loyer|location|bail|\bcle\b|\bsarl\b/, ['614000']],
+    [/syndic|copropri|syndique/, ['614100', '614001']],
+    [/loyer|location|bail|\bcle\b|\bsarl\b/, ['613002', '614000']],
     [/\beau\b|sonede/, ['606003', '606012', '606013']],
     [/electricit|edf|steg|kwh|energie|énergie/, ['606002', '606010', '606011']],
     [/ordinateur|pc\b|ecran|écran|informatique|imprimante|intel|dell|materiel info|matériel info/, ['228300']],
@@ -110,17 +110,17 @@ export function ruleAccount(plan: PlanComptable, description: string): string | 
     [/internet|fsi|wifi|fibre|spacenet/, ['626200']],
     [/telephone|téléphone|mobile|telecom|gsm|fixe|tunisip/, ['626100']],
     [/transport|livraison|fret/, ['624100']],
-    [/location.*voit|leasing/, ['613002']],
     [/assurance|prime.*assur/, ['616000']],
     [/publicit|pub|marketing/, ['623000']],
     [/bancaire|commission.*banq|agios/, ['627000']],
     [/entretien|maintenance|reparation|réparation|nettoyage|kss/, ['615000']],
+    [/prestation|clinique|bordereau|sous-traitance|etude|étude/, ['604000']],
+    [/emballage|packaging/, ['602600', '602601']],
     [/marchandise|produits alimentaires|alimentaire|nourriture/, ['607000']],
     [/mati[eè]re premi[eè]re|MP\b/, ['601000']],
     [/quincaillerie|outillage|outil/, ['601010']],
     [/consommable/, ['602100', '602200']],
     [/fourniture.*(bureau|bureautique)|bureau/, ['602400', '606700', '602100']],
-    [/emballage/, ['602600', '602601']],
     [/divers|autre/, ['606600']],
   ];
 

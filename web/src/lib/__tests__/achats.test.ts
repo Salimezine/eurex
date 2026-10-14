@@ -28,12 +28,40 @@ function tebibLikePlan(): PlanComptable {
     mk('615000', 'ENTRETIENS ET REPARATIONS'),
     mk('623000', 'Publicite'),
     mk('627000', 'SERVICES BANCAIRES'),
+    mk('614000', 'Charges locatives et de copropriété'),
+    mk('614001', 'FRAIS SYNDIC'),
   ];
   const comptes = new Map(list.map(c => [c.code, c]));
   const fournisseurs = new Map([['401000', comptes.get('401000')!], ['401999', comptes.get('401999')!]]);
   const allByCode: Record<string, any> = {};
   for (const c of list) allByCode[c.code] = c;
   return { comptes, fournisseurs, achats: [comptes.get('607000')!, comptes.get('601000')!], tva: [comptes.get('436660')!, comptes.get('436670')!], taxes: [], allByCode };
+}
+
+// Plan minimal façon PROYASH (613002 loyer, 614100 syndic, 606600 divers, 436663)
+function proyashLikePlan(): PlanComptable {
+  const mk = (code: string, libelle: string) => ({ code, libelle, nature: 'Comptable' as const, sens: 'D' as const });
+  const list = [
+    mk('607000', 'Achats de marchandises'),
+    mk('602100', 'MATIERES CONSOMMABLES'),
+    mk('606600', 'ACHATS DIVERS'),
+    mk('436660', 'TVA DEDUCTIBLE'),
+    mk('436663', 'TVA DEDUCTIBLE 7%'),
+    mk('401999', 'FRS DIVERS'),
+    mk('401065', 'BEN YAGHLANE'),
+    mk('613002', 'LOCATION A USAGE COMMERCIALE'),
+    mk('614100', 'FRAIS SYNDIC'),
+    mk('602600', "ACHATS D'EMBALLAGES"),
+    mk('604000', 'Achats études et prestations'),
+    mk('602400', 'FOURNITURE DE BUREAU'),
+    mk('228300', 'MATERIEL INFORMATIQUE'),
+    mk('606002', 'ACHATS NON STOCKES ELECTRICITE'),
+  ];
+  const comptes = new Map(list.map(c => [c.code, c]));
+  const fournisseurs = new Map([['401999', comptes.get('401999')!], ['401065', comptes.get('401065')!]]);
+  const allByCode: Record<string, any> = {};
+  for (const c of list) allByCode[c.code] = c;
+  return { comptes, fournisseurs, achats: [], tva: [], taxes: [], allByCode };
 }
 
 describe('ACHATS plan dossier (TEBIB)', () => {
@@ -236,6 +264,20 @@ describe('ACHATS plan dossier (TEBIB)', () => {
     ['MARCHANDISES ALIMENTAIRES', '607000'],
   ])('référence %s → %s', (desc, code) => {
     expect(matchAchatCompte(tebibLikePlan(), desc)?.code).toBe(code);
+  });
+
+  // === MÊMES RÈGLES, PLAN PROYASH (613002 loyer, 614100 syndic, 606600 divers) ===
+  it.each([
+    ['FAC LOYER 09-2026 CLE SARL', '613002'],
+    ['ACHAT SYNDIQUE RESIDENCE AZIZ', '614100'],
+    ['APS PACKAGING EMBALLAGES', '602600'],
+    ['BORDEREAU CLINIQUE PRESTATIONS', '604000'],
+    ['FOURNITURE DE BUREAU', '602400'],
+    ['EJEM DIVERS', '606600'],
+    ['2 PC DELL', '228300'],
+    ['FACT STEG ELECTRICITE', '606002'],
+  ])('référence PROYASH %s → %s', (desc, code) => {
+    expect(matchAchatCompte(proyashLikePlan(), desc)?.code).toBe(code);
   });
 
   it('split loyer+syndic : 614000=2625 + 614001=170, TVA unique, équilibré', () => {
