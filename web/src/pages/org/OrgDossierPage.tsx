@@ -17,6 +17,7 @@ import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, MessageSquare, ChevronDown, ChevronUp,
   ExternalLink, Eye, Users, UserRound, CalendarDays, Activity,
+  Pencil, Trash2, X, Check,
 } from 'lucide-react';
 
 // Libellés FR des actions d'audit (audit_log.action)
@@ -105,6 +106,8 @@ export default function OrgDossierPage() {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [auditLog, setAuditLog] = useState<OrgAuditEntry[]>([]);
   const [noteText, setNoteText] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editNoteText, setEditNoteText] = useState('');
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [closeJustification, setCloseJustification] = useState('');
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -398,6 +401,29 @@ export default function OrgDossierPage() {
     try {
       await orgApi.addNote(dossier.id, noteText.trim());
       setNoteText('');
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const saveNote = async (noteId: string) => {
+    if (!dossier || !editNoteText.trim()) return;
+    try {
+      await orgApi.updateNote(dossier.id, noteId, editNoteText.trim());
+      setEditingNoteId(null);
+      setEditNoteText('');
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const removeNote = async (noteId: string) => {
+    if (!dossier) return;
+    if (!confirm('Supprimer cette note ?')) return;
+    try {
+      await orgApi.deleteNote(dossier.id, noteId);
       load();
     } catch (err: any) {
       alert(err.message);
@@ -1697,18 +1723,72 @@ export default function OrgDossierPage() {
           </div>
 
           {/* Notes list */}
-          {dossier.notes.map(note => (
-            <div key={note.id} className="bg-white border border-gray-200 rounded-xl p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <MessageSquare size={14} className="text-purple-500" />
-                <span className="text-xs font-semibold text-gray-700">{note.user_name}</span>
-                <span className="text-[11px] text-gray-400">
-                  {new Date(note.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                </span>
+          {dossier.notes.map(note => {
+            const canModify = note.user_id === state.user?.id || isExpert;
+            const editing = editingNoteId === note.id;
+            return (
+              <div key={note.id} className="bg-white border border-gray-200 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <MessageSquare size={14} className="text-purple-500" />
+                  <span className="text-xs font-semibold text-gray-700">{note.user_name}</span>
+                  <span className="text-[11px] text-gray-400">
+                    {new Date(note.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  {canModify && !editing && (
+                    <span className="ml-auto flex items-center gap-1">
+                      <button
+                        onClick={() => { setEditingNoteId(note.id); setEditNoteText(note.content); }}
+                        className="p-1 rounded text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+                        title="Modifier la note"
+                        data-testid="note-edit-btn"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        onClick={() => removeNote(note.id)}
+                        className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                        title="Supprimer la note"
+                        data-testid="note-delete-btn"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </span>
+                  )}
+                </div>
+                {editing ? (
+                  <div>
+                    <textarea
+                      value={editNoteText}
+                      onChange={e => setEditNoteText(e.target.value)}
+                      rows={3}
+                      className="w-full border border-gray-200 rounded-lg p-2 text-sm resize-none focus:ring-2 focus:ring-purple-500 outline-none"
+                      data-testid="note-edit-textarea"
+                    />
+                    <div className="flex justify-end gap-1 mt-1">
+                      <button
+                        onClick={() => saveNote(note.id)}
+                        disabled={!editNoteText.trim()}
+                        className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+                        title="Enregistrer"
+                        data-testid="note-save-btn"
+                      >
+                        <Check size={15} />
+                      </button>
+                      <button
+                        onClick={() => { setEditingNoteId(null); setEditNoteText(''); }}
+                        className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 transition-colors"
+                        title="Annuler"
+                      >
+                        <X size={15} />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{note.content}</p>
+                )}
               </div>
-              <p className="text-sm text-gray-700 whitespace-pre-wrap">{note.content}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

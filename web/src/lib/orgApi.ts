@@ -526,6 +526,10 @@ export const orgApi = {
   // Notes
   addNote: (dossierId: string, content: string) =>
     req<any>(`/org/dossiers/${dossierId}/notes`, { method: 'POST', body: JSON.stringify({ content }) }),
+  updateNote: (dossierId: string, noteId: string, content: string) =>
+    req<any>(`/org/dossiers/${dossierId}/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
+  deleteNote: (dossierId: string, noteId: string) =>
+    req<any>(`/org/dossiers/${dossierId}/notes/${noteId}`, { method: 'DELETE' }),
 
   // Timer
   startTimer: (dossierId: string, taskId: string) =>

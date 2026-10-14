@@ -3952,6 +3952,27 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ id: noteId }, 201);
       }
 
+      // --- ORG: UPDATE / DELETE NOTE (auteur ou superviseur) ---
+      const orgNoteIdMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/notes\/([^/]+)$/);
+      if (orgNoteIdMatch && (method === 'PATCH' || method === 'DELETE')) {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgNoteIdMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const note = await env.DB.prepare('SELECT id, dossier_id, user_id, user_name, content FROM org_notes WHERE id = ? AND dossier_id = ?').bind(orgNoteIdMatch[2], orgNoteIdMatch[1]).first() as any;
+        if (!note) return json({ error: 'Note introuvable' }, 404);
+        if (note.user_id !== user.id && !isSupervisor(user.role)) return json({ error: 'Seul l\u0027auteur ou un superviseur peut modifier cette note' }, 403);
+        if (method === 'PATCH') {
+          const { content } = await request.json() as any;
+          if (!content?.trim()) return json({ error: 'Contenu requis' }, 400);
+          await env.DB.prepare('UPDATE org_notes SET content = ? WHERE id = ?').bind(content.trim(), note.id).run();
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'note_updated\', \'note\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, note.id, JSON.stringify({ dossier_id: orgNoteIdMatch[1], preview: content.trim().slice(0, 100) })).run();
+          return json({ ok: true });
+        }
+        await env.DB.prepare('DELETE FROM org_notes WHERE id = ?').bind(note.id).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'note_deleted\', \'note\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, note.id, JSON.stringify({ dossier_id: orgNoteIdMatch[1], preview: note.content.slice(0, 100) })).run();
+        return json({ ok: true });
+      }
+
       // --- ORG: TIMELINE ---
       const orgTimelineMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/timeline$/);
       if (orgTimelineMatch && method === 'GET') {

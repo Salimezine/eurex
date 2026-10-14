@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { orgApi, OrgComptable, OrgDossier, OrgClient, OrgVerifyTask } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
@@ -21,6 +21,14 @@ type Tab = 'comptables' | 'global';
 // dans Settings) : le dashboard n'affiche que les comptables.
 const onlyComptables = (cs: OrgComptable[]) => cs.filter(c => c.role === 'comptable');
 
+// Export CSV client-side (separateur ';' pour Excel FR, BOM pour UTF-8)
+const csvCell = (v: unknown) => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const buildCsv = (header: string[], rows: (string | number | null | undefined)[][]) =>
+  '﻿' + [header.map(csvCell).join(';'), ...rows.map(r => r.map(csvCell).join(';'))].join('\r\n');
+
 // Delai de validation restant (en heures, negatif = delai depasse)
 const verifyBadge = (h: number | null) => {
   if (h === null) return { cls: 'bg-gray-100 text-gray-500', label: 'Sans délai' };
@@ -31,14 +39,16 @@ const verifyBadge = (h: number | null) => {
 
 export default function OrgDashboardExpert() {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>('comptables');
+  // Filtres persistes dans l'URL (?tab=&q=&comptable=) : partageables + survit au refresh
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(searchParams.get('tab') === 'global' ? 'global' : 'comptables');
   const [comptables, setComptables] = useState<OrgComptable[]>([]);
   const [allDossiers, setAllDossiers] = useState<any[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [allClients, setAllClients] = useState<OrgClient[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [filterComptable, setFilterComptable] = useState<string>('all');
+  const [search, setSearch] = useState(searchParams.get('q') || '');
+  const [filterComptable, setFilterComptable] = useState<string>(searchParams.get('comptable') || 'all');
   // Tâches faites par les comptables, en attente de vérification expert/manager
   const [verifyTasks, setVerifyTasks] = useState<OrgVerifyTask[]>([]);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
@@ -74,6 +84,44 @@ export default function OrgDashboardExpert() {
     } catch (e: any) { alert(e.message); }
     setExportingCsv(false);
   };
+
+  // Export CSV des dossiers visibles (filtres comptable + recherche appliques)
+  const exportDossiersCsv = () => {
+    const rows = filteredDossiers.map(d => [
+      d.client_name, d.exercice, d.comptable_name || '', d.status === 'cloture' ? 'Clôturé' : 'En cours',
+      d.progress || 0, d.task_stats?.fait ?? '', d.task_stats?.total ?? '',
+      d.task_stats?.bloque_client ?? '', unverifiedByDossier[d.id] || 0,
+    ]);
+    const csv = buildCsv(
+      ['Client', 'Exercice', 'Comptable', 'Statut', 'Avancement %', 'Tâches faites', 'Tâches total', 'Bloquées client', 'À vérifier'],
+      rows
+    );
+    orgApi.downloadCsv(csv, `dossiers_cabinet_${exercice || 'tout'}.csv`);
+  };
+
+  // Export CSV des tâches en attente de verification
+  const exportVerifyCsv = () => {
+    const rows = verifyTasks.map(vt => [
+      vt.client_name, vt.exercice, vt.label, vt.done_by_name || '',
+      vt.verify_due_at || '', vt.verify_left_hours ?? '', vt.due_date || '',
+    ]);
+    const csv = buildCsv(
+      ['Client', 'Exercice', 'Tâche', 'Travaillé par', 'Échéance vérification', 'Heures restantes', 'Échéance tâche'],
+      rows
+    );
+    orgApi.downloadCsv(csv, `taches_a_verifier_${exercice || 'tout'}.csv`);
+  };
+
+  // Persistance : ecrit les filtres dans l'URL (sans boucle : compare avant d'ecrire)
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (tab !== 'comptables') p.set('tab', tab);
+    if (search) p.set('q', search);
+    if (filterComptable !== 'all') p.set('comptable', filterComptable);
+    const next = p.toString();
+    if (next !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, search, filterComptable]);
 
   // Chaque route est evaluée séparément : un échec isolé ne vide pas le
   // tableau de bord. C'est arrivé en production le 2026-10-11 — les quatre
@@ -375,6 +423,14 @@ export default function OrgDashboardExpert() {
             )}
             <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full" data-testid="a-verifier-count">{verifyTasks.length}</span>
             <button
+              onClick={exportVerifyCsv}
+              title="Exporter la liste en CSV"
+              data-testid="a-verifier-export-csv"
+              className="px-2 py-1 rounded-lg text-[11px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors"
+            >
+              ⬇ CSV
+            </button>
+            <button
               onClick={toggleVerifyMin}
               title={t(verifyMin ? 'card.expand' : 'card.minimize')}
               data-testid="a-verifier-min"
@@ -623,6 +679,14 @@ export default function OrgDashboardExpert() {
                 <option key={c.id} value={c.id}>{c.full_name}</option>
               ))}
             </select>
+            <button
+              onClick={exportDossiersCsv}
+              title="Exporter les dossiers affichés en CSV"
+              data-testid="dossiers-export-csv"
+              className="px-3 py-2 rounded-lg text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 transition-colors whitespace-nowrap"
+            >
+              ⬇ CSV ({filteredDossiers.length})
+            </button>
           </div>
 
           {/* Dossier list */}

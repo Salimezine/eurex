@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { orgApi, OrgMyTask } from '../../lib/orgApi';
 
 type FilterKey = 'toutes' | 'a_verifier' | 'en_cours' | 'a_faire' | 'bloque_client' | 'retard' | 'fait';
@@ -23,12 +23,27 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 };
 
 export default function OrgMesTaches() {
+  // Filtres persistes dans l'URL (?status=&mine=&q=) : partageables + survit au refresh
+  const [searchParams, setSearchParams] = useSearchParams();
   const [tasks, setTasks] = useState<OrgMyTask[]>([]);
-  const [filter, setFilter] = useState<FilterKey>('toutes');
-  const [mine, setMine] = useState(false);
-  const [q, setQ] = useState('');
+  const [filter, setFilter] = useState<FilterKey>(
+    (FILTERS.map(f => f.key) as string[]).includes(searchParams.get('status') || '') ? (searchParams.get('status') as FilterKey) : 'toutes'
+  );
+  const [mine, setMine] = useState(searchParams.get('mine') === '1');
+  const [q, setQ] = useState(searchParams.get('q') || '');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Persistance : ecrit les filtres dans l'URL (sans boucle : compare avant d'ecrire)
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (filter !== 'toutes') p.set('status', filter);
+    if (mine) p.set('mine', '1');
+    if (q) p.set('q', q);
+    const next = p.toString();
+    if (next !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, mine, q]);
 
   const load = useCallback(async () => {
     setLoading(true);

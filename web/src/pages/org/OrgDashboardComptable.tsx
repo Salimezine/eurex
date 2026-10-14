@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { orgApi, OrgClient, OrgMyGrant } from '../../lib/orgApi';
 import { t } from '../../lib/orgI18n';
 import ProgressDonut, { DonutLegend } from '../../components/ProgressDonut';
@@ -16,15 +16,29 @@ import { FolderOpen, AlertTriangle, Clock, ArrowUpDown, Search } from 'lucide-re
 type SortKey = 'name' | 'progress' | 'blocked';
 
 export default function OrgDashboardComptable() {
+  // Filtres persistes dans l'URL (?sort=&q=) : partageables + survit au refresh
+  const [searchParams, setSearchParams] = useSearchParams();
   const [clients, setClients] = useState<OrgClient[]>([]);
   const [myGrants, setMyGrants] = useState<OrgMyGrant[]>([]);
   const [exercices, setExercices] = useState<number[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [sort, setSort] = useState<SortKey>('blocked');
-  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<SortKey>(
+    (['name', 'progress', 'blocked'] as SortKey[]).includes(searchParams.get('sort') as SortKey) ? (searchParams.get('sort') as SortKey) : 'blocked'
+  );
+  const [search, setSearch] = useState(searchParams.get('q') || '');
   // Exercice affiche : annee courante par defaut, choix memorise (retour au n-1)
   const [exercice, setExercice] = useExercice();
+
+  // Persistance : ecrit les filtres dans l'URL (sans boucle : compare avant d'ecrire)
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (sort !== 'blocked') p.set('sort', sort);
+    if (search) p.set('q', search);
+    const next = p.toString();
+    if (next !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort, search]);
 
   const load = () => {
     setLoading(true);
