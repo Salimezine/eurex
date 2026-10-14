@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable, OrgCollabCandidate } from '../../lib/orgApi';
+import { orgApi, OrgDossier, OrgTask, OrgDocument, OrgComptable, OrgCollabCandidate, OrgAuditEntry } from '../../lib/orgApi';
 import { useOrgAuth } from '../../lib/orgAuth';
 import { t } from '../../lib/orgI18n';
 import {
@@ -16,10 +16,60 @@ import { SkeletonDossier } from '../../components/Skeleton';
 import {
   ArrowLeft, CheckCircle2, Circle, AlertTriangle, Lock, Unlock,
   Send, MessageSquare, ChevronDown, ChevronUp,
-  ExternalLink, Eye, Users, UserRound, CalendarDays,
+  ExternalLink, Eye, Users, UserRound, CalendarDays, Activity,
 } from 'lucide-react';
 
-type Tab = 'checklist' | 'documents' | 'notes' | 'timeline' | 'year';
+// Libellés FR des actions d'audit (audit_log.action)
+const AUDIT_LABELS: Record<string, string> = {
+  dossier_created: 'Dossier créé',
+  dossier_closed: 'Dossier clôturé',
+  task_added: 'Tâche ajoutée',
+  task_deleted: 'Tâche supprimée',
+  task_status_changed: 'Statut de tâche modifié',
+  task_verified: 'Tâche vérifiée',
+  task_returned: 'Renvoyée en correction',
+  task_renamed: 'Tâche renommée',
+  task_assigned: 'Tâche assignée',
+  task_due_changed: 'Échéance modifiée',
+  task_hidden: 'Tâche masquée (reporting)',
+  task_restored: 'Tâche restaurée (reporting)',
+  document_added: 'Document ajouté',
+  document_deleted: 'Document supprimé',
+  document_received: 'Document marqué reçu',
+  document_unreceived: 'Document marqué non reçu',
+  note_added: 'Note ajoutée',
+  timer_started: 'Chrono démarré',
+  timer_stopped: 'Chrono arrêté',
+  time_manual: 'Temps saisi manuellement',
+  grant_created: 'Renfort accordé',
+  grant_revoked: 'Renfort révoqué',
+  task_collab_added: 'Collaborateur ajouté sur la tâche',
+  task_collab_removed: 'Collaborateur retiré de la tâche',
+  alert_added: 'Alerte ajoutée',
+  alert_toggled: 'Alerte cochée / décochée',
+  alert_deleted: 'Alerte supprimée',
+};
+
+function auditDetailsSummary(details: string | null): string {
+  if (!details) return '';
+  try {
+    const d = JSON.parse(details);
+    const parts: string[] = [];
+    for (const k of ['reason', 'blocked_reason', 'justification', 'label', 'old_status', 'new_status', 'preview', 'message']) {
+      if (d[k] !== undefined && d[k] !== null && d[k] !== '') parts.push(`${k}: ${d[k]}`);
+    }
+    if (parts.length === 0) {
+      const kv = Object.entries(d).filter(([, v]) => v !== undefined && v !== null && v !== '').slice(0, 3);
+      for (const [k, v] of kv) parts.push(`${k}: ${v}`);
+    }
+    if (parts.length === 0) return Object.keys(d).length ? 'Détails disponibles' : '';
+    return parts.join(' · ');
+  } catch {
+    return details.slice(0, 120);
+  }
+}
+
+type Tab = 'checklist' | 'documents' | 'notes' | 'timeline' | 'audit' | 'year';
 
 const STATUS_ICONS: Record<string, any> = {
   a_faire: Circle,
@@ -53,6 +103,7 @@ export default function OrgDossierPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('checklist');
   const [timeline, setTimeline] = useState<any[]>([]);
+  const [auditLog, setAuditLog] = useState<OrgAuditEntry[]>([]);
   const [noteText, setNoteText] = useState('');
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [closeJustification, setCloseJustification] = useState('');
@@ -202,8 +253,16 @@ export default function OrgDossierPage() {
     } catch {}
   };
 
+  const loadAudit = async () => {
+    if (!id) return;
+    try {
+      setAuditLog(await orgApi.getAuditLog(id));
+    } catch {}
+  };
+
   useEffect(() => {
     if (tab === 'timeline' && id) loadTimeline();
+    if (tab === 'audit' && id) loadAudit();
   }, [tab, id]);
 
   const [vdH, setVdH] = useState<Record<string, string>>({});
@@ -778,6 +837,7 @@ export default function OrgDossierPage() {
           { key: 'documents' as Tab, label: t('dossier.documents'), count: dossier.documents.length },
           { key: 'notes' as Tab, label: t('dossier.notes'), count: dossier.notes.length },
           { key: 'timeline' as Tab, label: t('dossier.timeline') },
+          ...(isExpert ? [{ key: 'audit' as Tab, label: 'Audit', icon: <Activity size={14} /> }] : []),
         ]).map(t2 => (
           <button
             key={t2.key}
@@ -1655,6 +1715,38 @@ export default function OrgDossierPage() {
       {/* Tab: Timeline */}
       {tab === 'timeline' && (
         <Timeline events={timeline} />
+      )}
+
+      {/* Tab: Audit (expert/manager) — journal brut complet du dossier */}
+      {tab === 'audit' && (
+        <div>
+          {auditLog.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-sm text-gray-400">
+              Aucune entrée d'audit pour ce dossier.
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden" data-testid="audit-list">
+              {auditLog.map(a => {
+                const summary = auditDetailsSummary(a.details);
+                return (
+                  <div key={a.id} className="px-4 py-2.5 flex items-start gap-3">
+                    <div className="text-[11px] text-gray-400 shrink-0 w-28 pt-0.5">
+                      {a.created_at ? String(a.created_at).replace('T', ' ').slice(0, 16) : ''}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-gray-800 font-medium">
+                        {AUDIT_LABELS[a.action] || a.action}
+                      </div>
+                      {summary && <div className="text-xs text-gray-500 truncate">{summary}</div>}
+                    </div>
+                    <div className="text-xs text-gray-500 shrink-0 pt-0.5">{a.user_name || 'Système'}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-xs text-gray-400 mt-2">{auditLog.length} entrée(s) — dernières 200 actions du dossier (tâches, documents, notes, renforts, clôture)</p>
+        </div>
       )}
 
       {/* Close Modal */}

@@ -14,6 +14,7 @@ import OrgSearch from '../../components/OrgSearch';
 import OrgNotifications from '../../components/OrgNotifications';
 import OrgPlanning from './OrgPlanning';
 import OrgReport from './OrgReport';
+import OrgMesTaches from './OrgMesTaches';
 
 function OrgInner() {
   const { state } = useOrgAuth();
@@ -48,6 +49,16 @@ function OrgInner() {
             <OrgSearch />
           </div>
           <button
+            onClick={() => navigate('/cabinet/mes-taches')}
+            data-testid="mes-taches-nav"
+            title="Toutes mes tâches (filtres : statut, retard, assignation)"
+            className={`mb-4 shrink-0 px-3 py-2.5 rounded-xl text-sm font-semibold border transition-all ${location.pathname.startsWith('/cabinet/mes-taches')
+              ? 'bg-purple-600 border-purple-600 text-white shadow-lg shadow-purple-200'
+              : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300 hover:text-purple-700'}`}
+          >
+            ✅ Mes tâches
+          </button>
+          <button
             onClick={() => navigate('/cabinet/planning')}
             data-testid="planning-nav"
             title="Planning des échéances et tâches par date"
@@ -71,6 +82,7 @@ function OrgInner() {
         </div>
         <Routes>
           <Route path="/" element={isExpert ? <OrgDashboardExpert /> : <OrgDashboardComptable />} />
+          <Route path="/mes-taches" element={<OrgMesTaches />} />
           <Route path="/planning" element={<OrgPlanning />} />
           <Route path="/report" element={<OrgReport />} />
           <Route path="/dossier/:id" element={<OrgDossierPage />} />

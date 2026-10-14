@@ -152,6 +152,32 @@ export default function OrgDashboardExpert() {
     }
   };
 
+  // Retour en correction motivé : a_verifier -> en_cours + notification au comptable
+  const [returnModal, setReturnModal] = useState<OrgVerifyTask | null>(null);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnBusy, setReturnBusy] = useState(false);
+
+  const openReturnModal = (vt: OrgVerifyTask) => {
+    setReturnModal(vt);
+    setReturnReason('');
+  };
+
+  const submitReturn = async () => {
+    if (!returnModal) return;
+    const reason = returnReason.trim();
+    if (reason.length < 3) { alert('Motif requis (3 caractères minimum)'); return; }
+    setReturnBusy(true);
+    try {
+      await orgApi.returnTask(returnModal.dossier_id, returnModal.id, reason);
+      setVerifyTasks(prev => prev.filter(x => x.id !== returnModal.id));
+      setReturnModal(null);
+    } catch (e: any) {
+      alert(e.message || 'Erreur lors du renvoi');
+    } finally {
+      setReturnBusy(false);
+    }
+  };
+
   // Create dossier
   const load = () => {
     setLoading(true);
@@ -377,19 +403,68 @@ export default function OrgDashboardExpert() {
                   <p className="mt-1 text-[10px] text-purple-600 font-medium" data-testid="verify-task-doneby">
                     👤 Travaillé par {vt.done_by_name || '—'}
                   </p>
-                  <button
-                    onClick={() => verifyOne(vt)}
-                    disabled={verifyingId === vt.id}
-                    className="mt-2 w-full px-2 py-1 rounded-lg text-[11px] font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 transition-all"
-                    data-testid="verify-task-btn"
-                  >
-                    {verifyingId === vt.id ? 'Validation…' : '✅ Valider la vérification'}
-                  </button>
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                    <button
+                      onClick={() => verifyOne(vt)}
+                      disabled={verifyingId === vt.id}
+                      className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 transition-all col-span-2"
+                      data-testid="verify-task-btn"
+                    >
+                      {verifyingId === vt.id ? 'Validation…' : '✅ Valider la vérification'}
+                    </button>
+                    <button
+                      onClick={() => openReturnModal(vt)}
+                      className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-gray-100 text-gray-600 hover:bg-red-50 hover:text-red-700 transition-all col-span-2"
+                      data-testid="verify-task-return-btn"
+                      title="Renvoyer la tâche en correction au comptable (motif obligatoire)"
+                    >
+                      ↩ Renvoyer en correction
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </div>
           )}
+        </div>
+      )}
+
+      {/* Modal retour en correction motivé */}
+      {returnModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" data-testid="return-modal">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="font-bold text-gray-800 mb-1">↩ Renvoyer en correction</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              « {returnModal.label} » — {returnModal.client_name} · Exercice {returnModal.exercice}
+              <br />
+              La tâche repassera en <strong>En cours</strong> et {returnModal.done_by_name || 'le comptable assigné'} sera notifié.
+            </p>
+            <textarea
+              value={returnReason}
+              onChange={e => setReturnReason(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Motif du renvoi (ex : montants à recopier sur le justificatif, pièce manquante…)"
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm resize-none focus:ring-2 focus:ring-purple-500 outline-none"
+              data-testid="return-reason"
+            />
+            <div className="flex gap-2 justify-end mt-4">
+              <button
+                onClick={() => setReturnModal(null)}
+                className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600 hover:bg-gray-200"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={submitReturn}
+                disabled={returnBusy || returnReason.trim().length < 3}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="return-submit"
+              >
+                {returnBusy ? 'Envoi…' : 'Renvoyer'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -3441,6 +3441,38 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ tasks, days });
       }
 
+      // --- ORG: MES TACHES TRANSVERSES (filtres status/retard/assignation/recherche) ---
+      if (path === '/api/org/me/tasks' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        const params = new URL(request.url).searchParams;
+        const VALID_STATUS = ['a_faire', 'en_cours', 'a_verifier', 'fait', 'bloque_client'];
+        const statusSel = VALID_STATUS.includes(params.get('status') || '') ? params.get('status') : null;
+        const overdue = params.get('overdue') === '1';
+        const mine = params.get('mine') === '1';
+        const q = (params.get('q') || '').trim();
+        const exParam = params.get('exercice');
+        const exSel = exParam ? Number(exParam) : null;
+        const limit = Math.max(10, Math.min(300, Number(params.get('limit')) || 100));
+        const access = isSupervisor(user.role)
+          ? 'c.organization_id = ?'
+          : "(c.organization_id = ? AND (c.assigned_comptable_id = ? OR EXISTS (SELECT 1 FROM org_dossier_grants g WHERE g.dossier_id = d.id AND g.granted_to = ? AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at > datetime('now')))))";
+        const binds: any[] = isSupervisor(user.role) ? [user.organization_id] : [user.organization_id, user.id, user.id];
+        let where = `WHERE ${access} AND t.hidden = 0 AND t.created_by IS NOT NULL`;
+        if (statusSel) { where += ' AND t.status = ?'; binds.push(statusSel); }
+        if (overdue) { where += " AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status != 'fait'"; }
+        if (mine) { where += ' AND (t.assigned_comptable_id = ? OR t.done_by = ?)'; binds.push(user.id, user.id); }
+        if (q) { where += ' AND (t.label LIKE ? OR c.name LIKE ?)'; binds.push(`%${q}%`, `%${q}%`); }
+        if (exSel) { where += ' AND d.exercice = ?'; binds.push(exSel); }
+        const { results } = await env.DB.prepare(`SELECT t.id, t.label, t.status, t.blocked_reason, t.due_date, t.verify_due_at, t.created_at, t.updated_at, t.assigned_comptable_id, t.done_by, d.id as dossier_id, d.exercice, d.status as dossier_status, c.name as client_name, (SELECT full_name FROM org_users WHERE id = t.assigned_comptable_id) as assigned_comptable_name FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id ${where} ORDER BY t.status = 'a_verifier' DESC, (t.due_date IS NULL), t.due_date ASC, t.updated_at DESC LIMIT ?`).bind(...binds, limit).all();
+        const today = new Date(Date.now() + 3600000).toISOString().slice(0, 10);
+        const tasks = (results as any[]).map(t => ({
+          ...t,
+          days_left: t.due_date ? Math.round((Date.parse(t.due_date + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400000) : null,
+        }));
+        return json({ tasks });
+      }
+
       // --- ORG: TACHES EN ATTENTE DE VERIFICATION (expert/manager) ---
       if (path === '/api/org/tasks/verify' && method === 'GET') {
         const user = await verifyOrgToken(request);
@@ -3680,6 +3712,30 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         if (due_date !== undefined && (String(due_date || '').trim() || null) !== (task.due_date || null)) {
           await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'task_due_changed', 'task', orgTaskMatch[2], JSON.stringify({ old: task.due_date || null, new: String(due_date || '').trim() || null })).run();
+        }
+        return json({ ok: true, progress });
+      }
+
+      // --- ORG: RETOUR EN CORRECTION (expert/manager renvoie une tache a_verifier motivé) ---
+      const orgTaskReturnMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/tasks\/([^/]+)\/return$/);
+      if (orgTaskReturnMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert/manager' }, 403);
+        if (!await orgCanAccessDossier(user, orgTaskReturnMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const task = await env.DB.prepare('SELECT * FROM org_tasks WHERE id = ? AND dossier_id = ?').bind(orgTaskReturnMatch[2], orgTaskReturnMatch[1]).first() as any;
+        if (!task) return json({ error: 'Tâche non trouvée' }, 404);
+        if (task.status !== 'a_verifier') return json({ error: 'Seule une tâche en vérification peut être renvoyée en correction' }, 400);
+        const { reason } = await request.json() as any;
+        const reasonTxt = String(reason || '').trim();
+        if (reasonTxt.length < 3) return json({ error: 'Motif requis (3 caractères minimum)' }, 400);
+        await env.DB.prepare("UPDATE org_tasks SET status = 'en_cours', verify_due_at = NULL, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(user.id, task.id).run();
+        const progress = await orgRecalcProgress(env.DB, orgTaskReturnMatch[1]);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'task_returned\', \'task\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, task.id, JSON.stringify({ label: task.label, dossier_id: orgTaskReturnMatch[1], from: 'a_verifier', to: 'en_cours', reason: reasonTxt })).run();
+        // Notification au comptable qui a travaille la tache (ou a qui elle est assignee)
+        const targetId = task.done_by || task.assigned_comptable_id;
+        if (targetId) {
+          await env.DB.prepare('INSERT INTO org_notifications (id, user_id, dossier_id, message) VALUES (?, ?, ?, ?)').bind(genId(), targetId, orgTaskReturnMatch[1], `Tâche « ${task.label} » renvoyée en correction : ${reasonTxt}`).run();
         }
         return json({ ok: true, progress });
       }

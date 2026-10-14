@@ -199,6 +199,37 @@ export interface OrgRecentTask {
   client_name: string;
 }
 
+// Taches transverses (page Mes taches) — filtres status/retard/assignation
+export interface OrgMyTask {
+  id: string;
+  label: string;
+  status: OrgTask['status'];
+  blocked_reason: string | null;
+  due_date: string | null;
+  days_left: number | null;
+  verify_due_at: string | null;
+  created_at: string;
+  updated_at: string;
+  dossier_id: string;
+  exercice: number;
+  dossier_status: string;
+  client_name: string;
+  assigned_comptable_id: string | null;
+  assigned_comptable_name: string | null;
+  done_by: string | null;
+}
+
+export interface OrgAuditEntry {
+  id: string;
+  user_id: string | null;
+  user_name: string | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: string | null;
+  created_at: string;
+}
+
 export interface OrgAlert {
   id: string;
   title: string;
@@ -381,9 +412,24 @@ export const orgApi = {
   // Nouvelles tâches des dossiers accessibles (dashboard) — exercice optionnel
   getMyRecentTasks: (days: number = 30, exercice?: number | null) =>
     req<{ tasks: OrgRecentTask[]; days: number }>(`/org/me/tasks/recent?days=${days}${exercice ? `&exercice=${exercice}` : ''}`),
+  // Taches transverses filtrables (page Mes taches)
+  getMyTasks: (params: { status?: string; overdue?: boolean; mine?: boolean; exercice?: number | null; q?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (params.status) p.set('status', params.status);
+    if (params.overdue) p.set('overdue', '1');
+    if (params.mine) p.set('mine', '1');
+    if (params.exercice) p.set('exercice', String(params.exercice));
+    if (params.q) p.set('q', params.q);
+    if (params.limit) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return req<{ tasks: OrgMyTask[] }>(`/org/me/tasks${qs ? `?${qs}` : ''}`);
+  },
   // Taches en attente de verification (expert/manager) + validation en un clic
   getTasksToVerify: (exercice?: number | null) =>
     req<{ tasks: OrgVerifyTask[] }>(`/org/tasks/verify${exercice ? `?exercice=${exercice}` : ''}`),
+  // Retour en correction motivé (expert/manager) : a_verifier -> en_cours + notification
+  returnTask: (dossierId: string, taskId: string, reason: string) =>
+    req<{ ok: boolean; progress: number }>(`/org/dossiers/${dossierId}/tasks/${taskId}/return`, { method: 'POST', body: JSON.stringify({ reason }) }),
   // Exercices presents sur les dossiers accessibles (options du selecteur du dashboard)
   getExercices: () => req<{ exercices: number[] }>('/org/exercices'),
   // Passage au nouvel exercice (auto : cron 1er janvier + securite au chargement)
@@ -492,7 +538,7 @@ export const orgApi = {
 
   // Timeline
   getTimeline: (dossierId: string) => req<TimelineEvent[]>(`/org/dossiers/${dossierId}/timeline`),
-  getAuditLog: (dossierId: string) => req<any[]>(`/org/dossiers/${dossierId}/audit`),
+  getAuditLog: (dossierId: string) => req<OrgAuditEntry[]>(`/org/dossiers/${dossierId}/audit`),
 
   // Expert-only
   getComptables: () => req<OrgComptable[]>('/org/comptables'),
