@@ -54,6 +54,12 @@ export default function OrgDashboardExpert() {
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   // New dossier modal
   const [showNewDossier, setShowNewDossier] = useState(false);
+  // Modal creation de tâche globale (depuis le dashboard, choix du dossier)
+  const [showNewTask, setShowNewTask] = useState(false);
+  const [ntDossier, setNtDossier] = useState('');
+  const [ntLabel, setNtLabel] = useState('');
+  const [ntMonth, setNtMonth] = useState<number | ''>('');
+  const [ntCreating, setNtCreating] = useState(false);
   const [selectedClient, setSelectedClient] = useState('');
   const [newExercice, setNewExercice] = useState(new Date().getFullYear());
   const [creating, setCreating] = useState(false);
@@ -258,6 +264,26 @@ export default function OrgDashboardExpert() {
       alert(err.message || 'Erreur lors de la création');
     } finally {
       setCreating(false);
+    }
+  };
+
+  // Creation de tâche depuis le dashboard : choix du dossier + libellé (+ mois optionnel)
+  const createGlobalTask = async () => {
+    if (!ntDossier) { alert('Dossier requis : sélectionnez le dossier cible'); return; }
+    if (!ntLabel.trim()) { alert('Libellé de la tâche requis'); return; }
+    setNtCreating(true);
+    try {
+      const d = allDossiers.find(x => x.id === ntDossier);
+      await orgApi.addTask(ntDossier, ntLabel.trim(), d?.comptable_id || null, ntMonth === '' ? null : Number(ntMonth));
+      setShowNewTask(false);
+      setNtDossier('');
+      setNtLabel('');
+      setNtMonth('');
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la création');
+    } finally {
+      setNtCreating(false);
     }
   };
 
@@ -553,6 +579,14 @@ export default function OrgDashboardExpert() {
           <OrgAccountButton />
           <ClientsImport comptables={comptables} onImported={fetchDashboard} />
           <button
+            onClick={() => setShowNewTask(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-all"
+            data-testid="btn-new-task-global"
+          >
+            <Plus size={16} />
+            Nouvelle tâche
+          </button>
+          <button
             onClick={() => setShowNewDossier(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all hover:shadow-purple-300 hover:-translate-y-0.5"
           >
@@ -612,9 +646,14 @@ export default function OrgDashboardExpert() {
                     </div>
                   ) : null}
                   <div className="flex items-center gap-3 mt-3 text-xs">
-                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-lg font-medium">
-                      {c.client_count} client{c.client_count > 1 ? 's' : ''}
-                    </span>
+                    <button
+                      onClick={e => { e.stopPropagation(); navigate(`/cabinet?tab=global&comptable=${c.id}`); }}
+                      title="Voir ses dossiers dans la vue globale"
+                      data-testid="card-dossiers-link"
+                      className="bg-blue-50 text-blue-700 px-2 py-1 rounded-lg font-medium hover:bg-blue-100 transition-colors"
+                    >
+                      {c.client_count} dossier{c.client_count > 1 ? 's' : ''}
+                    </button>
                     <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg font-medium">
                       {c.avg_progress}%
                     </span>
@@ -640,6 +679,14 @@ export default function OrgDashboardExpert() {
                         ✅ {unverifiedByComptable[c.id]} à vérifier
                       </span>
                     )}
+                    <button
+                      onClick={e => { e.stopPropagation(); setNewDossierComp(c.id); setSelectedClient(''); setNewClientName(''); setShowNewDossier(true); }}
+                      title={`Ajouter un client à ${c.full_name}`}
+                      data-testid={`card-add-client-${c.id}`}
+                      className="ml-auto flex items-center gap-1 text-[11px] font-semibold text-purple-600 bg-purple-50 px-2 py-1 rounded-lg hover:bg-purple-100 transition-colors"
+                    >
+                      <Plus size={12} /> Client
+                    </button>
                   </div>
                 </div>
               </div>
@@ -987,6 +1034,80 @@ export default function OrgDashboardExpert() {
               </button>
               <button
                 onClick={() => setEditClient(null)}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Nouvelle tâche globale (choix du dossier) */}
+      {showNewTask && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <Plus size={20} className="text-purple-600" />
+                Nouvelle tâche
+              </h3>
+              <button onClick={() => setShowNewTask(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Dossier <span className="text-red-500">*</span></label>
+              <select
+                value={ntDossier}
+                onChange={e => setNtDossier(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+                data-testid="new-task-dossier"
+              >
+                <option value="">— Sélectionner un dossier —</option>
+                {allDossiers.filter(d => d.status === 'en_cours').map(d => (
+                  <option key={d.id} value={d.id}>{d.client_name} · ex. {d.exercice}{d.comptable_name ? ` · ${d.comptable_name}` : ''}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Libellé <span className="text-red-500">*</span></label>
+              <input
+                value={ntLabel}
+                onChange={e => setNtLabel(e.target.value)}
+                placeholder="Ex : Rapprochement bancaire septembre"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                data-testid="new-task-label"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Mois</label>
+              <select
+                value={ntMonth === '' ? '' : String(ntMonth)}
+                onChange={e => setNtMonth(e.target.value === '' ? '' : Number(e.target.value))}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+              >
+                <option value="">— Annuel (hors mois) —</option>
+                {['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'].map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={createGlobalTask}
+                disabled={!ntDossier || !ntLabel.trim() || ntCreating}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
+                data-testid="new-task-submit"
+              >
+                {ntCreating ? 'Création...' : 'Créer la tâche'}
+              </button>
+              <button
+                onClick={() => setShowNewTask(false)}
                 className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
               >
                 Annuler
