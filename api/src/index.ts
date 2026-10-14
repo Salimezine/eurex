@@ -213,7 +213,7 @@ async function rolloverExercices(env: Env, opts: { orgId: string; source: string
   // Clients a ouvrir : ont un dossier plus ancien, aucun pour l'annee cible, aucun plus recent
   const { results: rows } = await env.DB.prepare(
     `SELECT c.id, c.name, c.assigned_comptable_id FROM org_clients c
-     WHERE c.organization_id = ?${scopeSql}
+     WHERE c.organization_id = ? AND c.deleted_at IS NULL${scopeSql}
        AND EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice < ?)
        AND NOT EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice = ?)
        AND NOT EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice > ?)
@@ -271,7 +271,7 @@ async function ensureCurrentExercice(env: Env, orgId: string): Promise<void> {
     const y = new Date().getUTCFullYear();
     const st = await env.DB.prepare('SELECT last_rollover_year FROM organizations WHERE id = ?').bind(orgId).first() as any;
     if (Number(st?.last_rollover_year || 0) >= y) return;
-    const missing = await env.DB.prepare('SELECT COUNT(*) AS n FROM org_clients c WHERE c.organization_id = ? AND EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice < ?) AND NOT EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice = ?)').bind(orgId, y, y).first() as any;
+    const missing = await env.DB.prepare("SELECT COUNT(*) AS n FROM org_clients c WHERE c.organization_id = ? AND c.deleted_at IS NULL AND EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice < ?) AND NOT EXISTS (SELECT 1 FROM org_dossiers d WHERE d.client_id = c.id AND d.exercice = ?)").bind(orgId, y, y).first() as any;
     if (!missing || !Number(missing.n)) {
       await env.DB.prepare('UPDATE organizations SET last_rollover_year = ? WHERE id = ?').bind(y, orgId).run();
       return;
@@ -2815,10 +2815,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const exerciceSel = exParam ? Number(exParam) : null;
         let clients;
         if (isSupervisor(user.role)) {
-          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? ORDER BY c.name').bind(user.organization_id).all();
+          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.deleted_at IS NULL ORDER BY c.name').bind(user.organization_id).all();
           clients = r.results;
         } else {
-          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.assigned_comptable_id = ? ORDER BY c.name').bind(user.organization_id, user.id).all();
+          const r = await env.DB.prepare('SELECT c.*, u.full_name as comptable_name FROM org_clients c LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND c.assigned_comptable_id = ? ORDER BY c.name').bind(user.organization_id, user.id).all();
           clients = r.results;
         }
         // Enrich with dossier + progress. AVANT : 1 requete dossiers + 1 taches
@@ -3030,13 +3030,20 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true, ...after });
       }
 
-      // --- ORG: DELETE CLIENT (expert + manager) ---
+      // --- ORG: DELETE CLIENT (expert + manager) — corbeille 30 jours (soft-delete) ---
+      // ?hard=1 : suppression définitive (comptes de test), comportement historique
       if (orgClientMatch && method === 'DELETE') {
         const user = await verifyOrgToken(request);
         if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
         const client = await env.DB.prepare('SELECT * FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientMatch[1], user.organization_id).first() as any;
         if (!client) return json({ error: 'Client non trouvé' }, 404);
         const delId = orgClientMatch[1];
+        const hard = new URL(request.url).searchParams.get('hard') === '1';
+        if (!hard) {
+          await env.DB.prepare('UPDATE org_clients SET deleted_at = datetime(\'now\') WHERE id = ?').bind(delId).run();
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_trashed\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, delId, JSON.stringify({ name: client.name })).run();
+          return json({ ok: true, trashed: client.name });
+        }
         // Cascade : documents -> alertes -> notes -> grants -> temps -> taches -> dossiers -> client
         await env.DB.prepare('DELETE FROM org_expected_documents WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(delId).run();
         await env.DB.prepare('DELETE FROM org_alert_dones WHERE alert_id IN (SELECT id FROM org_fiscal_alerts WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?))').bind(delId).run();
@@ -3052,6 +3059,41 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await env.DB.prepare('DELETE FROM org_clients WHERE id = ?').bind(delId).run();
         await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, 'client_deleted', 'client', delId, JSON.stringify({ name: client.name })).run();
         return json({ ok: true, deleted: client.name });
+      }
+
+      // --- ORG: TRASH CLIENTS (liste corbeille 30 j + purge definitive des entrees expirees) ---
+      if (path === '/api/org/clients/trash' && method === 'GET') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        // Purge : plus de 30 jours en corbeille = définitif (cascade minimale dossiers -> client)
+        const { results: expired } = await env.DB.prepare("SELECT id FROM org_clients WHERE organization_id = ? AND deleted_at IS NOT NULL AND deleted_at < datetime('now','-30 days')").bind(user.organization_id).all();
+        for (const e of expired as any[]) {
+          await env.DB.prepare('DELETE FROM org_expected_documents WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_fiscal_alerts WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_notes WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_dossier_grants WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_time_entries WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_task_collaborators WHERE task_id IN (SELECT id FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?))').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_tasks WHERE dossier_id IN (SELECT id FROM org_dossiers WHERE client_id = ?)').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_dossiers WHERE client_id = ?').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_task_templates WHERE client_id = ?').bind(e.id).run();
+          await env.DB.prepare('DELETE FROM org_clients WHERE id = ?').bind(e.id).run();
+        }
+        const { results } = await env.DB.prepare("SELECT id, name, matricule_fiscal, contact_email, assigned_comptable_id, deleted_at, CAST(julianday('now') - julianday(deleted_at) AS INTEGER) AS days_in_trash FROM org_clients WHERE organization_id = ? AND deleted_at IS NOT NULL AND deleted_at >= datetime('now','-30 days') ORDER BY deleted_at DESC").bind(user.organization_id).all();
+        return json(results);
+      }
+
+      // --- ORG: RESTORE CLIENT (sortie de corbeille) ---
+      const orgClientRestoreMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/restore$/);
+      if (orgClientRestoreMatch && method === 'PATCH') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const client = await env.DB.prepare('SELECT id, name, deleted_at FROM org_clients WHERE id = ? AND organization_id = ?').bind(orgClientRestoreMatch[1], user.organization_id).first() as any;
+        if (!client) return json({ error: 'Client non trouvé' }, 404);
+        if (!client.deleted_at) return json({ error: 'Ce client n\u0027est pas dans la corbeille' }, 400);
+        await env.DB.prepare('UPDATE org_clients SET deleted_at = NULL WHERE id = ?').bind(client.id).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_restored\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, client.id, JSON.stringify({ name: client.name })).run();
+        return json({ ok: true, restored: client.name });
       }
 
       const orgClientReassignMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/reassign$/);
@@ -3124,7 +3166,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const user = await verifyOrgToken(request);
         if (!user) return json({ error: 'Non autorisé' }, 401);
         if (!await orgCanAccessDossier(user, orgDossierGetMatch[1])) return json({ error: 'Accès refusé' }, 403);
-        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.person_type, c.export_status, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
+        const dossier = await env.DB.prepare('SELECT d.*, c.name as client_name, c.matricule_fiscal, c.id as client_id, c.contact_email, c.person_type, c.export_status, c.assigned_comptable_id as client_comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ?').bind(orgDossierGetMatch[1]).first() as any;
         if (!dossier) return json({ error: 'Dossier non trouvé' }, 404);
         const { results: rawTasks } = await env.DB.prepare('SELECT t.*, u.full_name as updated_by_name, vu.full_name as verified_by_name, COALESCE(vu.role_label, vu.role) as verified_by_role, au.full_name as assigned_comptable_name, du.full_name as done_by_name FROM org_tasks t LEFT JOIN org_users u ON t.updated_by = u.id LEFT JOIN org_users vu ON t.verified_by = vu.id LEFT JOIN org_users au ON t.assigned_comptable_id = au.id LEFT JOIN org_users du ON t.done_by = du.id WHERE t.dossier_id = ? AND t.hidden = 0 ORDER BY t.month IS NULL, t.month, t.order_index').bind(orgDossierGetMatch[1]).all();
         // Filtre export : les tâches à portée hors statut du client n'apparaissent pas
@@ -3973,6 +4015,96 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         return json({ ok: true });
       }
 
+      // --- ORG: DUPLICATE DOSSIER — copie la checklist vers exercice (et/ou client) cible ---
+      const orgDupMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/duplicate$/);
+      if (orgDupMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const src = await env.DB.prepare('SELECT d.*, c.assigned_comptable_id, c.name as client_name, c.organization_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE d.id = ? AND c.organization_id = ?').bind(orgDupMatch[1], user.organization_id).first() as any;
+        if (!src) return json({ error: 'Dossier source introuvable' }, 404);
+        const body = (await request.json().catch(() => ({}))) as any;
+        const targetClient = body?.client_id ? String(body.client_id) : src.client_id;
+        const targetYear = body?.exercice ? Number(body.exercice) : src.exercice;
+        if (!Number.isInteger(targetYear) || targetYear < 2000 || targetYear > 2100) return json({ error: 'Exercice invalide' }, 400);
+        if (targetClient !== src.client_id) {
+          const cl = await env.DB.prepare('SELECT id FROM org_clients WHERE id = ? AND organization_id = ? AND deleted_at IS NULL').bind(targetClient, user.organization_id).first();
+          if (!cl) return json({ error: 'Client cible introuvable' }, 404);
+        }
+        const dup = await env.DB.prepare('SELECT id FROM org_dossiers WHERE client_id = ? AND exercice = ?').bind(targetClient, targetYear).first();
+        if (dup) return json({ error: `Un dossier existe déjà pour ce client sur l\u0027exercice ${targetYear}` }, 409);
+        const newDossierId = genId();
+        await env.DB.prepare("INSERT INTO org_dossiers (id, client_id, exercice, status) VALUES (?, ?, ?, 'en_cours')").bind(newDossierId, targetClient, targetYear).run();
+        // Copie des tâches (statuts remis a zero) + documents attendus (non recus)
+        const { results: srcTasks } = await env.DB.prepare('SELECT * FROM org_tasks WHERE dossier_id = ? ORDER BY order_index, created_at').bind(src.id).all();
+        const taskIdMap = new Map<string, string>();
+        for (const t of srcTasks as any[]) {
+          const newTaskId = genId();
+          taskIdMap.set(t.id, newTaskId);
+          await env.DB.prepare('INSERT INTO org_tasks (id, dossier_id, label, status, requires_document, order_index, assigned_comptable_id, month, export_scope, hidden, due_date, created_by, created_at) VALUES (?, ?, ?, \'a_faire\', ?, ?, ?, ?, ?, ?, ?, NULL, datetime(\'now\'))')
+            .bind(newTaskId, newDossierId, t.label, t.requires_document, t.order_index, t.assigned_comptable_id || null, t.month ?? null, t.export_scope || null, t.hidden || 0, t.due_date || null).run();
+        }
+        const { results: srcDocs } = await env.DB.prepare('SELECT * FROM org_expected_documents WHERE dossier_id = ?').bind(src.id).all();
+        for (const doc of srcDocs as any[]) {
+          const newLabel = String(doc.label || '').replace(src.exercice === targetYear ? '__never__' : String(src.exercice), String(targetYear));
+          await env.DB.prepare('INSERT INTO org_expected_documents (id, dossier_id, task_id, label, received) VALUES (?, ?, ?, ?, 0)')
+            .bind(genId(), newDossierId, doc.task_id ? (taskIdMap.get(doc.task_id) || null) : null, newLabel).run();
+        }
+        await orgRecalcProgress(env.DB, newDossierId);
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'dossier_duplicated\', \'dossier\', ?, ?)')
+          .bind(genId(), user.organization_id, user.id, user.full_name, newDossierId, JSON.stringify({ source_dossier_id: src.id, source_exercice: src.exercice, target_exercice: targetYear, target_client_id: targetClient, tasks: srcTasks.length })).run();
+        return json({ id: newDossierId, tasks: srcTasks.length, docs: (srcDocs as any[]).length }, 201);
+      }
+
+      // --- ORG: REMIND — journalise une relance email envoyee hors plateforme ---
+      const orgRemindMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/remind$/);
+      if (orgRemindMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user) return json({ error: 'Non autorisé' }, 401);
+        if (!await orgCanAccessDossier(user, orgRemindMatch[1])) return json({ error: 'Accès refusé' }, 403);
+        const body = (await request.json().catch(() => ({}))) as any;
+        const channel = body?.channel === 'sms' ? 'sms' : 'email';
+        const count = Number(body?.doc_count) || 0;
+        await env.DB.prepare('INSERT INTO org_reminders_log (id, dossier_id, channel) VALUES (?, ?, ?)').bind(genId(), orgRemindMatch[1], channel).run();
+        await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'client_reminded\', \'dossier\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, orgRemindMatch[1], JSON.stringify({ channel, docs: count })).run();
+        return json({ ok: true });
+      }
+
+      // --- ORG: PORTAL TOKEN — genere/retourne le lien public du client (expert/manager) ---
+      const orgPortalMatch = path.match(/^\/api\/org\/clients\/([^/]+)\/portal-token$/);
+      if (orgPortalMatch && method === 'POST') {
+        const user = await verifyOrgToken(request);
+        if (!user || !isSupervisor(user.role)) return json({ error: 'Réservé au rôle expert' }, 403);
+        const client = await env.DB.prepare('SELECT id, name, portal_token FROM org_clients WHERE id = ? AND organization_id = ? AND deleted_at IS NULL').bind(orgPortalMatch[1], user.organization_id).first() as any;
+        if (!client) return json({ error: 'Client non trouvé' }, 404);
+        let token = client.portal_token;
+        if (!token) {
+          token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+          await env.DB.prepare('UPDATE org_clients SET portal_token = ? WHERE id = ?').bind(token, client.id).run();
+          await env.DB.prepare('INSERT INTO org_audit_log (id, organization_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, \'portal_token_created\', \'client\', ?, ?)').bind(genId(), user.organization_id, user.id, user.full_name, client.id, JSON.stringify({ name: client.name })).run();
+        }
+        return json({ token });
+      }
+
+      // --- ORG: PUBLIC PORTAL — page client sans auth (securise par token aleatoire) ---
+      const orgPublicPortalMatch = path.match(/^\/api\/org\/public\/client\/([^/]+)$/);
+      if (orgPublicPortalMatch && method === 'GET') {
+        const token = orgPublicPortalMatch[1];
+        if (!token || token.length < 20) return json({ error: 'Lien invalide' }, 400);
+        const client = await env.DB.prepare('SELECT id, name FROM org_clients WHERE portal_token = ? AND deleted_at IS NULL').bind(token).first() as any;
+        if (!client) return json({ error: 'Lien expiré ou invalide' }, 404);
+        const dossier = await env.DB.prepare("SELECT id, exercice, cached_progress FROM org_dossiers WHERE client_id = ? AND status = 'en_cours' ORDER BY exercice DESC LIMIT 1").bind(client.id).first() as any;
+        if (!dossier) return json({ client_name: client.name, dossier: null, docs: [] });
+        const { results: docs } = await env.DB.prepare('SELECT label, received FROM org_expected_documents WHERE dossier_id = ? ORDER BY received, label').bind(dossier.id).all();
+        const received = (docs as any[]).filter(d => d.received).length;
+        return json({
+          client_name: client.name,
+          dossier: { exercice: dossier.exercice, progress: dossier.cached_progress || 0 },
+          docs: docs,
+          docs_received: received,
+          docs_total: (docs as any[]).length,
+        });
+      }
+
       // --- ORG: TIMELINE ---
       const orgTimelineMatch = path.match(/^\/api\/org\/dossiers\/([^/]+)\/timeline$/);
       if (orgTimelineMatch && method === 'GET') {
@@ -4300,16 +4432,16 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const scopeBinds = isSup ? [] : [user.id, user.id];
 
         const { results: dRows } = await env.DB.prepare(
-          `SELECT d.id, d.status, d.exercice, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ?${scope} ORDER BY c.name`
+          `SELECT d.id, d.status, d.exercice, c.name as client_name FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND d.exercice = ?${scope} ORDER BY c.name`
         ).bind(user.organization_id, exercice, ...scopeBinds).all();
 
         const { results: tRows } = await env.DB.prepare(
-          `SELECT t.dossier_id, COUNT(*) as total, SUM(CASE WHEN t.status = 'fait' THEN 1 ELSE 0 END) as done FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND t.hidden = 0${scope} GROUP BY t.dossier_id`
+          `SELECT t.dossier_id, COUNT(*) as total, SUM(CASE WHEN t.status = 'fait' THEN 1 ELSE 0 END) as done FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND d.exercice = ? AND t.hidden = 0${scope} GROUP BY t.dossier_id`
         ).bind(user.organization_id, exercice, ...scopeBinds).all();
         const tByD = new Map((tRows as any[]).map(r => [String(r.dossier_id), r]));
 
         const { results: docRows } = await env.DB.prepare(
-          `SELECT e.dossier_id, COUNT(*) as total, SUM(CASE WHEN e.received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents e JOIN org_dossiers d ON e.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ?${scope} GROUP BY e.dossier_id`
+          `SELECT e.dossier_id, COUNT(*) as total, SUM(CASE WHEN e.received = 1 THEN 1 ELSE 0 END) as received FROM org_expected_documents e JOIN org_dossiers d ON e.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND d.exercice = ?${scope} GROUP BY e.dossier_id`
         ).bind(user.organization_id, exercice, ...scopeBinds).all();
         const docByD = new Map((docRows as any[]).map(r => [String(r.dossier_id), r]));
 
@@ -4323,8 +4455,17 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         ).bind(...hBinds).all();
 
         const { results: lateRows } = await env.DB.prepare(
-          `SELECT t.label, t.due_date, t.status, t.dossier_id, c.name || ' (' || d.exercice || ')' as dossier_label FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND d.exercice = ? AND t.hidden = 0 AND t.status != 'fait' AND t.due_date IS NOT NULL AND t.due_date < ?${scope} ORDER BY t.due_date ASC LIMIT 200`
+          `SELECT t.label, t.due_date, t.status, t.dossier_id, c.name || ' (' || d.exercice || ')' as dossier_label FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND d.exercice = ? AND t.hidden = 0 AND t.status != 'fait' AND t.due_date IS NOT NULL AND t.due_date < ?${scope} ORDER BY t.due_date ASC LIMIT 200`
         ).bind(user.organization_id, exercice, lateCutoff, ...scopeBinds).all();
+
+        // Qualite du mois : verifications vs renvois en correction (audit_log, taches de l'exercice)
+        let qRows: any[] = [];
+        try {
+          const res = await env.DB.prepare(
+            `SELECT a.action, COUNT(*) as n FROM org_audit_log a JOIN org_tasks t ON a.target_id = t.id JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE a.organization_id = ? AND c.deleted_at IS NULL AND d.exercice = ? AND a.action IN ('task_verified','task_returned') AND a.created_at >= ? AND a.created_at < ?${scope} GROUP BY a.action`
+          ).bind(user.organization_id, exercice, mStart, mNext, ...scopeBinds).all();
+          qRows = res.results as any[];
+        } catch { qRows = []; }
 
         // Échéances dont une occurrence tombe dans le mois (expansion des récurrences)
         let aScope = '';
@@ -4374,6 +4515,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           return { id: d.id, client_name: d.client_name, exercice: d.exercice, status: d.status, tasks_total: tt, tasks_done: td, tasks_late: late, docs_total: dt, docs_received: dr, hours_seconds: hs, progress: tt ? Math.round(td / tt * 1000) / 10 : 0 };
         });
 
+        const qualVerified = qRows.filter(r => r.action === 'task_verified').reduce((s, r) => s + Number(r.n), 0);
+        const qualReturned = qRows.filter(r => r.action === 'task_returned').reduce((s, r) => s + Number(r.n), 0);
+        const qualTotal = qualVerified + qualReturned;
+
         return json({
           exercice, month, month_label: `${MONTHS[month - 1]} ${exercice}`,
           generated_at: new Date().toISOString(),
@@ -4387,6 +4532,8 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             docs_total: docsTotal, docs_received: docsReceived,
             hours_seconds: hoursSec,
             alerts_due: alerts.length, alerts_done: alerts.filter(a => a.done).length,
+            verify_done: qualVerified, verify_returned: qualReturned,
+            verify_score: qualTotal > 0 ? Math.round(qualVerified / qualTotal * 100) : null,
           },
           hours_by_user: (hURows as any[]).map(r => ({ user_id: r.user_id, full_name: r.full_name, seconds: Number(r.secs) || 0, entries: Number(r.entries) || 0 })),
           dossiers: dossierList,
@@ -4415,7 +4562,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         // requetes concurrentes d'un isolat, d'ou des 503 "error code: 1102".
         const clientsByUid = new Map<string, any[]>();
         {
-          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = 'en_cours' WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL").bind(user.organization_id).all();
+          const { results: rows } = await env.DB.prepare("SELECT c.assigned_comptable_id as uid, c.id, d.cached_progress FROM org_clients c LEFT JOIN org_dossiers d ON d.client_id = c.id AND d.status = 'en_cours' WHERE c.organization_id = ? AND c.deleted_at IS NULL AND c.assigned_comptable_id IS NOT NULL").bind(user.organization_id).all();
           for (const r of rows as any[]) {
             const list = clientsByUid.get(r.uid);
             if (list) list.push(r); else clientsByUid.set(r.uid, [r]);
@@ -4423,7 +4570,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         }
         const tasksByUid = new Map<string, any[]>();
         {
-          const { results: rows } = await pgAll(env, "SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0", user.organization_id);
+          const { results: rows } = await pgAll(env, "SELECT c.assigned_comptable_id as uid, t.status, t.export_scope, t.month, t.due_date, c.export_status FROM org_tasks t JOIN org_dossiers d ON t.dossier_id = d.id JOIN org_clients c ON d.client_id = c.id WHERE c.organization_id = ? AND c.deleted_at IS NULL AND c.assigned_comptable_id IS NOT NULL AND d.status = 'en_cours' AND t.hidden = 0", user.organization_id);
           for (const r of rows as any[]) {
             const list = tasksByUid.get(r.uid);
             if (list) list.push(r); else tasksByUid.set(r.uid, [r]);
@@ -4442,11 +4589,13 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         const enriched = results.map((c: any) => {
           const clients = clientsByUid.get(c.id) || [];
           const taskStats = tasksByUid.get(c.id) || [];
-          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0 };
+          const today = new Date().toISOString().slice(0, 10);
+          const s = { total: 0, fait: 0, en_cours: 0, bloque_client: 0, overdue: 0 };
           for (const t of taskStats as any[]) {
             if (!exportScopeKeeps(t.export_scope, t.export_status)) continue;
             if (!inDashboardScope(t.month)) continue;
             s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
+            if (t.status !== 'fait' && t.due_date && String(t.due_date).slice(0, 10) < today) s.overdue++;
           }
           const runStart = parseUtc(runByUser.get(c.id));
           const qual = qualByUid.get(c.id) || { verified: 0, returned: 0 };
@@ -4551,7 +4700,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           const { results: sups } = await env.DB.prepare("SELECT id FROM org_users WHERE organization_id = ? AND role = 'expert' AND is_active = 1 AND id != ?").bind(user.organization_id, target.id).all();
           if (sups.length === 0) return json({ error: 'Impossible : au moins un superviseur doit rester actif' }, 400);
         }
-        const { n: assigned } = await env.DB.prepare('SELECT COUNT(*) as n FROM org_clients WHERE assigned_comptable_id = ?').bind(target.id).first() as any;
+        const { n: assigned } = await env.DB.prepare('SELECT COUNT(*) as n FROM org_clients WHERE assigned_comptable_id = ? AND deleted_at IS NULL').bind(target.id).first() as any;
         if (assigned > 0) return json({ error: `Impossible : ${assigned} client(s) sont assignés à ce compte` }, 409);
         await env.DB.prepare('DELETE FROM org_time_entries WHERE user_id = ?').bind(target.id).run();
         await env.DB.prepare('DELETE FROM org_audit_log WHERE target_id = ? AND target_type = ?').bind(target.id, 'user').run();
@@ -4627,7 +4776,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
         await ensureCurrentExercice(env, user.organization_id);
         const exParam = new URL(request.url).searchParams.get('exercice');
         const exSel = exParam ? Number(exParam) : null;
-        const { results } = await env.DB.prepare(`SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ?${exSel ? ' AND d.exercice = ?' : ''} ORDER BY d.exercice DESC, c.name`).bind(user.organization_id, ...(exSel ? [exSel] : [])).all();
+        const { results } = await env.DB.prepare(`SELECT d.*, c.name as client_name, c.export_status, u.full_name as comptable_name, u.id as comptable_id FROM org_dossiers d JOIN org_clients c ON d.client_id = c.id LEFT JOIN org_users u ON c.assigned_comptable_id = u.id WHERE c.organization_id = ? AND c.deleted_at IS NULL${exSel ? ' AND d.exercice = ?' : ''} ORDER BY d.exercice DESC, c.name`).bind(user.organization_id, ...(exSel ? [exSel] : [])).all();
         // UNE requete pour les taches de tous les dossiers, au lieu d'une par
         // dossier (70 requetes pour 69 dossiers). Le plafond CPU du Worker
         // gratuit (10 ms) se partage entre les requetes concurrentes d'un
@@ -4671,7 +4820,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
           `SELECT c.id, c.name, c.matricule_fiscal,
              (SELECT d.id FROM org_dossiers d WHERE d.client_id = c.id ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC LIMIT 1) as dossier_id,
              (SELECT d.exercice FROM org_dossiers d WHERE d.client_id = c.id ORDER BY (d.status = 'en_cours') DESC, d.exercice DESC LIMIT 1) as exercice
-           FROM org_clients c WHERE c.organization_id = ? AND (c.name LIKE ? OR c.matricule_fiscal LIKE ?)${scopeCli}
+           FROM org_clients c WHERE c.organization_id = ? AND c.deleted_at IS NULL AND (c.name LIKE ? OR c.matricule_fiscal LIKE ?)${scopeCli}
            ORDER BY c.name LIMIT 6`
         ).bind(...bC).all();
 

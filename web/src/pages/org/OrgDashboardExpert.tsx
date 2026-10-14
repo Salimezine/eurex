@@ -60,6 +60,11 @@ export default function OrgDashboardExpert() {
   const [ntLabel, setNtLabel] = useState('');
   const [ntMonth, setNtMonth] = useState<number | ''>('');
   const [ntCreating, setNtCreating] = useState(false);
+  // Rollover exercice (duplication des checklists vers l'annee suivante)
+  const [showRollover, setShowRollover] = useState(false);
+  const [roYear, setRoYear] = useState(new Date().getFullYear() + 1);
+  const [roBusy, setRoBusy] = useState(false);
+  const [roResult, setRoResult] = useState<{ year: number; created: any[]; closed: any[] } | null>(null);
   const [selectedClient, setSelectedClient] = useState('');
   const [newExercice, setNewExercice] = useState(new Date().getFullYear());
   const [creating, setCreating] = useState(false);
@@ -284,6 +289,21 @@ export default function OrgDashboardExpert() {
       alert(err.message || 'Erreur lors de la création');
     } finally {
       setNtCreating(false);
+    }
+  };
+
+  // Rollover : ouvre l'exercice cible pour tous les clients (checklists depuis les modeles)
+  const runRollover = async () => {
+    setRoBusy(true);
+    setRoResult(null);
+    try {
+      const res = await orgApi.rolloverExercices({ year: roYear });
+      setRoResult(res);
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors du rollover');
+    } finally {
+      setRoBusy(false);
     }
   };
 
@@ -579,6 +599,14 @@ export default function OrgDashboardExpert() {
           <OrgAccountButton />
           <ClientsImport comptables={comptables} onImported={fetchDashboard} />
           <button
+            onClick={() => { setRoResult(null); setShowRollover(true); }}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-all"
+            data-testid="btn-rollover"
+            title="Dupliquer les checklists vers le nouvel exercice"
+          >
+            🔄 Exercice
+          </button>
+          <button
             onClick={() => setShowNewTask(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-all"
             data-testid="btn-new-task-global"
@@ -677,6 +705,11 @@ export default function OrgDashboardExpert() {
                     {(unverifiedByComptable[c.id] || 0) > 0 && (
                       <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded-lg font-medium" data-testid={`unverified-comptable-${c.id}`}>
                         ✅ {unverifiedByComptable[c.id]} à vérifier
+                      </span>
+                    )}
+                    {(c.task_stats.overdue || 0) > 0 && (
+                      <span className="bg-red-50 text-red-600 px-2 py-1 rounded-lg font-medium" data-testid={`overdue-comptable-${c.id}`} title="Tâches en retard sur ses dossiers en cours">
+                        ⏰ {c.task_stats.overdue} retard{c.task_stats.overdue! > 1 ? 's' : ''}
                       </span>
                     )}
                     <button
@@ -1111,6 +1144,59 @@ export default function OrgDashboardExpert() {
                 className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
               >
                 Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Rollover exercice (duplique les checklists vers l'annee cible) */}
+      {showRollover && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800">🔄 Passage au nouvel exercice</h3>
+              <button onClick={() => setShowRollover(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600">
+              Pour chaque client : clôture du dossier encore ouvert, puis ouverture de l'exercice cible avec les tâches générées depuis les modèles du cabinet.
+            </p>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Exercice cible</label>
+              <select
+                value={roYear}
+                onChange={e => setRoYear(Number(e.target.value))}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+                data-testid="rollover-year"
+              >
+                {[1, 2].map(o => {
+                  const y = new Date().getFullYear() + o;
+                  return <option key={y} value={y}>{y}</option>;
+                })}
+              </select>
+            </div>
+            {roResult && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm text-emerald-800" data-testid="rollover-result">
+                ✓ <b>{roResult.created.length}</b> dossier(s) ouvert(s) sur {roResult.year}
+                {roResult.closed.length > 0 && <> · <b>{roResult.closed.length}</b> ancien(s) clôturé(s)</>}
+              </div>
+            )}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={runRollover}
+                disabled={roBusy}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-all"
+                data-testid="rollover-submit"
+              >
+                {roBusy ? 'Exécution...' : 'Lancer le rollover'}
+              </button>
+              <button
+                onClick={() => setShowRollover(false)}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+              >
+                Fermer
               </button>
             </div>
           </div>

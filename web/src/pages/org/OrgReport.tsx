@@ -62,6 +62,7 @@ export default function OrgReport() {
       ['Documents reçus', `${t.docs_received}/${t.docs_total}`],
       ['Heures pointées', fmtH(t.hours_seconds)],
       ['Échéances du mois', `${t.alerts_done}/${t.alerts_due}`],
+      ['Vérifications (qualité)', t.verify_score != null ? `${t.verify_score}% (${t.verify_done} ok / ${t.verify_returned} renvois)` : '—'],
       [],
       ['Dossiers', 'État', 'Avancement %', 'Tâches faites', 'Tâches total', 'Retards', 'Documents reçus', 'Documents total', 'Heures'],
       ...data.dossiers.map((d: any) => [d.client_name, statusLabel[d.status] || d.status, d.progress, d.tasks_done, d.tasks_total, d.tasks_late, d.docs_received, d.docs_total, fmtH(d.hours_seconds)]),
@@ -122,7 +123,7 @@ export default function OrgReport() {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-5">
             {kpi('dossiers', 'Dossiers', String(t.dossiers), t.dossiers_clos ? `${t.dossiers_clos} clos` : undefined)}
             {kpi('progress', 'Avancement', `${t.progress}%`, 'moyen du cabinet')}
             {kpi('tasks', 'Tâches', `${t.tasks_done}/${t.tasks_total}`, 'faites')}
@@ -130,6 +131,7 @@ export default function OrgReport() {
             {kpi('docs', 'Documents', `${t.docs_received}/${t.docs_total}`, 'reçus')}
             {kpi('hours', 'Heures', fmtH(t.hours_seconds), 'pointées sur le mois')}
             {kpi('alerts', 'Échéances', `${t.alerts_done}/${t.alerts_due}`, 'faites / du mois')}
+            {kpi('quality', 'Qualité', t.verify_score != null ? `${t.verify_score}%` : '—', t.verify_returned != null ? `${t.verify_done} vérifs · ${t.verify_returned} renvois` : 'vérifications du mois')}
           </div>
 
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-5 shadow-sm">

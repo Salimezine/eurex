@@ -11,6 +11,7 @@ import EtatsFinanciers from './pages/ef/EtatsFinanciers';
 import AchatsSocietes from './pages/achats/AchatsSocietes';
 import AchatsDossierPage from './pages/achats/AchatsDossierPage';
 import OrgLayout from './pages/org/OrgLayout';
+import OrgPortailClient from './pages/org/OrgPortailClient';
 import QuotaIndicator from './components/QuotaIndicator';
 import { OrgAuthProvider, useOrgAuth } from './lib/orgAuth';
 import { getLang, setLang, onLangChange, initLang, t } from './lib/orgI18n';
@@ -110,16 +111,21 @@ export default function App() {
   const loc = useLocation();
   const path = loc.pathname;
   const onCabinet = path.startsWith('/cabinet');
+  // Portail client public : page autonome, sans nav ni footer internes
+  const onPortail = path.startsWith('/portail');
 
   return (
     <OrgAuthProvider>
       <div className="min-h-screen bg-gray-50 flex flex-col">
-        <GlobalNav path={path} />
+        {!onPortail && <GlobalNav path={path} />}
         {/* /cabinet : conteneur sans padding → le login pleine largeur, les pages cabinet gèrent leur propre max-w */}
-        <main className={onCabinet ? 'flex-1 flex flex-col' : 'max-w-7xl mx-auto px-4 py-6 w-full'}>
+        <main className={onCabinet || onPortail ? 'flex-1 flex flex-col' : 'max-w-7xl mx-auto px-4 py-6 w-full'}>
           <Routes>
             {/* Organization module — has its own layout with auth */}
             <Route path="/cabinet/*" element={<OrgLayout />} />
+
+            {/* Portail client public (lien tokenise, genere depuis le dossier) */}
+            <Route path="/portail/:token" element={<OrgPortailClient />} />
 
             {/* Existing routes */}
             <Route path="/" element={<Home />} />
@@ -134,12 +140,14 @@ export default function App() {
             <Route path="/achats/dossier/:id" element={<AchatsDossierPage />} />
           </Routes>
         </main>
-        <footer className="border-t border-gray-200 mt-10">
-          <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between text-xs text-gray-400">
-            <span>EUREX — Générateur d'Écritures Comptables IA</span>
-            <span>Created by med salim ezzine</span>
-          </div>
-        </footer>
+        {!onPortail && (
+          <footer className="border-t border-gray-200 mt-10">
+            <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between text-xs text-gray-400">
+              <span>EUREX — Générateur d'Écritures Comptables IA</span>
+              <span>Created by med salim ezzine</span>
+            </div>
+          </footer>
+        )}
       </div>
     </OrgAuthProvider>
   );

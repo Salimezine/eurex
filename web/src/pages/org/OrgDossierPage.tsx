@@ -108,6 +108,12 @@ export default function OrgDossierPage() {
   const [noteText, setNoteText] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
+  // Duplication du dossier vers un autre exercice
+  const [showDup, setShowDup] = useState(false);
+  const [dupYear, setDupYear] = useState<number>(new Date().getFullYear());
+  const [dupBusy, setDupBusy] = useState(false);
+  // Vue kanban (checklist en colonnes)
+  const [kanban, setKanban] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [closeJustification, setCloseJustification] = useState('');
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -425,6 +431,50 @@ export default function OrgDossierPage() {
     try {
       await orgApi.deleteNote(dossier.id, noteId);
       load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  // Duplication : copie la checklist vers l'exercice choisi (statuts remis a zero)
+  const runDuplicate = async () => {
+    if (!dossier) return;
+    setDupBusy(true);
+    try {
+      const res = await orgApi.duplicateDossier(dossier.id, { exercice: dupYear });
+      setShowDup(false);
+      navigate(`/cabinet/dossier/${res.id}`);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
+  // Relance email : ouvre le client de messagerie avec les pieces manquantes, journalise la relance
+  const remindMissing = async () => {
+    if (!dossier) return;
+    const missing = (dossier.documents || []).filter(d => !d.received);
+    if (missing.length === 0) { alert('Aucune pièce manquante à relancer'); return; }
+    const email = dossier.contact_email || '';
+    const subject = encodeURIComponent(`Pièces manquantes — dossier ${dossier.client_name} exercice ${dossier.exercice}`);
+    const body = encodeURIComponent(
+      `Bonjour,\n\nSauf erreur de notre part, les pièces suivantes sont encore manquantes pour la finalisation de votre dossier ${dossier.exercice} :\n\n` +
+      missing.map(d => `• ${d.label}`).join('\n') +
+      `\n\nMerci de nous les transmettre dès que possible.\n\nCordialement,`
+    );
+    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
+    try { await orgApi.remindDocs(dossier.id, missing.length); } catch { /* journalisation best-effort */ }
+  };
+
+  // Lien portail client : genere le token public et copie l'URL dans le presse-papier
+  const copyPortalLink = async () => {
+    if (!dossier) return;
+    try {
+      const { token } = await orgApi.portalToken(dossier.client_id);
+      const url = `${window.location.origin}/portail/${token}`;
+      await navigator.clipboard.writeText(url);
+      alert(`Lien client copié :\n${url}`);
     } catch (err: any) {
       alert(err.message);
     }
@@ -823,6 +873,39 @@ export default function OrgDossierPage() {
             Générer les écritures
           </a>
         )}
+
+        {/* Relance pieces manquantes (email pret a envoyer) */}
+        <button
+          onClick={remindMissing}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 transition-all"
+          title="Ouvrir un email pré-rempli avec les pièces manquantes"
+          data-testid="btn-remind"
+        >
+          ✉️ Relancer
+        </button>
+
+        {isExpert && (
+          <>
+            {/* Lien portail client (avancement + pieces, sans login) */}
+            <button
+              onClick={copyPortalLink}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-teal-50 text-teal-700 hover:bg-teal-100 transition-all"
+              title="Copier le lien de suivi à envoyer au client"
+              data-testid="btn-portal-link"
+            >
+              🔗 Portail client
+            </button>
+            {/* Duplication de la checklist vers un autre exercice */}
+            <button
+              onClick={() => { setDupYear(dossier.exercice + 1); setShowDup(true); }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-all"
+              title="Copier la checklist vers un autre exercice"
+              data-testid="btn-duplicate-dossier"
+            >
+              📋 Dupliquer
+            </button>
+          </>
+        )}
       </div>
 
       {/* Expert: Time by user + details */}
@@ -884,8 +967,17 @@ export default function OrgDossierPage() {
       {/* Tab: Checklist */}
       {tab === 'checklist' && (
         <div className="space-y-2">
-          {/* Tâche optionnelle : Reporting mensuel (masquer / restaurer par dossier) */}
-          <div className="flex justify-end">
+          {/* Tâche optionnelle : Reporting mensuel (masquer / restaurer par dossier) + vue kanban */}
+          <div className="flex justify-end gap-2">
+            <button
+              data-testid="kanban-toggle"
+              onClick={() => setKanban(k => !k)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                kanban ? 'bg-purple-600 border-purple-600 text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300 hover:text-purple-700'
+              }`}
+            >
+              {kanban ? '☰ Liste' : '▦ Kanban'}
+            </button>
             <button
               data-testid="reporting-toggle"
               onClick={toggleReporting}
@@ -920,7 +1012,69 @@ export default function OrgDossierPage() {
             ))}
           </div>
 
-          {visibleGroups.map(group => (
+          {/* Vue kanban : la checklist en colonnes de statut (boutons de transition) */}
+          {kanban && (
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-2" data-testid="kanban-board">
+              {([
+                { key: 'a_faire', title: 'À faire', cls: 'border-gray-200', dot: 'bg-gray-400' },
+                { key: 'en_cours', title: 'En cours', cls: 'border-blue-200', dot: 'bg-blue-500' },
+                { key: 'a_verifier', title: 'À vérifier', cls: 'border-amber-200', dot: 'bg-amber-500' },
+                { key: 'fait', title: 'Fait', cls: 'border-emerald-200', dot: 'bg-emerald-500' },
+                { key: 'bloque_client', title: 'Bloqué', cls: 'border-red-200', dot: 'bg-red-500' },
+              ] as const).map(col => {
+                const list = filterTasksByMonth(dossier.tasks, monthFilter).filter(t => t.status === col.key);
+                return (
+                  <div key={col.key} className={`bg-white border rounded-xl p-2.5 ${col.cls}`} data-testid={`kanban-col-${col.key}`}>
+                    <h4 className="text-[11px] font-bold text-gray-600 uppercase tracking-wide flex items-center gap-1.5 mb-2">
+                      <span className={`inline-block w-2 h-2 rounded-full ${col.dot}`} />
+                      {col.title}
+                      <span className="ml-auto text-gray-400 font-mono">{list.length}</span>
+                    </h4>
+                    <div className="space-y-1.5 max-h-96 overflow-y-auto pr-0.5">
+                      {list.map(task => (
+                        <div key={task.id} className="bg-gray-50 border border-gray-100 rounded-lg p-2" data-testid="kanban-card">
+                          <p className="text-xs font-medium text-gray-700 leading-snug">{task.label}</p>
+                          {task.month && (
+                            <p className="text-[10px] text-gray-400 mt-0.5">{monthLabel(task.month)}</p>
+                          )}
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {task.status === 'a_faire' && (
+                              <>
+                                <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 hover:bg-blue-100">▶</button>
+                                <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓</button>
+                              </>
+                            )}
+                            {task.status === 'en_cours' && (
+                              <>
+                                <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Terminer</button>
+                                <button onClick={() => updateTaskStatus(task.id, 'bloque_client', prompt('Raison du blocage client ?') || undefined)} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-600 hover:bg-red-100">⏸</button>
+                              </>
+                            )}
+                            {task.status === 'a_verifier' && (
+                              <>
+                                <button onClick={() => updateTaskStatus(task.id, 'fait')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Valider</button>
+                                <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-600 hover:bg-amber-100">↩</button>
+                              </>
+                            )}
+                            {task.status === 'fait' && (
+                              <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200">↩ Rouvrir</button>
+                            )}
+                            {task.status === 'bloque_client' && (
+                              <button onClick={() => updateTaskStatus(task.id, 'en_cours')} className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 hover:bg-blue-100">▶ Débloquer</button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {list.length === 0 && (
+                        <p className="text-[10px] text-gray-300 italic text-center py-2">—</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!kanban && visibleGroups.map(group => (
           <div key={String(group.month)} className="space-y-2">
             {monthFilter === 'tous' && (
               <div className="flex items-center gap-2 pt-2">
@@ -1903,6 +2057,39 @@ export default function OrgDossierPage() {
               </button>
               <button onClick={openNextExercice} className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700">
                 Créer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Dupliquer la checklist vers un autre exercice */}
+      {showDup && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 className="font-bold text-gray-800 mb-1">📋 Dupliquer la checklist</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              Copie toutes les tâches (statuts remis à zéro) et les pièces attendues (non reçues) vers l'exercice choisi pour ce client.
+            </p>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Exercice cible</label>
+            <input
+              type="number"
+              value={dupYear}
+              onChange={e => setDupYear(parseInt(e.target.value) || dossier.exercice + 1)}
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+              data-testid="dup-year"
+            />
+            <div className="flex gap-2 justify-end mt-4">
+              <button onClick={() => setShowDup(false)} className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">
+                Annuler
+              </button>
+              <button
+                onClick={runDuplicate}
+                disabled={dupBusy || dupYear === dossier.exercice}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+                data-testid="dup-submit"
+              >
+                {dupBusy ? 'Copie...' : 'Dupliquer'}
               </button>
             </div>
           </div>

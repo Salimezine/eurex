@@ -8,7 +8,7 @@ import { SkeletonSection } from '../../components/Skeleton';
 import PwdField from '../../components/PwdField';
 import { Settings, Users, ListChecks, Plus, Trash2, Eye, EyeOff, RefreshCw, Pencil, Check, X } from 'lucide-react';
 
-type Tab = 'templates' | 'comptables';
+type Tab = 'templates' | 'comptables' | 'trash';
 type Role = 'comptable' | 'manager' | 'expert';
 
 const ROLE_LABEL: Record<string, string> = { comptable: 'Comptable', manager: 'Manager', expert: 'Expert' };
@@ -46,6 +46,23 @@ export default function OrgSettings() {
   const [editPwd, setEditPwd] = useState('');
   const [editRole, setEditRole] = useState<Role>('comptable');
   const [newCompRole, setNewCompRole] = useState<Role>('comptable');
+  // Corbeille clients (soft-delete 30 jours)
+  const [trash, setTrash] = useState<any[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+
+  const loadTrash = async () => {
+    setTrashLoading(true);
+    try { setTrash(await orgApi.getTrashClients()); } catch { setTrash([]); }
+    setTrashLoading(false);
+  };
+
+  const restoreFromTrash = async (id: string) => {
+    try {
+      await orgApi.restoreClient(id);
+      loadTrash();
+      setClients(await orgApi.getClients());
+    } catch (e: any) { alert(e.message); }
+  };
 
   // Le personnel inclut les superviseurs (gestion des roles) ;
   // les selects "Comptable assigné" restent limités aux comptables.
@@ -213,10 +230,11 @@ export default function OrgSettings() {
         {([
           { key: 'templates' as Tab, label: t('templates.title'), icon: <ListChecks size={14} /> },
           { key: 'comptables' as Tab, label: 'Comptables', icon: <Users size={14} /> },
+          { key: 'trash' as Tab, label: 'Corbeille', icon: <Trash2 size={14} /> },
         ]).map(t2 => (
           <button
             key={t2.key}
-            onClick={() => setTab(t2.key)}
+            onClick={() => { setTab(t2.key); if (t2.key === 'trash') loadTrash(); }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               tab === t2.key ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
@@ -541,6 +559,42 @@ export default function OrgSettings() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Tab: Corbeille — clients supprimés, restaurables 30 jours */}
+      {tab === 'trash' && (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500">
+            Les clients supprimés restent récupérables pendant 30 jours, puis sont définitivement effacés avec tous leurs dossiers.
+          </p>
+          {trashLoading ? (
+            <SkeletonSection />
+          ) : trash.length === 0 ? (
+            <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-sm text-gray-400">
+              🗑 Corbeille vide
+            </div>
+          ) : (
+            trash.map(c => (
+              <div key={c.id} className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-3" data-testid="trash-row">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">{c.name}</p>
+                  <p className="text-xs text-gray-400">
+                    {c.matricule_fiscal ? `MF ${c.matricule_fiscal} · ` : ''}
+                    supprimé il y a {c.days_in_trash} jour{c.days_in_trash > 1 ? 's' : ''} — purge dans {Math.max(0, 30 - c.days_in_trash)} j
+                  </p>
+                </div>
+                <button
+                  onClick={() => restoreFromTrash(c.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors"
+                  data-testid="trash-restore-btn"
+                >
+                  <RefreshCw size={13} />
+                  Restaurer
+                </button>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

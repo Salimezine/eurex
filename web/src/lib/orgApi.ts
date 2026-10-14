@@ -39,6 +39,7 @@ export interface OrgDossier {
   client_id: string;
   client_name: string;
   matricule_fiscal: string | null;
+  contact_email?: string | null;
     person_type?: string | null;
     export_status?: string | null;
     client_comptable_id?: string | null;
@@ -294,7 +295,7 @@ export interface OrgComptable {
   role?: 'comptable' | 'manager' | 'expert';
   client_count: number;
   avg_progress: number;
-  task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
+  task_stats: { total: number; fait: number; en_cours: number; bloque_client: number; overdue?: number };
   verify_stats?: { verified: number; returned: number; score: number | null };
   last_seen_at?: string | null;
   online?: boolean;
@@ -350,7 +351,18 @@ export const orgApi = {
     updateClientInfo: (id: string, patch: { name?: string; matricule_fiscal?: string | null; contact_email?: string | null; contact_phone?: string | null }) =>
       req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     // Suppression d'un client + tous ses dossiers (expert + manager)
-    deleteClient: (id: string) => req<{ ok: boolean; deleted: string }>(`/org/clients/${id}`, { method: 'DELETE' }),
+    deleteClient: (id: string, hard = false) =>
+      req<{ ok: boolean; deleted?: string; trashed?: string }>(`/org/clients/${id}${hard ? '?hard=1' : ''}`, { method: 'DELETE' }),
+    // Corbeille 30 jours (soft-delete)
+    getTrashClients: () =>
+      req<any[]>('/org/clients/trash'),
+    restoreClient: (id: string) =>
+      req<{ ok: boolean; restored: string }>(`/org/clients/${id}/restore`, { method: 'PATCH' }),
+    // Portail client (lien public)
+    portalToken: (clientId: string) =>
+      req<{ token: string }>(`/org/clients/${clientId}/portal-token`, { method: 'POST' }),
+    getPublicPortal: (token: string) =>
+      req<{ client_name: string; dossier: { exercice: number; progress: number } | null; docs: { label: string; received: number }[]; docs_received: number; docs_total: number }>(`/org/public/client/${token}`),
     // Suppression d'un compte utilisateur (expert + manager) — comptes de test/jetables
     deleteComptable: (id: string) => req<{ ok: boolean; deleted: string }>(`/org/comptables/${id}`, { method: 'DELETE' }),
 
@@ -359,6 +371,10 @@ export const orgApi = {
   getDossier: (id: string) => req<OrgDossier>(`/org/dossiers/${id}`),
   createDossier: (clientId: string, exercice: number, assignedComptableId?: string) =>
     req<any>(`/org/clients/${clientId}/dossiers`, { method: 'POST', body: JSON.stringify({ exercice, assigned_comptable_id: assignedComptableId || null }) }),
+  duplicateDossier: (dossierId: string, body: { exercice?: number; client_id?: string } = {}) =>
+    req<{ id: string; tasks: number; docs: number }>(`/org/dossiers/${dossierId}/duplicate`, { method: 'POST', body: JSON.stringify(body) }),
+  remindDocs: (dossierId: string, docCount: number) =>
+    req<{ ok: boolean }>(`/org/dossiers/${dossierId}/remind`, { method: 'POST', body: JSON.stringify({ channel: 'email', doc_count: docCount }) }),
   closeDossier: (id: string, force?: boolean, justification?: string) =>
     req<any>(`/org/dossiers/${id}/close`, { method: 'PATCH', body: JSON.stringify({ force, justification }) }),
 
