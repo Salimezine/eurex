@@ -4408,6 +4408,16 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             if (list) list.push(r); else tasksByUid.set(r.uid, [r]);
           }
         }
+        // Qualite : verifications vs renvois en correction par comptable (depuis audit_log)
+        const qualByUid = new Map<string, { verified: number; returned: number }>();
+        {
+          const { results: rows } = await pgAll(env, "SELECT t.done_by as uid, a.action, COUNT(*) as n FROM org_audit_log a JOIN org_tasks t ON a.target_id = t.id WHERE a.organization_id = ? AND a.action IN ('task_verified','task_returned') AND t.done_by IS NOT NULL GROUP BY t.done_by, a.action", user.organization_id);
+          for (const r of rows as any[]) {
+            const q = qualByUid.get(r.uid) || { verified: 0, returned: 0 };
+            if (r.action === 'task_verified') q.verified += Number(r.n); else q.returned += Number(r.n);
+            qualByUid.set(r.uid, q);
+          }
+        }
         const enriched = results.map((c: any) => {
           const clients = clientsByUid.get(c.id) || [];
           const taskStats = tasksByUid.get(c.id) || [];
@@ -4418,7 +4428,10 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
             s.total++; if (t.status === 'fait') s.fait++; else if (t.status === 'en_cours' || t.status === 'a_faire' || t.status === 'a_verifier') s.en_cours++; else if (t.status === 'bloque_client') s.bloque_client++;
           }
           const runStart = parseUtc(runByUser.get(c.id));
+          const qual = qualByUid.get(c.id) || { verified: 0, returned: 0 };
+          const qualTotal = qual.verified + qual.returned;
           return { ...c, role: c.role_label || c.role, client_count: clients.length, avg_progress: clients.length > 0 ? Math.round(clients.reduce((sum: number, cl: any) => sum + (cl.cached_progress || 0), 0) / clients.length * 10) / 10 : 0, task_stats: s,
+            verify_stats: { verified: qual.verified, returned: qual.returned, score: qualTotal > 0 ? Math.round((qual.verified / qualTotal) * 100) : null },
             online: parseUtc(c.last_seen_at) >= nowS - 180,
             worked_today_seconds: (Number(dayByUser.get(c.id)) || 0) + Math.max(0, runStart ? nowS - runStart : 0),
             norm_seconds: normSec };

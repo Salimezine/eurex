@@ -295,6 +295,7 @@ export interface OrgComptable {
   client_count: number;
   avg_progress: number;
   task_stats: { total: number; fait: number; en_cours: number; bloque_client: number };
+  verify_stats?: { verified: number; returned: number; score: number | null };
   last_seen_at?: string | null;
   online?: boolean;
   worked_today_seconds?: number;

@@ -491,6 +491,11 @@ export default function OrgSettings() {
                     <span>{c.client_count} clients</span>
                     <span>•</span>
                     <span>{c.avg_progress}% avancement</span>
+                    {c.verify_stats?.score != null && (
+                      <span className={c.verify_stats.score >= 90 ? 'text-emerald-600 font-medium' : c.verify_stats.score >= 75 ? 'text-amber-600 font-medium' : 'text-red-500 font-medium'} title={`Validations : ${c.verify_stats.verified} · Renvois : ${c.verify_stats.returned}`}>
+                        Qualité {c.verify_stats.score}%
+                      </span>
+                    )}
                   </div>
                 </div>
               )}

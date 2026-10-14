@@ -562,6 +562,18 @@ export default function OrgDashboardExpert() {
                     <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg font-medium">
                       {c.avg_progress}%
                     </span>
+                    {c.verify_stats?.score != null && (
+                      <span
+                        className={`px-2 py-1 rounded-lg font-medium ${
+                          c.verify_stats.score >= 90 ? 'bg-emerald-50 text-emerald-700'
+                          : c.verify_stats.score >= 75 ? 'bg-amber-50 text-amber-700'
+                          : 'bg-red-50 text-red-600'
+                        }`}
+                        title={`Validations vérifiées : ${c.verify_stats.verified} · Renvois en correction : ${c.verify_stats.returned}`}
+                      >
+                        {c.verify_stats.score >= 90 ? '✓' : c.verify_stats.score >= 75 ? '⚠' : '↺'} Qualité {c.verify_stats.score}%
+                      </span>
+                    )}
                     {c.task_stats.bloque_client > 0 && (
                       <span className="bg-red-50 text-red-600 px-2 py-1 rounded-lg font-medium animate-pulse">
                         🔴 {c.task_stats.bloque_client} bloqué{c.task_stats.bloque_client > 1 ? 's' : ''} client
