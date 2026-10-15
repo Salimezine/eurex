@@ -455,12 +455,13 @@ export default function OrgDossierPage() {
     }
   };
 
-  // Transfert : passe le client (et donc ses dossiers) a un autre comptable
+  // Transfert : passe ce dossier seul a un autre comptable (les autres
+  // dossiers du client restent chez leur comptable)
   const runTransfer = async () => {
-    if (!dossier || !transferComp) return;
+    if (!dossier) return;
     setTransferBusy(true);
     try {
-      await orgApi.reassignClient(dossier.client_id, transferComp);
+      await orgApi.reassignDossier(dossier.id, transferComp || null);
       setShowTransfer(false);
       load();
     } catch (err: any) {
@@ -709,6 +710,14 @@ export default function OrgDossierPage() {
             <p className="text-sm text-gray-500">
               Exercice {dossier.exercice} — Matricule fiscal : {dossier.matricule_fiscal || '—'}
             </p>
+            {dossier.comptable_name && (
+              <span
+                className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700"
+                title={dossier.dossier_comptable_id ? 'Comptable affecté à ce dossier (transfert)' : 'Comptable du client'}
+              >
+                👤 {dossier.comptable_name}{dossier.dossier_comptable_id ? ' (transféré)' : ''}
+              </span>
+            )}
             {canEditType ? (
               <select
                 value={dossier.person_type || ''}
@@ -2130,7 +2139,7 @@ export default function OrgDossierPage() {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
             <h3 className="font-bold text-gray-800 mb-1">🔀 Transférer le dossier</h3>
             <p className="text-xs text-gray-500 mb-3">
-              <strong>{dossier.client_name}</strong> et tous ses dossiers passent au comptable choisi. L'ancien comptable perd l'accès.
+              <strong>{dossier.client_name} ({dossier.exercice})</strong> passe au comptable choisi. Les autres dossiers du client restent inchangés.
             </p>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Nouveau comptable</label>
             <select
@@ -2139,8 +2148,8 @@ export default function OrgDossierPage() {
               className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none bg-white"
               data-testid="transfer-comp"
             >
-              <option value="">— Sélectionner un comptable —</option>
-              {comptables.filter(c => c.is_active && c.id !== dossier.client_comptable_id).map(c => (
+              <option value="">— Suivre le comptable du client ({dossier.client_comptable_id ? comptables.find(c => c.id === dossier.client_comptable_id)?.full_name || 'client' : 'aucun'}) —</option>
+              {comptables.filter(c => c.is_active && c.id !== dossier.comptable_id).map(c => (
                 <option key={c.id} value={c.id}>{c.full_name}</option>
               ))}
             </select>
@@ -2150,7 +2159,7 @@ export default function OrgDossierPage() {
               </button>
               <button
                 onClick={runTransfer}
-                disabled={transferBusy || !transferComp}
+                disabled={transferBusy || transferComp === dossier.comptable_id}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
                 data-testid="transfer-submit"
               >

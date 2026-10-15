@@ -43,6 +43,9 @@ export interface OrgDossier {
     person_type?: string | null;
     export_status?: string | null;
     client_comptable_id?: string | null;
+    dossier_comptable_id?: string | null;
+    comptable_id?: string | null;
+    comptable_name?: string | null;
     exercice: number;
   status: string;
   cached_progress: number;
@@ -345,6 +348,8 @@ export const orgApi = {
     }>('/org/clients/import', { method: 'POST', body: JSON.stringify(payload) }),
     reassignClient: (id: string, comptableId: string) =>
       req<any>(`/org/clients/${id}/reassign`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
+    reassignDossier: (dossierId: string, comptableId: string | null) =>
+      req<any>(`/org/dossiers/${dossierId}`, { method: 'PATCH', body: JSON.stringify({ assigned_comptable_id: comptableId }) }),
     updateClient: (id: string, patch: { person_type?: string | null; export_status?: string | null }) =>
       req<any>(`/org/clients/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     // Modification des infos du client (expert + manager) : nom, matricule, contacts

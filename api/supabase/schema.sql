@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS org_dossiers (
   opened_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   closed_at TEXT,
   closed_by TEXT REFERENCES org_users(id),
+  assigned_comptable_id TEXT REFERENCES org_users(id),
   UNIQUE (client_id, exercice)
 );
 
@@ -535,6 +536,9 @@ CREATE INDEX IF NOT EXISTS idx_org_tasks_month ON org_tasks(dossier_id, month);
 CREATE INDEX IF NOT EXISTS idx_fiscal_alerts_org ON org_fiscal_alerts(organization_id, due_date);
 
 CREATE INDEX IF NOT EXISTS idx_grants_to ON org_dossier_grants(granted_to);
+
+-- 0038 — comptable effectif d'un dossier (override du client, NULL = client)
+CREATE INDEX IF NOT EXISTS idx_org_dossiers_assigned ON org_dossiers(assigned_comptable_id);
 CREATE INDEX IF NOT EXISTS idx_grants_dossier ON org_dossier_grants(dossier_id);
 
 CREATE INDEX IF NOT EXISTS idx_task_collab_user ON org_task_collaborators(user_id);
