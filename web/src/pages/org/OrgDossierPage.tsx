@@ -471,35 +471,6 @@ export default function OrgDossierPage() {
     }
   };
 
-  // Relance email : ouvre le client de messagerie avec les pieces manquantes, journalise la relance
-  const remindMissing = async () => {
-    if (!dossier) return;
-    const missing = (dossier.documents || []).filter(d => !d.received);
-    if (missing.length === 0) { alert('Aucune pièce manquante à relancer'); return; }
-    const email = dossier.contact_email || '';
-    const subject = encodeURIComponent(`Pièces manquantes — dossier ${dossier.client_name} exercice ${dossier.exercice}`);
-    const body = encodeURIComponent(
-      `Bonjour,\n\nSauf erreur de notre part, les pièces suivantes sont encore manquantes pour la finalisation de votre dossier ${dossier.exercice} :\n\n` +
-      missing.map(d => `• ${d.label}`).join('\n') +
-      `\n\nMerci de nous les transmettre dès que possible.\n\nCordialement,`
-    );
-    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
-    try { await orgApi.remindDocs(dossier.id, missing.length); } catch { /* journalisation best-effort */ }
-  };
-
-  // Lien portail client : genere le token public et copie l'URL dans le presse-papier
-  const copyPortalLink = async () => {
-    if (!dossier) return;
-    try {
-      const { token } = await orgApi.portalToken(dossier.client_id);
-      const url = `${window.location.origin}${import.meta.env.BASE_URL}portail/${token}`;
-      await navigator.clipboard.writeText(url);
-      alert(`Lien client copié :\n${url}`);
-    } catch (err: any) {
-      alert(err.message);
-    }
-  };
-
   const closeDossier = async (force = false) => {
     if (!dossier) return;
     try {
@@ -902,27 +873,8 @@ export default function OrgDossierPage() {
           </a>
         )}
 
-        {/* Relance pieces manquantes (email pret a envoyer) */}
-        <button
-          onClick={remindMissing}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 transition-all"
-          title="Ouvrir un email pré-rempli avec les pièces manquantes"
-          data-testid="btn-remind"
-        >
-          ✉️ Relancer
-        </button>
-
         {isExpert && (
           <>
-            {/* Lien portail client (avancement + pieces, sans login) */}
-            <button
-              onClick={copyPortalLink}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-teal-50 text-teal-700 hover:bg-teal-100 transition-all"
-              title="Copier le lien de suivi à envoyer au client"
-              data-testid="btn-portal-link"
-            >
-              🔗 Portail client
-            </button>
             {/* Duplication de la checklist vers un autre exercice */}
             <button
               onClick={() => { setDupYear(dossier.exercice + 1); setShowDup(true); }}
