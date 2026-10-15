@@ -1,6 +1,8 @@
 import { getSupabaseAdapter } from './supabase-adapter.ts';
 import { SYNC_KEY, isD1QuotaError, resyncSupabaseToD1, type SyncEnv } from './sync.ts';
 import { DualDb, type DbLike, type MissedWrite } from './dual-write.ts';
+import { PgClient, type TransportFactory } from './pg/client.ts';
+import { cloudflareTransport } from './pg/transport.ts';
 
 export interface Env {
   DB: D1Database;
@@ -812,6 +814,31 @@ async function resyncAndFlipBack(env: Env): Promise<void> {
     // Verrou libere par resyncSupabaseToD1 ; on reste sur Supabase, qui sert
     // toujours les requetes. Le cron suivant reprendra (operation idempotente).
     console.error('[resync] ECHEC :', String(e?.message || e));
+  }
+}
+
+// Cron 00:05 UTC : SELECT 1 minimal vers Supabase (Hyperdrive) — empeche la
+// base gratuite de passer en pause apres 7 jours sans requete. Execute TOUJOURS
+// quel que soit le mode backend (d1 | supabase) : le mode ignore ce ping.
+// Jamais fatal : une panne ne doit pas arreter le resync du cron.
+// Une base en pause met 1-2 min a se reveler : 2 tentatives ecartees de 45 s
+// (la 1ere provoque le wake, la 2eme reussit generalement).
+async function keepSupabaseAwake(env: Env): Promise<void> {
+  const url = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
+  if (!url) return;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const t0 = Date.now();
+    const client = new PgClient(url, cloudflareTransport as TransportFactory);
+    try {
+      await client.query('SELECT 1');
+      console.log('[keepalive] Supabase actif (' + (Date.now() - t0) + ' ms, tentative ' + attempt + ')');
+      return;
+    } catch (e: any) {
+      console.error('[keepalive] tentative ' + attempt + ' echouee :', String(e?.message || e));
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 45000));
+    } finally {
+      try { client.close(); } catch { /* deja ferme */ }
+    }
   }
 }
 
@@ -5166,6 +5193,7 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
     // donc 00:05 pour refaire le point. Traite avant le test backend, puisque
     // c'est justement le mode supabase que ce cron est cote a resoudre.
     if (event.cron === '5 0 * * *') {
+      ctx.waitUntil(keepSupabaseAwake(env));
       ctx.waitUntil(resyncAndFlipBack(env));
       return;
     }
