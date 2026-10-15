@@ -112,6 +112,10 @@ export default function OrgDossierPage() {
   const [showDup, setShowDup] = useState(false);
   const [dupYear, setDupYear] = useState<number>(new Date().getFullYear());
   const [dupBusy, setDupBusy] = useState(false);
+  // Transfert du client (et de ses dossiers) vers un autre comptable
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferComp, setTransferComp] = useState('');
+  const [transferBusy, setTransferBusy] = useState(false);
   // Vue kanban (checklist en colonnes)
   const [kanban, setKanban] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
@@ -448,6 +452,21 @@ export default function OrgDossierPage() {
       alert(err.message);
     } finally {
       setDupBusy(false);
+    }
+  };
+
+  // Transfert : passe le client (et donc ses dossiers) a un autre comptable
+  const runTransfer = async () => {
+    if (!dossier || !transferComp) return;
+    setTransferBusy(true);
+    try {
+      await orgApi.reassignClient(dossier.client_id, transferComp);
+      setShowTransfer(false);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setTransferBusy(false);
     }
   };
 
@@ -903,6 +922,15 @@ export default function OrgDossierPage() {
               data-testid="btn-duplicate-dossier"
             >
               📋 Dupliquer
+            </button>
+            {/* Transfert du client vers un autre comptable */}
+            <button
+              onClick={() => { setTransferComp(''); setShowTransfer(true); }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-all"
+              title="Transférer ce client (et ses dossiers) à un autre comptable"
+              data-testid="btn-transfer-dossier"
+            >
+              🔀 Transférer
             </button>
           </>
         )}
@@ -2090,6 +2118,43 @@ export default function OrgDossierPage() {
                 data-testid="dup-submit"
               >
                 {dupBusy ? 'Copie...' : 'Dupliquer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Transférer le client a un autre comptable */}
+      {showTransfer && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 className="font-bold text-gray-800 mb-1">🔀 Transférer le dossier</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              <strong>{dossier.client_name}</strong> et tous ses dossiers passent au comptable choisi. L'ancien comptable perd l'accès.
+            </p>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Nouveau comptable</label>
+            <select
+              value={transferComp}
+              onChange={e => setTransferComp(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none bg-white"
+              data-testid="transfer-comp"
+            >
+              <option value="">— Sélectionner un comptable —</option>
+              {comptables.filter(c => c.is_active && c.id !== dossier.client_comptable_id).map(c => (
+                <option key={c.id} value={c.id}>{c.full_name}</option>
+              ))}
+            </select>
+            <div className="flex gap-2 justify-end mt-4">
+              <button onClick={() => setShowTransfer(false)} className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">
+                Annuler
+              </button>
+              <button
+                onClick={runTransfer}
+                disabled={transferBusy || !transferComp}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                data-testid="transfer-submit"
+              >
+                {transferBusy ? 'Transfert...' : 'Transférer'}
               </button>
             </div>
           </div>
