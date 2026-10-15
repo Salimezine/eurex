@@ -492,7 +492,7 @@ export default function OrgDossierPage() {
     if (!dossier) return;
     try {
       const { token } = await orgApi.portalToken(dossier.client_id);
-      const url = `${window.location.origin}/portail/${token}`;
+      const url = `${window.location.origin}${import.meta.env.BASE_URL}portail/${token}`;
       await navigator.clipboard.writeText(url);
       alert(`Lien client copié :\n${url}`);
     } catch (err: any) {
