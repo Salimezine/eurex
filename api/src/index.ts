@@ -823,23 +823,29 @@ async function resyncAndFlipBack(env: Env): Promise<void> {
 // Jamais fatal : une panne ne doit pas arreter le resync du cron.
 // Une base en pause met 1-2 min a se reveler : 2 tentatives ecartees de 45 s
 // (la 1ere provoque le wake, la 2eme reussit generalement).
-async function keepSupabaseAwake(env: Env): Promise<void> {
+// Expose aussi sur POST /internal/keepalive pour reveler la base a la demande.
+async function keepSupabaseAwake(env: Env): Promise<{ ok: boolean; ms: number; error?: string }> {
   const url = env.HYPERDRIVE?.connectionString || env.SUPABASE_DB_URL;
-  if (!url) return;
+  if (!url) return { ok: false, ms: 0, error: 'aucune connexion (HYPERDRIVE ou SUPABASE_DB_URL)' };
+  let last = '';
+  const t0 = Date.now();
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const t0 = Date.now();
+    const t = Date.now();
     const client = new PgClient(url, cloudflareTransport as TransportFactory);
     try {
       await client.query('SELECT 1');
-      console.log('[keepalive] Supabase actif (' + (Date.now() - t0) + ' ms, tentative ' + attempt + ')');
-      return;
+      const ms = Date.now() - t0;
+      console.log('[keepalive] Supabase actif (' + ms + ' ms, tentative ' + attempt + ')');
+      return { ok: true, ms };
     } catch (e: any) {
-      console.error('[keepalive] tentative ' + attempt + ' echouee :', String(e?.message || e));
+      last = String(e?.message || e);
+      console.error('[keepalive] tentative ' + attempt + ' echouee :', last);
       if (attempt < 2) await new Promise((r) => setTimeout(r, 45000));
     } finally {
       try { client.close(); } catch { /* deja ferme */ }
     }
   }
+  return { ok: false, ms: Date.now() - t0, error: last };
 }
 
 // Endpoints internes (secret obligatoire, fail-closed).
@@ -863,10 +869,16 @@ async function handleInternal(request: Request, env: Env, path: string): Promise
     }
   }
 
+  // Keep-alive Supabase : revele la base (wake 1-2 min) puis confirme SELECT 1.
+  // Meme usage que le cron 00:05 UTC — a appeler a la demande si besoin.
+  if (path === '/internal/keepalive' && (request.method === 'POST' || request.method === 'GET')) {
+    const r = await keepSupabaseAwake(env);
+    return json(r, r.ok ? 200 : 502);
+  }
+
   // Bascule backend : 'supabase' = le Worker requete PostgreSQL directement,
   // 'd1' = D1.
-  if (path === '/internal/backend' && request.method === 'POST') {
-    const body = await request.json() as any;
+  if (path === '/internal/backend' && request.method === 'POST') {    const body = await request.json() as any;
 
     // Double ecriture seule : n'emet que le drapeau, sans toucher au moteur
     // en service. {"dual_write":true} | {"dual_write":false}
