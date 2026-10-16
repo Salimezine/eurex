@@ -57,3 +57,13 @@ api/local/.env
 eurex-dump*.sql
 api/supabase/data.sql
 api/supabase/*.psql
+
+# Local test/debug scripts (never in repo)
+api/local/*.mjs
+api/local/dump-lines.mjs
+api/local/dump-pdf.mjs
+api/local/test-scan-parser.mjs
+api/local/sync-docs-pg.mjs
+
+# Wrangler auto-generated
+api/worker-configuration.d.ts

@@ -79,6 +79,19 @@ export default function ScanDossierPage() {
     return parseFloat(s.replace(/\s/g, '').replace(',', '.')) || 0;
   };
 
+  // Parse un montant depuis une ligne : "279,000" | "Total HT 279,000" | "Total HT -1 250,000" (espace=milliers)
+  const parseLineAmount = (line: string): number => {
+    // Extrait le dernier nombre de la ligne (avec signe, séparateur espace/virgule/point)
+    // Gère "1 250,000" (espace = milliers) et "-1 250,000" (avoir)
+    const m = line.match(/(-?\d[\d\s]*(?:[.,]\d{1,3})?)\s*(?:DT|TTC|HT)?\s*$/i);
+    if (m) {
+      // Enlever espaces (milliers) puis virgule→point
+      const cleaned = m[1].replace(/\s/g, '').replace(',', '.');
+      return parseFloat(cleaned) || 0;
+    }
+    return 0;
+  };
+
   const parseScanInvoice = (text: string): any | null => {
     const lines = text.split('\n');
     let numero = '';
@@ -92,71 +105,145 @@ export default function ScanDossierPage() {
     let timbre = 0;
     let totalTTC = 0;
     let afterAdressA = false;
-    let hasTimbreLine = false;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
+      if (!line) continue;
 
-      // "Facture FAC2606-00001989" or "Facture avoir AVR2606-000029"
-      const facMatch = line.match(/^Facture\s+(avoir\s+)?(FAC|AVR)\S+/i);
-      if (facMatch) {
-        isAvoir = !!facMatch[1];
-        numero = line.replace(/^Facture\s+(avoir\s+)?/i, '').trim();
-      }
-
-      // "Date facturation : 05/06/2026"
-      const dateMatch = line.match(/Date\s+facturation\s*:\s*(\d{2})\/(\d{2})\/(\d{4})/i);
-      if (dateMatch) date = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
-
-      // "Code client : CLT0626-1187"
-      const codeMatch = line.match(/Code\s+client\s*:\s*(\S+)/i);
-      if (codeMatch) codeClient = codeMatch[1];
-
-      // Client name after "Adressé à"
-      if (line.match(/Adress[ée]\s+[àa]/i)) { afterAdressA = true; continue; }
-      if (afterAdressA && line && !line.match(/^(Numéro|Tél|Email|Web|Scan)/i)) {
-        clientName = line;
-        afterAdressA = false;
-      }
-
-      // "Total HT" → skip empty → "279,000" (pdf.js puts empty item between label and value)
-      if (line.match(/^Total\s+HT$/i)) {
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const v = parseAmount(lines[j].trim());
-          if (v !== 0) { totalHT = v; break; }
+      // Numéro : "Facture FAC2606-00001989", "FACTURE N° FAC...", "Facture avoir AVR...", "FAC2606-00001989" seul
+      // Tolère espaces, n°, majuscules, préfixes variables
+      if (!numero) {
+        const facMatch = line.match(/(?:facture\s*(?:avoir)?\s*(?:n[°ºo]\s*)?:?\s*)((?:avoir\s+)?(?:FAC|AVR|FA|AV)\S{4,})/i);
+        if (facMatch) {
+          isAvoir = /avoir/i.test(facMatch[1]) || /avoir/i.test(line);
+          numero = facMatch[1].replace(/\s+/g, '').trim();
+        }
+        // Fallback : numéro seul commençant par FAC/AVR sans mot "Facture"
+        if (!numero) {
+          const soloMatch = line.match(/^((?:AVR|FAC)\d[\w-]{4,})/i);
+          if (soloMatch) {
+            isAvoir = /^AVR/i.test(soloMatch[1]);
+            numero = soloMatch[1].trim();
+          }
         }
       }
-      if (line.match(/^Total\s+TVA\s+19\s*%$/i)) {
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const v = parseAmount(lines[j].trim());
-          if (v !== 0) { tva19 = v; break; }
+
+      // Date : "Date facturation : 05/06/2026", "Date : 05/06/2026", "05/06/2026" près de "Date"
+      if (!date) {
+        const dateMatch = line.match(/(?:date\s*(?:facturation|facture|de\s*facturation)?)\s*:?\s*(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})/i);
+        if (dateMatch) {
+          const [, d, m, y] = dateMatch;
+          date = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
         }
       }
-      if (line.match(/^FODEC\s+1\s*%$/i)) {
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const v = parseAmount(lines[j].trim());
-          if (v !== 0) { fodec = v; break; }
+
+      // Code client : "Code client : CLT0626-1187", "Code : CLT...", "Client : CLT..."
+      if (!codeClient) {
+        const codeMatch = line.match(/(?:code\s*client|code|client\s*code)\s*:?\s*(CLT[\w-]+)/i);
+        if (codeMatch) codeClient = codeMatch[1];
+      }
+
+      // Client name: format "Émetteur Adressé à" puis ligne "EMETTEUR CLIENT"
+      // Le client = partie APRÈS l'émetteur (ex: "SCANFLASH CAMCE" → "CAMCE")
+      if (line.match(/(?:Adress[ée]\s+[àa]|attention\s+de)/i)) {
+        afterAdressA = true;
+        continue;
+      }
+      if (afterAdressA && line) {
+        // Ligne "SCANFLASH CAMCE" → client = "CAMCE" (après le 1er mot qui est l'émetteur)
+        // Ligne "SCANFLASH MAGHREB CORPORATE" → client = "MAGHREB CORPORATE"
+        // Sauf si c'est une ligne d'adresse/tél/email (on continue)
+        if (!line.match(/^(Num[ée]ro|N[°º]|T[ée]l|Email|Web|Adresse|BP|Code|Montants|D[ée]signation|Facture|Rectificatif)/i)) {
+          // Séparer émetteur (gauche) et client (droite) : le 1er mot est souvent l'émetteur
+          const parts = line.split(/\s{2,}/); // 2+ espaces = colonnes séparées par pdf.js
+          if (parts.length >= 2) {
+            clientName = parts[1].trim(); // colonne droite = client
+          } else {
+            // Même ligne fusionnée : enlever le nom de l'émetteur connu
+            const cleaned = line.replace(/^SCANFLASH\s*/i, '').trim();
+            if (cleaned && cleaned !== line) {
+              clientName = cleaned;
+            } else {
+              clientName = line;
+            }
+          }
+          afterAdressA = false;
         }
       }
-      if (line.match(/^Timbre\s+fiscal$/i)) {
-        hasTimbreLine = true;
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const v = parseAmount(lines[j].trim());
-          if (v !== 0) { timbre = v; break; }
+
+      // Montants : accepte "Total HT" SEUL (valeur ligne suivante) OU "Total HT 279,000" (même ligne)
+      // IMPORTANT : "Total HT" doit être au DÉBUT de la ligne (pas f header "Désignation... Total HT")
+      const htLine = line.match(/^total\s*ht\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*(DT|TTC)?\s*$/i);
+      if (htLine && totalHT === 0) {
+        if (htLine[1]) {
+          totalHT = parseAmount(htLine[1]);
+        } else {
+          for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+            const v = parseAmount(lines[j].trim());
+            if (v !== 0) { totalHT = v; break; }
+          }
         }
       }
-      if (line.match(/^Total\s+TTC$/i)) {
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const v = parseAmount(lines[j].trim());
-          if (v !== 0) { totalTTC = v; break; }
+
+      const tvaLine = line.match(/^total\s*tva\s*19\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*$/i);
+      if (tvaLine && tva19 === 0) {
+        if (tvaLine[1]) {
+          tva19 = parseAmount(tvaLine[1]);
+        } else {
+          for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+            const v = parseAmount(lines[j].trim());
+            if (v !== 0) { tva19 = v; break; }
+          }
         }
       }
+
+      const fodecLine = line.match(/^fodec\s*1\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*$/i);
+      if (fodecLine && fodec === 0) {
+        if (fodecLine[1]) {
+          fodec = parseAmount(fodecLine[1]);
+        } else {
+          for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+            const v = parseAmount(lines[j].trim());
+            if (v !== 0) { fodec = v; break; }
+          }
+        }
+      }
+
+      const timbreLine = line.match(/^timbre\s*fiscal\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{1,2})?\s*$/i);
+      if (timbreLine && timbre === 0) {
+        if (timbreLine[1]) {
+          timbre = parseAmount(timbreLine[1]);
+        } else {
+          for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+            const v = parseAmount(lines[j].trim());
+            if (v !== 0) { timbre = v; break; }
+          }
+        }
+      }
+
+      const ttcLine = line.match(/^total\s*ttc\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*(DT|TTC)?\s*$/i);
+      if (ttcLine && totalTTC === 0) {
+        if (ttcLine[1]) {
+          totalTTC = parseAmount(ttcLine[1]);
+        } else {
+          for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+            const v = parseAmount(lines[j].trim());
+            if (v !== 0) { totalTTC = v; break; }
+          }
+        }
+      }
+    }
+
+    // Fallback : si TTC absent mais HT+TVA connus
+    if (totalTTC === 0 && (totalHT !== 0 || tva19 !== 0)) {
+      totalTTC = totalHT + tva19 + fodec + timbre;
     }
 
     if (!numero || !date) return null;
 
     // Detect 0% TVA invoices (no TVA line in PDF) → HT goes to 707003
-    const hasTVA = tva19 > 0;
+    // AVR : TVA negative (-3.358) → on utilise Math.abs pour detecter
+    const hasTVA = Math.abs(tva19) > 0;
 
     // Map code_client → 411XXX
     const compteClient = clientMap[codeClient] || '411000';
