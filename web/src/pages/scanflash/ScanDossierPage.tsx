@@ -171,9 +171,9 @@ export default function ScanDossierPage() {
         }
       }
 
-      // Montants : accepte "Total HT" SEUL (valeur ligne suivante) OU "Total HT 279,000" (même ligne)
-      // IMPORTANT : "Total HT" doit être au DÉBUT de la ligne (pas f header "Désignation... Total HT")
-      const htLine = line.match(/^total\s*ht\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*(DT|TTC)?\s*$/i);
+      // Montants : "Total HT 279,000" ou "... Total HT 510,436" (fin de ligne)
+      // PAS de ^ (Total HT peut etre au milieu) mais montant REQUIS (header sans montant ignore)
+      const htLine = line.match(/total\s*ht\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})\s*(?:DT|TTC)?\s*$/i);
       if (htLine && totalHT === 0) {
         if (htLine[1]) {
           totalHT = parseAmount(htLine[1]);
@@ -185,7 +185,7 @@ export default function ScanDossierPage() {
         }
       }
 
-      const tvaLine = line.match(/^total\s*tva\s*19\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*$/i);
+      const tvaLine = line.match(/total\s*tva\s*19\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})\s*$/i);
       if (tvaLine && tva19 === 0) {
         if (tvaLine[1]) {
           tva19 = parseAmount(tvaLine[1]);
@@ -197,7 +197,7 @@ export default function ScanDossierPage() {
         }
       }
 
-      const fodecLine = line.match(/^fodec\s*1\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*$/i);
+      const fodecLine = line.match(/fodec\s*1\s*%?\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})\s*$/i);
       if (fodecLine && fodec === 0) {
         if (fodecLine[1]) {
           fodec = parseAmount(fodecLine[1]);
@@ -209,7 +209,7 @@ export default function ScanDossierPage() {
         }
       }
 
-      const timbreLine = line.match(/^timbre\s*fiscal\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{1,2})?\s*$/i);
+      const timbreLine = line.match(/timbre\s*fiscal\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{1,2})\s*$/i);
       if (timbreLine && timbre === 0) {
         if (timbreLine[1]) {
           timbre = parseAmount(timbreLine[1]);
@@ -221,7 +221,7 @@ export default function ScanDossierPage() {
         }
       }
 
-      const ttcLine = line.match(/^total\s*ttc\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})?\s*(DT|TTC)?\s*$/i);
+      const ttcLine = line.match(/total\s*ttc\b\s*:?\s*(-?[\d\s]*[.,]\d{1,3}|-?\d{2,})\s*(?:DT|TTC)?\s*$/i);
       if (ttcLine && totalTTC === 0) {
         if (ttcLine[1]) {
           totalTTC = parseAmount(ttcLine[1]);
