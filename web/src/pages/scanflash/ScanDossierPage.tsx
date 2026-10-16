@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, Table2, Trash2, Download, Zap, Upload, CheckCircle, ShieldCheck, Wrench } from 'lucide-react';
+import { ArrowLeft, FileText, Table2, Trash2, Download, Zap, Upload, CheckCircle, ShieldCheck, Wrench, Database } from 'lucide-react';
 import { api } from '../../lib/api';
 import { extractTextFromPDF } from '../../lib/pdf';
 
@@ -275,6 +275,26 @@ export default function ScanDossierPage() {
     await load();
   };
 
+  const handleSaveToDB = async () => {
+    if (!id || localFactures.length === 0) return;
+    if (!confirm(`Sauvegarder ${localFactures.length} facture(s) en base?`)) return;
+    let saved = 0;
+    for (const f of localFactures) {
+      try {
+        await api.scan.addFacture(id, {
+          numero: f.numero, date_facture: f.date_facture, client: f.client,
+          code_client: f.code_client, compte_client: f.compte_client, is_avoir: f.is_avoir,
+          total_ht_0: f.total_ht_0, total_ht_19: f.total_ht_19, tva_19: f.tva_19,
+          fodec: f.fodec, timbre: f.timbre, total_ttc: f.total_ttc,
+        });
+        saved++;
+      } catch { /* skip duplicates */ }
+    }
+    alert(`${saved}/${localFactures.length} factures sauvegardees.`);
+    setLocalFactures([]);
+    await load();
+  };
+
   const handleGenerate = async () => {
     if (localFactures.length === 0) return;
     const ecritures: any[] = [];
@@ -477,6 +497,11 @@ export default function ScanDossierPage() {
                 {uploading ? 'Extraction...' : 'Importer PDF(s)'}
                 <input type="file" accept=".pdf" multiple className="hidden" onChange={e => e.target.files && handleUploadPDF(e.target.files)} />
               </label>
+              {localFactures.length > 0 && (
+                <button onClick={handleSaveToDB} className="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700">
+                  <Database size={15} className="inline mr-1" /> Sauver en base
+                </button>
+              )}
               {localFactures.length > 0 && (
                 <button onClick={handleGenerate} className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">
                   <Zap size={15} className="inline mr-1" /> Generer VT
