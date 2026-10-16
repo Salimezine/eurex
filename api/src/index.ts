@@ -5241,6 +5241,12 @@ JSON: {"verdict":"OK/ERREUR","score":0-100,"checks":[{"piece":"...","type":"FAC/
   // depuis 2026-10-11, en continu et de facon interrogable. L'operation reste
   // disponible a la main via POST /internal/sync-copy.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Keep-alive pur : reveille Supabase (la gratuite se met en pause apres
+    // 7 jours d'inactivite). Rythme q6h en plus du cron journalier 00:05.
+    if (event.cron === '11 */6 * * *') {
+      ctx.waitUntil(keepSupabaseAwake(env));
+      return;
+    }
     // Retour sur D1 : le quota gratuit se remet a zero a 00:00 UTC, on attend
     // donc 00:05 pour refaire le point. Traite avant le test backend, puisque
     // c'est justement le mode supabase que ce cron est cote a resoudre.
