@@ -278,19 +278,19 @@ export default function ScanDossierPage() {
   const handleSaveToDB = async () => {
     if (!id || localFactures.length === 0) return;
     if (!confirm(`Sauvegarder ${localFactures.length} facture(s) en base?`)) return;
-    let saved = 0;
+    let saved = 0, updated = 0;
     for (const f of localFactures) {
       try {
-        await api.scan.addFacture(id, {
+        const res = await api.scan.addFacture(id, {
           numero: f.numero, date_facture: f.date_facture, client: f.client,
           code_client: f.code_client, compte_client: f.compte_client, is_avoir: f.is_avoir,
           total_ht_0: f.total_ht_0, total_ht_19: f.total_ht_19, tva_19: f.tva_19,
           fodec: f.fodec, timbre: f.timbre, total_ttc: f.total_ttc,
         });
-        saved++;
-      } catch { /* skip duplicates */ }
+        if ((res as any)?.updated) updated++; else saved++;
+      } catch { /* skip errors */ }
     }
-    alert(`${saved}/${localFactures.length} factures sauvegardees.`);
+    alert(`${saved} ajoutees, ${updated} mises a jour.`);
     setLocalFactures([]);
     await load();
   };
